@@ -6,19 +6,17 @@
 
 use crate::error::WorkspaceError;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// A capability-bounded workspace directory.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Workspace {
-    root_dir: cap_std::fs::Dir,
+    root_dir: Arc<cap_std::fs::Dir>,
     root_path: PathBuf,
 }
 
 impl Workspace {
     /// Open a workspace rooted at `root`.
-    ///
-    /// The path must exist and be a directory. The root is canonicalized
-    /// so that symlinks are resolved.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, WorkspaceError> {
         let root = root.as_ref();
 
@@ -31,14 +29,14 @@ impl Workspace {
 
         let root_path = root.canonicalize().map_err(|e| match e.kind() {
             std::io::ErrorKind::PermissionDenied => WorkspaceError::PermissionDenied(root.into()),
-            _ => WorkspaceError::Io(e),
+            _ => WorkspaceError::Io(e.to_string()),
         })?;
 
         let root_dir =
             cap_std::fs::Dir::open_ambient_dir(&root_path, cap_std::ambient_authority())
-                .map_err(WorkspaceError::Io)?;
+                .map_err(|e| WorkspaceError::Io(e.to_string()))?;
 
-        Ok(Self { root_dir, root_path })
+        Ok(Self { root_dir: Arc::new(root_dir), root_path })
     }
 
     /// Returns a reference to the capability-bounded directory.
@@ -52,25 +50,15 @@ impl Workspace {
     }
 
     /// Resolve a workspace-relative path and validate it stays within bounds.
-    ///
-    /// Rejects:
-    /// - Absolute paths
-    /// - Paths containing `..` components
-    /// - Windows drive-letter paths
-    ///
-    /// Returns the cleaned relative path on success.
     pub fn resolve(&self, relative_path: &Path) -> Result<PathBuf, WorkspaceError> {
-        // Reject empty path — treat as workspace root
         if relative_path.as_os_str().is_empty() {
             return Ok(PathBuf::from("."));
         }
 
-        // Reject absolute paths
         if relative_path.is_absolute() {
             return Err(WorkspaceError::PathEscapesWorkspace(relative_path.into()));
         }
 
-        // Reject Windows drive-letter paths
         if cfg!(windows) {
             if let Some(prefix) = relative_path.components().next() {
                 if matches!(prefix, std::path::Component::Prefix(_)) {
@@ -79,7 +67,6 @@ impl Workspace {
             }
         }
 
-        // Normalize: remove ".", reject "..", collect remaining components
         let mut components = Vec::new();
         for component in relative_path.components() {
             match component {

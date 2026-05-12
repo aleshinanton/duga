@@ -3,7 +3,8 @@
 //! Used during context window overflow to compress older messages
 //! while preserving pinned facts verbatim.
 
-use crate::Seq;
+use serde::{Deserialize, Serialize};
+use crate::llm::Seq;
 
 /// Instruction to the summarizer about which messages to compress.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -40,7 +41,7 @@ mod tests {
     fn test_compression_request_roundtrip() {
         let req = CompressionRequest {
             messages: vec![SummarizableMessage {
-                seq: Seq(0),
+                seq: Seq::from(0),
                 role: "user".into(),
                 content: "hello".into(),
             }],

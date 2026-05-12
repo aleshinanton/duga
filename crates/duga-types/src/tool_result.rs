@@ -4,9 +4,10 @@
 //! output, timing, and byte counts. The builder pattern allows
 //! incremental construction from process output or error paths.
 
+use serde::{Deserialize, Serialize};
 use crate::error::ToolError;
 use crate::tool_call::CallId;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// The result of a single tool invocation.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -49,49 +50,49 @@ impl ToolResultBuilder {
         }
     }
 
-    pub fn tool_call_id(mut self, id: CallId) -> &mut Self {
+    pub fn tool_call_id(&mut self, id: CallId) -> &mut Self {
         self.tool_call_id = Some(id);
         self
     }
 
-    pub fn success(mut self, success: bool) -> &mut Self {
+    pub fn success(&mut self, success: bool) -> &mut Self {
         self.success = success;
         self
     }
 
-    pub fn output(mut self, output: impl Into<String>) -> &mut Self {
+    pub fn output(&mut self, output: impl Into<String>) -> &mut Self {
         self.output = output.into();
         self
     }
 
-    pub fn metadata(mut self, metadata: serde_json::Value) -> &mut Self {
+    pub fn metadata(&mut self, metadata: serde_json::Value) -> &mut Self {
         self.metadata = metadata;
         self
     }
 
-    pub fn duration_ms(mut self, duration_ms: u128) -> &mut Self {
+    pub fn duration_ms(&mut self, duration_ms: u128) -> &mut Self {
         self.duration_ms = duration_ms;
         self
     }
 
-    pub fn stdout_bytes(mut self, bytes: u64) -> &mut Self {
+    pub fn stdout_bytes(&mut self, bytes: u64) -> &mut Self {
         self.stdout_bytes = bytes;
         self
     }
 
-    pub fn stderr_bytes(mut self, bytes: u64) -> &mut Self {
+    pub fn stderr_bytes(&mut self, bytes: u64) -> &mut Self {
         self.stderr_bytes = bytes;
         self
     }
 
-    pub fn truncated(mut self, truncated: bool) -> &mut Self {
+    pub fn truncated(&mut self, truncated: bool) -> &mut Self {
         self.truncated = truncated;
         self
     }
 
     pub fn build(&self) -> Option<ToolResult> {
         Some(ToolResult {
-            tool_call_id: self.tool_call_id?,
+            tool_call_id: self.tool_call_id.clone()?,
             success: self.success,
             output: self.output.clone(),
             metadata: self.metadata.clone(),
@@ -148,13 +149,12 @@ impl std::fmt::Display for ToolResult {
 mod tests {
     use super::*;
     use crate::error::ToolError;
-    use std::io;
 
     #[test]
     fn test_builder_all_fields() {
         let id = CallId::new();
         let result = ToolResultBuilder::new()
-            .tool_call_id(id)
+            .tool_call_id(id.clone())
             .success(true)
             .output("hello world")
             .metadata(serde_json::json!({"key": "value"}))
@@ -178,7 +178,7 @@ mod tests {
     fn test_builder_defaults() {
         let id = CallId::new();
         let result = ToolResultBuilder::new()
-            .tool_call_id(id)
+            .tool_call_id(id.clone())
             .build()
             .expect("all fields set");
 
@@ -201,7 +201,7 @@ mod tests {
     fn test_from_outcome_success() {
         let id = CallId::new();
         let inner = ToolResultBuilder::new()
-            .tool_call_id(id)
+            .tool_call_id(id.clone())
             .success(true)
             .output("done")
             .duration_ms(10)
@@ -232,7 +232,7 @@ mod tests {
     fn test_from_outcome_io_error() {
         let id = CallId::new();
         let outcome: Result<ToolResult, ToolError> =
-            Err(ToolError::Io(io::Error::new(io::ErrorKind::NotFound, "file missing")));
+            Err(ToolError::Io("file missing".into()));
         let started = Instant::now();
         let result = ToolResult::from_outcome(id, "read", outcome, started);
         assert!(!result.success);
@@ -244,7 +244,7 @@ mod tests {
     fn test_display() {
         let id = CallId::new();
         let result = ToolResultBuilder::new()
-            .tool_call_id(id)
+            .tool_call_id(id.clone())
             .success(true)
             .output("hello")
             .duration_ms(50)
@@ -263,7 +263,7 @@ mod tests {
     fn test_roundtrip() {
         let id = CallId::new();
         let original = ToolResultBuilder::new()
-            .tool_call_id(id)
+            .tool_call_id(id.clone())
             .success(true)
             .output("test output")
             .metadata(serde_json::json!({"foo": "bar"}))

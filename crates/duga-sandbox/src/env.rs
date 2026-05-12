@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn test_build_secret_warning() {
         let mut warnings = Vec::new();
-        let mut allowed: HashSet<String> = ["GITHUB_TOKEN".into()].iter().cloned().collect();
+        let allowed: HashSet<String> = ["GITHUB_TOKEN".into()].iter().cloned().collect();
         // Ensure the var exists in the environment for the test
         std::env::set_var("GITHUB_TOKEN", "ghp_test123");
         let _env = build(&allowed, &mut warnings);

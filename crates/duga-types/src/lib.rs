@@ -10,6 +10,8 @@
 //! - Pure data types with serialization roundtrip guarantees.
 //! - Every other crate depends on this one — keep it stable.
 
+#![allow(clippy::derivable_impls, clippy::manual_strip)]
+
 pub mod message;
 pub mod tool_call;
 pub mod tool_schema;

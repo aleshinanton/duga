@@ -9,7 +9,7 @@ use std::fmt;
 use std::io;
 
 /// Errors from a single tool invocation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum ToolError {
     /// Tool execution timed out.
     Timeout,
@@ -20,11 +20,25 @@ pub enum ToolError {
     /// Tool arguments failed validation.
     InvalidArgs(String),
     /// I/O error during execution.
-    Io(io::Error),
+    Io(String),
     /// Plugin-specific error.
     Plugin(String),
     /// Output exceeded configured limits.
     OutputLimitExceeded,
+}
+
+impl Clone for ToolError {
+    fn clone(&self) -> Self {
+        match self {
+            ToolError::Timeout => ToolError::Timeout,
+            ToolError::Cancelled => ToolError::Cancelled,
+            ToolError::Denied(s) => ToolError::Denied(s.clone()),
+            ToolError::InvalidArgs(s) => ToolError::InvalidArgs(s.clone()),
+            ToolError::Io(s) => ToolError::Io(s.clone()),
+            ToolError::Plugin(s) => ToolError::Plugin(s.clone()),
+            ToolError::OutputLimitExceeded => ToolError::OutputLimitExceeded,
+        }
+    }
 }
 
 impl fmt::Display for ToolError {
@@ -34,7 +48,7 @@ impl fmt::Display for ToolError {
             ToolError::Cancelled => write!(f, "tool execution was cancelled"),
             ToolError::Denied(msg) => write!(f, "denied: {}", msg),
             ToolError::InvalidArgs(msg) => write!(f, "invalid arguments: {}", msg),
-            ToolError::Io(e) => write!(f, "i/o error: {}", e),
+            ToolError::Io(s) => write!(f, "i/o error: {}", s),
             ToolError::Plugin(msg) => write!(f, "plugin error: {}", msg),
             ToolError::OutputLimitExceeded => write!(f, "output limit exceeded"),
         }
@@ -42,6 +56,12 @@ impl fmt::Display for ToolError {
 }
 
 impl std::error::Error for ToolError {}
+
+impl From<io::Error> for ToolError {
+    fn from(e: io::Error) -> Self {
+        ToolError::Io(e.to_string())
+    }
+}
 
 impl ToolError {
     /// Returns `true` for errors that may be transient (retryable).
@@ -81,11 +101,11 @@ impl Serialize for ToolError {
                 s.serialize_field("msg", msg)?;
                 s.end()
             }
-            ToolError::Io(e) => {
-                let mut s = serializer.serialize_struct("ToolError", 2)?;
-                s.serialize_field("type", "Io")?;
-                s.serialize_field("msg", &e.to_string())?;
-                s.end()
+            ToolError::Io(s) => {
+                let mut st = serializer.serialize_struct("ToolError", 2)?;
+                st.serialize_field("type", "Io")?;
+                st.serialize_field("msg", s)?;
+                st.end()
             }
             ToolError::Plugin(msg) => {
                 let mut s = serializer.serialize_struct("ToolError", 2)?;
@@ -134,10 +154,10 @@ impl<'de> serde::de::Visitor<'de> for ToolErrorVisitor {
                 Ok(ToolError::InvalidArgs(msg))
             }
             "Io" => {
-                let msg = seq
+                let msg: String = seq
                     .next_element()?
                     .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
-                Ok(ToolError::Io(io::Error::new(io::ErrorKind::Other, msg)))
+                Ok(ToolError::Io(msg))
             }
             "Plugin" => {
                 let msg = seq
@@ -169,25 +189,29 @@ impl<'de> serde::de::Visitor<'de> for ToolErrorVisitor {
             .next_key()?
             .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
         if tag != "type" {
-            return Err(serde::de::Error::unknown_field(tag, &["type"]));
+            return Err(serde::de::Error::unknown_field(&tag, &["type"]));
         }
         let variant: String = map.next_value()?;
         match variant.as_str() {
             "Timeout" => Ok(ToolError::Timeout),
             "Cancelled" => Ok(ToolError::Cancelled),
             "Denied" => {
+                let _key: String = map.next_key()?.ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                 let msg = map.next_value::<String>()?;
                 Ok(ToolError::Denied(msg))
             }
             "InvalidArgs" => {
+                let _key: String = map.next_key()?.ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                 let msg = map.next_value::<String>()?;
                 Ok(ToolError::InvalidArgs(msg))
             }
             "Io" => {
-                let msg = map.next_value::<String>()?;
-                Ok(ToolError::Io(io::Error::new(io::ErrorKind::Other, msg)))
+                let _key: String = map.next_key()?.ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                let msg: String = map.next_value()?;
+                Ok(ToolError::Io(msg))
             }
             "Plugin" => {
+                let _key: String = map.next_key()?.ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                 let msg = map.next_value::<String>()?;
                 Ok(ToolError::Plugin(msg))
             }
@@ -266,7 +290,7 @@ mod tests {
         assert!(!ToolError::Cancelled.is_transient());
         assert!(!ToolError::Denied("x".into()).is_transient());
         assert!(!ToolError::InvalidArgs("x".into()).is_transient());
-        assert!(ToolError::Io(io::Error::new(io::ErrorKind::Other, "x")).is_transient());
+        assert!(ToolError::Io("x".into()).is_transient());
         assert!(ToolError::Plugin("x".into()).is_transient());
         assert!(!ToolError::OutputLimitExceeded.is_transient());
     }
@@ -278,8 +302,8 @@ mod tests {
         assert_eq!(ToolError::Cancelled.to_string(), "tool execution was cancelled");
         assert_eq!(ToolError::Plugin("boom".into()).to_string(), "plugin error: boom");
         assert_eq!(ToolError::OutputLimitExceeded.to_string(), "output limit exceeded");
-        let io_err = io::Error::new(io::ErrorKind::Other, "disk full");
-        assert!(ToolError::Io(io_err).to_string().contains("disk full"));
+        let io_err = ToolError::Io("disk full".into());
+        assert!(io_err.to_string().contains("disk full"));
     }
 
     #[test]
@@ -289,7 +313,7 @@ mod tests {
             ToolError::Cancelled,
             ToolError::Denied("test denied".into()),
             ToolError::InvalidArgs("bad arg".into()),
-            ToolError::Io(io::Error::new(io::ErrorKind::Other, "disk error")),
+            ToolError::Io("disk error".into()),
             ToolError::Plugin("plugin boom".into()),
             ToolError::OutputLimitExceeded,
         ];

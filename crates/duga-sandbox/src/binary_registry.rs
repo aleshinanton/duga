@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_registry_not_found() {
-        let result = BinaryRegistry::new(&["nonexistent_binary_xyz_12345"]);
+        let result = BinaryRegistry::new(&["nonexistent_binary_xyz_12345".to_string()]);
         // May be NotFound or WhichFailed depending on `which` behavior
         assert!(result.is_err());
     }

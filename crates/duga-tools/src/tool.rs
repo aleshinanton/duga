@@ -31,7 +31,11 @@ pub trait Tool: Send + Sync {
     }
 
     /// Execute the tool with the given arguments.
-    async fn execute(&self, ctx: ToolContext<'_>, args: Self::Args) -> ToolCallResult;
+    fn execute(
+        &self,
+        ctx: ToolContext<'_>,
+        args: Self::Args,
+    ) -> impl std::future::Future<Output = ToolCallResult> + Send;
 
     /// Generate the JSON Schema for the arguments.
     fn json_schema(&self) -> Value {

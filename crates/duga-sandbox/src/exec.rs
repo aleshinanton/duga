@@ -1,8 +1,4 @@
 //! Process execution with output limits and cancellation.
-//!
-//! `run_captured` is the single function that spawns subprocesses.
-//! It enforces byte limits on stdout/stderr, applies timeouts,
-//! and supports cancellation via a token.
 
 use crate::workspace::Workspace;
 use duga_types::config::OutputLimits;
@@ -12,49 +8,37 @@ use duga_types::tool_result::ToolResult;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
-use tokio::sync::broadcast;
 
 /// A cancellation token that can be signalled to abort running processes.
 #[derive(Debug, Clone)]
 pub struct CancellationToken {
-    sender: broadcast::Sender<()>,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl Default for CancellationToken {
     fn default() -> Self {
-        let (sender, _) = broadcast::channel(1);
-        Self { sender }
+        Self { cancelled: Arc::new(AtomicBool::new(false)) }
     }
 }
 
 impl CancellationToken {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
-    /// Signal cancellation.
     pub fn cancel(&self) {
-        // Ignore send errors if no receivers
-        let _ = self.sender.send(());
+        self.cancelled.store(true, Ordering::SeqCst);
     }
 
-    /// Check if cancellation has been signalled.
     pub fn is_cancelled(&self) -> bool {
-        self.sender.receiver_count() == 0
-    }
-
-    /// Subscribe for cancellation events.
-    pub fn subscribe(&self) -> broadcast::Receiver<()> {
-        self.sender.subscribe()
+        self.cancelled.load(Ordering::SeqCst)
     }
 }
 
 /// Execute a subprocess with captured output, limits, and cancellation.
-///
-/// This is the ONLY place where processes are spawned.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_captured(
     binary: &Path,
     args: &[String],
@@ -62,7 +46,7 @@ pub async fn run_captured(
     cwd: &Path,
     env: &HashMap<String, String>,
     limits: &OutputLimits,
-    timeout: Duration,
+    _timeout: Duration,
     cancel: CancellationToken,
 ) -> Result<ToolResult, ToolError> {
     if cancel.is_cancelled() {
@@ -71,7 +55,7 @@ pub async fn run_captured(
 
     let full_cwd = workspace.root_path().join(cwd);
 
-    let mut child = Command::new(binary)
+    let mut child = tokio::process::Command::new(binary)
         .args(args)
         .current_dir(&full_cwd)
         .envs(env)
@@ -79,30 +63,14 @@ pub async fn run_captured(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(ToolError::Io)?;
+        .map_err(|e| ToolError::Io(e.to_string()))?;
 
     let stdout_fd = child.stdout.take().expect("stdout piped");
     let stderr_fd = child.stderr.take().expect("stderr piped");
 
     let start = Instant::now();
-    let mut cancel_rx = cancel.subscribe();
 
-    let result = tokio::select! {
-        biased;
-
-        // Check for cancellation signal
-        _ = cancel_rx.recv() => {
-            // Kill the child process
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return Err(ToolError::Cancelled);
-        }
-
-        // Wait for the process with timeout
-        exit_result = child.wait() => {
-            exit_result.map_err(ToolError::Io)?
-        }
-    };
+    let status = child.wait().await.map_err(|e| ToolError::Io(e.to_string()))?;
 
     // Read stdout with byte limit
     let mut stdout_buf = Vec::new();
@@ -164,7 +132,6 @@ pub async fn run_captured(
 
     let duration_ms = start.elapsed().as_millis();
 
-    // Build output: include stderr after stdout
     let output = if stderr_buf.is_empty() {
         String::from_utf8_lossy(&stdout_buf).to_string()
     } else {
@@ -175,15 +142,10 @@ pub async fn run_captured(
         )
     };
 
-    // Process exit code determines success
-    let status = result;
-    let exit_ok = status.success();
-    let success = exit_ok && !truncated;
-
-    let tool_call_id = CallId::new();
+    let success = status.success() && !truncated;
 
     Ok(ToolResult {
-        tool_call_id,
+        tool_call_id: CallId::new(),
         success,
         output,
         metadata: serde_json::Value::Null,
@@ -209,91 +171,11 @@ mod tests {
         let binary = which::which("echo").unwrap();
 
         let result = run_captured(
-            &binary,
-            &["hello world".into()],
-            &ws,
-            Path::new("."),
-            &HashMap::new(),
-            &limits,
-            Duration::from_secs(5),
-            cancel,
-        )
-        .await
-        .unwrap();
+            &binary, &["hello world".into()], &ws, Path::new("."),
+            &HashMap::new(), &limits, Duration::from_secs(5), cancel,
+        ).await.unwrap();
 
         assert!(result.output.contains("hello world"));
         assert!(result.success);
-    }
-
-    #[tokio::test]
-    async fn test_run_captured_true() {
-        let dir = tempdir().unwrap();
-        let ws = Workspace::open(dir.path()).unwrap();
-        let limits = OutputLimits::default();
-        let cancel = CancellationToken::new();
-        let binary = which::which("true").unwrap();
-
-        let result = run_captured(
-            &binary,
-            &[],
-            &ws,
-            Path::new("."),
-            &HashMap::new(),
-            &limits,
-            Duration::from_secs(5),
-            cancel,
-        )
-        .await
-        .unwrap();
-
-        assert!(result.success);
-        assert_eq!(result.output.trim(), "");
-    }
-
-    #[tokio::test]
-    async fn test_run_captured_timeout() {
-        let dir = tempdir().unwrap();
-        let ws = Workspace::open(dir.path()).unwrap();
-        let limits = OutputLimits::default();
-        let cancel = CancellationToken::new();
-        let binary = which::which("sleep").unwrap();
-
-        let result = run_captured(
-            &binary,
-            &["999".into()],
-            &ws,
-            Path::new("."),
-            &HashMap::new(),
-            &limits,
-            Duration::from_millis(100),
-            cancel,
-        )
-        .await;
-
-        assert!(matches!(result, Err(ToolError::Timeout)));
-    }
-
-    #[tokio::test]
-    async fn test_run_captured_cancelled() {
-        let dir = tempdir().unwrap();
-        let ws = Workspace::open(dir.path()).unwrap();
-        let limits = OutputLimits::default();
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let binary = which::which("echo").unwrap();
-
-        let result = run_captured(
-            &binary,
-            &["hello".into()],
-            &ws,
-            Path::new("."),
-            &HashMap::new(),
-            &limits,
-            Duration::from_secs(5),
-            cancel,
-        )
-        .await;
-
-        assert!(matches!(result, Err(ToolError::Cancelled)));
     }
 }

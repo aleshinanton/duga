@@ -2,10 +2,7 @@
 resolver = "2"
 members = [
     "crates/*",
-    "crates/duga-llm/*",
     "crates/duga-tools-builtin",
-    "plugins-examples/*",
-    "xtask",
 ]
 
 [workspace.package]
