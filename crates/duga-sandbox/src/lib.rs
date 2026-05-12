@@ -13,3 +13,8 @@ pub mod env;
 pub mod shell_session;
 pub mod exec;
 pub mod error;
+
+pub use error::{BinaryError, ShellSessionError, WorkspaceError};
+pub use exec::{run_captured, CancellationToken};
+pub use shell_session::{SessionCommand, ShellSession};
+pub use workspace::Workspace;
