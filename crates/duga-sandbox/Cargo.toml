@@ -1,0 +1,21 @@
+[package]
+name = "duga-sandbox"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Capability-based sandboxing for the duga agent runtime"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+duga-types = { path = "../duga-types" }
+cap-std = "1"
+tokio = { version = "1", features = ["process", "rt", "sync", "time", "macros"] }
+which = "6"
+tracing = "0.1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+
+[dev-dependencies]
+tokio-test = "0.4"
