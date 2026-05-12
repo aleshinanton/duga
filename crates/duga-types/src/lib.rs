@@ -13,6 +13,7 @@
 pub mod message;
 pub mod tool_call;
 pub mod tool_schema;
+pub mod tool_result;
 pub mod error;
 pub mod config;
 pub mod llm;

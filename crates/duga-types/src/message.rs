@@ -95,6 +95,19 @@ impl Message {
     }
 }
 
+/// The content of an assistant turn: optional text plus tool calls.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AssistantMessage {
+    pub text: Option<String>,
+    pub tool_calls: Vec<ToolCall>,
+}
+
+impl AssistantMessage {
+    pub fn is_termination(&self) -> bool {
+        self.tool_calls.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
