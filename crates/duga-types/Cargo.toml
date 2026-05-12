@@ -1,0 +1,15 @@
+[package]
+name = "duga-types"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Core wire and on-the-loop datatypes for duga"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "0.8", features = ["uuid1"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["serde"] }
+thiserror = "1"
