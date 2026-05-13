@@ -37,7 +37,7 @@ Beyond the basic agent loop, the bot provides:
 - **Types involved:** `RuntimeBuilder`, `RuntimeConfig`, `BuiltRuntime`, `AgentLoop`, `ProviderSelection`, `Skill`, `PersistentMemory`, `ToolConfirmationHook`, `ConfirmationPolicy`
 - **Functions to implement:**
   - `resolve_provider(config: &Config) -> Result<ProviderSelection>`
-  - `build_llm(selection: &ProviderSelection) -> Result<Arc<dyn LlmClient>>`
+  - `build_llm(selection: &ProviderSelection) -> Result<Arc<dyn LlmClient>>` — supports: `openai`, `anthropic`, `deepseek` (OpenAI-compatible at api.deepseek.com), `dummy`
   - `build_dispatcher(config: &Config, workspace: Arc<Workspace>) -> Result<Arc<ToolDispatcher>>`
   - `build_agent(config: Config, extra_sink: Arc<dyn EventSink>) -> Result<AgentLoop>`
   - `load_persistent_memory(workspace: &Path, chat_dir: Option<&Path>) -> String` — reads MEMORY.md files
@@ -47,13 +47,15 @@ Beyond the basic agent loop, the bot provides:
 - **Dependencies:** TASK-12.5, TASK-8.3, TASK-8.4, TASK-6.x (Memory)
 - **Implementation steps:**
   1. Create `duga-runtime` crate with dependencies currently duplicated by `duga-harness`.
-  2. Move provider/model routing into `providers.rs`.
-  3. Move built-in tool and plugin registration into `tools.rs`.
-  4. Move memory/summarizer/event-sink assembly into `agent.rs`.
-  5. **Implement MEMORY.md loading:** read `workspace/MEMORY.md` (global) and optionally `workspace/<chat>/MEMORY.md` (per-chat). Inject into system prompt as "### Current Memory" section. Agent updates MEMORY.md via existing `write`/`edit` tools.
-  6. **Implement SKILL.md loading:** walk `skills/` directories, parse YAML frontmatter (`name`, `description`), resolve `{baseDir}` placeholder to the skill's directory path, inject into system prompt. Channel skills override workspace skills on name collision.
-  7. **Implement tool confirmation hook:** `ConfirmationPolicy` struct with `require_confirmation_for: Vec<String>` (tool names). Register a hook in `ToolDispatcher` that pauses tool dispatch and calls an async callback. Frontends provide the callback (Telegram sends inline button prompt, TUI shows modal dialog). Timeout-based denial after configurable period (default 60s).
-  8. Update `duga-harness` to become a thin CLI wrapper.
+  2. Move provider/model routing into `providers.rs`. Register DeepSeek (`provider: "deepseek"`) — reuses `OpenAiClient` with `base_url = "https://api.deepseek.com"`, API key from `DEEPSEEK_API_KEY` env var.
+  3. **Thinking level resolution:** map `thinking_level` config (`off`, `low`, `medium`, `high`, `xhigh`) to provider-specific thinking budget tokens. For Anthropic: `low=1024`, `medium=4096`, `high=8192`, `xhigh=16384`. For OpenAI/DeepSeek: `off` disables reasoning, else passes `reasoning_effort` parameter. Default: `off` (no extended thinking).
+  4. **Context window resolution:** if `context_window` is explicitly set in config, use it. Otherwise use provider+model defaults: Claude Sonnet 4 → 200K, GPT-4.1 → 128K, DeepSeek V3 → 64K, DeepSeek R1 → 128K. The context window feeds into `Memory::max_tokens` for budget tracking.
+  5. Move built-in tool and plugin registration into `tools.rs`.
+  6. Move memory/summarizer/event-sink assembly into `agent.rs`.
+  7. **Implement MEMORY.md loading:** read `workspace/MEMORY.md` (global) and optionally `workspace/<chat>/MEMORY.md` (per-chat). Inject into system prompt as "### Current Memory" section. Agent updates MEMORY.md via existing `write`/`edit` tools.
+  8. **Implement SKILL.md loading:** walk `skills/` directories, parse YAML frontmatter (`name`, `description`), resolve `{baseDir}` placeholder to the skill's directory path, inject into system prompt. Channel skills override workspace skills on name collision.
+  9. **Implement tool confirmation hook:** `ConfirmationPolicy` struct with `require_confirmation_for: Vec<String>` (tool names). Register a hook in `ToolDispatcher` that pauses tool dispatch and calls an async callback. Frontends provide the callback (Telegram sends inline button prompt, TUI shows modal dialog). Timeout-based denial after configurable period (default 60s).
+  10. Update `duga-harness` to become a thin CLI wrapper.
 - **Definition of Done:** `duga-harness` behavior is unchanged. Frontend crates can build an agent with persistent memory, skills, and confirmation hooks without copying code.
 - **Acceptance criteria:**
   - CLI still runs with existing YAML config.
@@ -78,6 +80,12 @@ Beyond the basic agent loop, the bot provides:
 - **Functions to implement:** config struct + validation
 - **Proposed YAML:**
   ```yaml
+  # Top-level provider config (shared by all frontends)
+  provider: "deepseek"
+  model: "deepseek-chat"
+  thinking_level: "off"         # off | low | medium | high | xhigh
+  context_window: 64000          # override model default (optional)
+  
   telegram:
     token_env: "TELEGRAM_BOT_TOKEN"
     allowed_chat_ids:
@@ -99,11 +107,14 @@ Beyond the basic agent loop, the bot provides:
 - **Dependencies:** TASK-12.1, TASK-12.3
 - **Implementation steps:**
   1. Add `telegram: Option<TelegramConfig>` to `Config`.
-  2. Validate `token_env` is non-empty when Telegram is configured.
-  3. Validate `allowed_chat_ids` is non-empty unless `allow_all_chats_for_dev` is true.
-  4. Validate `events_dir` path (create on startup if needed).
-  5. Validate `attachments.max_file_size_mb` is > 0 and ≤ 50 (Telegram's limit is 50MB).
-  6. Warn if token env var name matches secret pattern.
+  2. Add `thinking_level: Option<String>` and `context_window: Option<usize>` to top-level `Config`.
+  3. Validate `token_env` is non-empty when Telegram is configured.
+  4. Validate `allowed_chat_ids` is non-empty unless `allow_all_chats_for_dev` is true.
+  5. Validate `thinking_level` is one of: `off`, `low`, `medium`, `high`, `xhigh` (case-insensitive). Default to `off`.
+  6. Validate `context_window` if set: must be ≥ 4096 and ≤ 1,000,000. If unset, use model default from provider resolution.
+  7. Validate `events_dir` path (create on startup if needed).
+  8. Validate `attachments.max_file_size_mb` is > 0 and ≤ 50 (Telegram's limit is 50MB).
+  9. Warn if token env var name matches secret pattern.
 - **Definition of Done:** Telegram config parses and validation catches unsafe defaults.
 - **Acceptance criteria:**
   - Missing token env name → validation error.
@@ -565,7 +576,7 @@ Beyond the basic agent loop, the bot provides:
 
 | Task | Name | Est. Hours |
 |------|------|------------|
-| TASK-16.1 | Extract shared runtime — providers, tools, agent, **+MEMORY.md, +SKILL.md, +confirmation hooks** | 12 |
+| TASK-16.1 | Extract shared runtime — providers (openai, anthropic, **deepseek**, dummy), tools, agent, **+MEMORY.md, +SKILL.md, +confirmation hooks** | 12 |
 | TASK-16.2 | Telegram config struct + validation | 4 |
 | TASK-16.2a | Docker sandbox executor in `duga-sandbox` (shared) | 6 |
 | TASK-16.3 | `duga-telegram-bot` crate + teloxide/grammy startup | 5 |
@@ -580,6 +591,17 @@ Beyond the basic agent loop, the bot provides:
 | TASK-16.12 | Bot message logging (log.jsonl + context.jsonl) | 3 |
 | TASK-16.13 | Integration tests and docs | 6 |
 | **Total** | | **83 hours** |
+
+### Supported LLM providers
+
+| Provider | Config key | API base URL | Auth env var | Default context window | Thinking levels | Implementation |
+|----------|-----------|-------------|-------------|----------------------|----------------|----------------|
+| OpenAI | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | 128K (GPT-4.1) | `off`, `low`, `medium`, `high` (reasoning_effort) | `OpenAiClient` |
+| Anthropic | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | 200K (Sonnet 4) | `off`, `low`=1024, `medium`=4096, `high`=8192, `xhigh`=16384 tokens | `AnthropicClient` |
+| **DeepSeek** | `deepseek` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | 64K (V3), 128K (R1) | `off` (no extended thinking) | `OpenAiClient` (OpenAI-compatible) |
+| Dummy | `dummy` | N/A | None | 4096 | N/A | `DummyClient` (testing only) |
+
+Thinking level tokens count toward the model's context window and are tracked in usage telemetry. When `thinking_level` is `off`, no extended thinking tokens are consumed. For Anthropic, the thinking budget is passed as `thinking.budget_tokens` in the API request. For OpenAI, `reasoning_effort` parameter is set accordingly.
 
 ### Shared infrastructure (implemented in other epics, used by EPIC-16)
 
