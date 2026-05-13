@@ -17,7 +17,7 @@ pub struct ToolResult {
     pub output: String,
     #[serde(flatten)]
     pub metadata: serde_json::Value,
-    pub duration_ms: u128,
+    pub duration_ms: u64,
     pub stdout_bytes: u64,
     pub stderr_bytes: u64,
     pub truncated: bool,
@@ -30,7 +30,7 @@ pub struct ToolResultBuilder {
     success: bool,
     output: String,
     metadata: serde_json::Value,
-    duration_ms: u128,
+    duration_ms: u64,
     stdout_bytes: u64,
     stderr_bytes: u64,
     truncated: bool,
@@ -71,7 +71,7 @@ impl ToolResultBuilder {
     }
 
     pub fn duration_ms(&mut self, duration_ms: u128) -> &mut Self {
-        self.duration_ms = duration_ms;
+        self.duration_ms = duration_ms.min(u64::MAX as u128) as u64;
         self
     }
 

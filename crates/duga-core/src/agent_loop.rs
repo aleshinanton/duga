@@ -66,6 +66,7 @@ impl AgentLoop {
         let started = Instant::now();
         let mut tool_calls = 0;
 
+        tracing::info!(task = %task, "Agent run started");
         self.emit(Event::AgentStarted { task: task.clone() })
             .await?;
         self.memory.push_user(task);
@@ -78,6 +79,14 @@ impl AgentLoop {
                 return self.fatal(error).await;
             }
 
+            let memory_tokens = self.memory.token_count(self.llm.as_ref());
+            tracing::info!(
+                step,
+                tool_calls_count = tool_calls,
+                tokens_used = memory_tokens,
+                duration_ms = started.elapsed().as_millis(),
+                "Loop iteration"
+            );
             self.emit(Event::StepStarted { step }).await?;
 
             let messages = self.memory.messages();
@@ -89,6 +98,7 @@ impl AgentLoop {
             })
             .await?;
 
+            let llm_started = Instant::now();
             let response = match self
                 .call_llm(&messages, &schemas, started, &cancellation)
                 .await
@@ -96,6 +106,12 @@ impl AgentLoop {
                 Ok(response) => response,
                 Err(error) => return self.fatal(error).await,
             };
+            tracing::info!(
+                llm_latency_ms = llm_started.elapsed().as_millis(),
+                prompt_tokens = response.usage.prompt,
+                completion_tokens = response.usage.completion,
+                "LLM response"
+            );
             let assistant = response.message;
             self.emit(Event::LlmResponse {
                 model: self.llm.model().into(),
@@ -111,6 +127,11 @@ impl AgentLoop {
                     text: assistant.text.clone(),
                 })
                 .await?;
+                tracing::info!(
+                    result = %assistant.text.clone().unwrap_or_default(),
+                    duration_ms = started.elapsed().as_millis(),
+                    "Agent finished"
+                );
                 return Ok(AgentRunResult {
                     message: assistant,
                     steps: step,
@@ -195,6 +216,8 @@ impl AgentLoop {
             .get(&call.tool)
             .map(|tool| tool.retryable)
             .unwrap_or(false);
+        let span = tracing::info_span!("tool_call", tool = %call.tool, id = %call.id);
+        let _entered = span.enter();
         let max_attempts = self.config.limits.retry_on_error + 1;
         let mut last_error = None;
 
@@ -225,6 +248,11 @@ impl AgentLoop {
 
             match outcome {
                 Ok(result) => {
+                    tracing::info!(
+                        tool_duration_ms = result.duration_ms,
+                        tool_success = result.success,
+                        "Tool finished"
+                    );
                     self.emit(Event::ToolCallFinished {
                         result: result.clone(),
                         attempt,
@@ -234,12 +262,22 @@ impl AgentLoop {
                 }
                 Err(error) if attempt < max_attempts && retryable && error.is_transient() => {
                     let result = tool_error_result(call, error.clone(), started);
+                    tracing::info!(
+                        tool_duration_ms = result.duration_ms,
+                        tool_success = false,
+                        "Tool retry scheduled"
+                    );
                     self.emit(Event::ToolCallFinished { result, attempt })
                         .await?;
                     last_error = Some(error);
                 }
                 Err(error) => {
                     let result = tool_error_result(call, error, started);
+                    tracing::info!(
+                        tool_duration_ms = result.duration_ms,
+                        tool_success = false,
+                        "Tool finished"
+                    );
                     self.emit(Event::ToolCallFinished {
                         result: result.clone(),
                         attempt,
@@ -269,10 +307,20 @@ impl AgentLoop {
         }
 
         let before = self.memory.token_count(self.llm.as_ref());
+        tracing::info!(
+            memory_tokens = before,
+            max_tokens = self.memory.max_tokens(),
+            "Memory budget check"
+        );
         self.memory
             .compress(self.summarizer.as_ref(), self.llm.as_ref())
             .await?;
         let after = self.memory.token_count(self.llm.as_ref());
+        tracing::info!(
+            before_tokens = before,
+            after_tokens = after,
+            "Memory compressed"
+        );
         self.emit(Event::MemoryCompressed {
             before_tokens: before,
             after_tokens: after,

@@ -1,0 +1,20 @@
+[package]
+name = "duga-config"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "YAML configuration loading and validation for duga"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+duga-plugin-abi = { path = "../duga-plugin-abi" }
+duga-sandbox = { path = "../duga-sandbox" }
+duga-types = { path = "../duga-types" }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+

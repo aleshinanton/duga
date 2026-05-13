@@ -56,6 +56,10 @@ impl Memory {
         self.compress_at_ratio
     }
 
+    pub fn max_tokens(&self) -> usize {
+        self.max_tokens
+    }
+
     pub fn pinned_task(&self) -> Option<&str> {
         self.pinned_task.as_deref()
     }

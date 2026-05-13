@@ -1,0 +1,22 @@
+[package]
+name = "duga-plugin-host"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Host-side plugin loading and Tool adapter for duga"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+duga-plugin-abi = { path = "../duga-plugin-abi", features = ["host"] }
+duga-sandbox = { path = "../duga-sandbox" }
+duga-tools = { path = "../duga-tools" }
+duga-types = { path = "../duga-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+thiserror = "1"
+tokio = { version = "1", features = ["rt", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,17 +1,18 @@
 [package]
-name = "duga-events"
+name = "duga-replay"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
-description = "Event types and sinks for duga"
+description = "Replay log reader and CLI for duga"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
+duga-events = { path = "../duga-events" }
+duga-llm = { path = "../duga-llm" }
 duga-types = { path = "../duga-types" }
-serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 thiserror = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 tempfile = "3"

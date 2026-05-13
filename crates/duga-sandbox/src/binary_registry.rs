@@ -38,6 +38,24 @@ impl BinaryRegistry {
         Ok(Self { allowed })
     }
 
+    /// Build a registry from validated absolute binary paths.
+    pub fn from_paths(paths: &[PathBuf]) -> Result<Self, BinaryError> {
+        let mut allowed = HashMap::new();
+        for path in paths {
+            if !path.is_absolute() || !path.is_file() {
+                return Err(BinaryError::NotFound(path.display().to_string()));
+            }
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| BinaryError::NotFound(path.display().to_string()))?
+                .to_string();
+            let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            allowed.insert(name, canonical);
+        }
+        Ok(Self { allowed })
+    }
+
     /// Resolve an allowed binary name to its absolute path.
     pub fn resolve(&self, name: &str) -> Result<&Path, BinaryError> {
         self.allowed
@@ -112,5 +130,13 @@ mod tests {
         let reg = BinaryRegistry::new(&["echo".into(), "true".into(), "false".into()]).unwrap();
         assert_eq!(reg.len(), 3);
         assert!(!reg.is_empty());
+    }
+
+    #[test]
+    fn test_registry_from_absolute_paths() {
+        let echo = which::which("echo").unwrap();
+        let reg = BinaryRegistry::from_paths(&[echo.clone()]).unwrap();
+        let name = echo.file_name().unwrap().to_str().unwrap();
+        assert!(reg.resolve(name).unwrap().is_absolute());
     }
 }

@@ -27,10 +27,37 @@ No hardcoded workflows. No orchestration DAGs. Just a bounded, observable, repla
 cargo build --release
 
 # Run with a config
-./harness --config config.yaml "Your task here"
+./target/release/duga-harness --config config.yaml "Your task here"
 
 # Build a plugin
 cargo build --target wasm32-wasip2 --release
+```
+
+## Configuration
+
+The harness reads YAML config with a provider and model:
+
+```yaml
+provider: "openai"
+model: "gpt-4o-mini"
+```
+
+Hosted OpenAI and Anthropic require their API keys:
+
+```bash
+export OPENAI_API_KEY="..."
+export ANTHROPIC_API_KEY="..."
+```
+
+Use one optional `BASE_URL` for OpenAI-compatible APIs. For local run:
+
+```yaml
+provider: "openai"
+model: "qwen3.6:27b-coding-nvfp4"
+```
+
+```bash
+BASE_URL=http://localhost:11434/v1 ./target/release/duga-harness --config duga-config.yaml "Your task"
 ```
 
 ## Philosophy

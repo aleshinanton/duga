@@ -1,6 +1,8 @@
 //! LLM provider boundary for duga.
 
+pub mod anthropic;
 pub mod dummy;
+pub mod openai;
 pub mod registry;
 
 use duga_events::EventSink;
@@ -10,6 +12,8 @@ use duga_types::tool_schema::ToolSchema;
 use std::future::Future;
 use std::pin::Pin;
 
+pub use anthropic::AnthropicClient;
+pub use openai::OpenAiClient;
 pub use registry::{ProviderRegistry, ProviderRegistryError};
 
 pub type ChatFuture<'a> = Pin<Box<dyn Future<Output = Result<LlmResponse, LlmError>> + Send + 'a>>;
@@ -66,4 +70,16 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
                 .sum::<usize>()
         })
         .sum()
+}
+
+pub(crate) fn message_text(message: &Message) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::ToolCall(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

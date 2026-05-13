@@ -3,6 +3,7 @@
 pub mod agent_loop;
 pub mod memory;
 pub mod summarizer;
+pub mod testing;
 
 pub use agent_loop::{AgentLoop, AgentRunResult};
 pub use memory::Memory;

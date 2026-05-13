@@ -1,0 +1,32 @@
+package duga:plugin@0.1.0;
+
+interface tool {
+    record tool-info {
+        name: string,
+        description: string,
+        /// JSON Schema (Draft 2020-12) for the tool's argument object.
+        args-schema: string,
+    }
+
+    record invocation {
+        /// JSON-encoded arguments, already validated against args-schema.
+        args-json: string,
+        /// Workspace-relative paths the plugin may read/write. Enforced
+        /// host-side; the plugin sees a pre-opened directory at fd 3.
+        workspace-root: string,
+    }
+
+    record outcome {
+        success: bool,
+        output: string,
+        metadata-json: string,
+    }
+
+    info: func() -> tool-info;
+    execute: func(inv: invocation) -> result<outcome, string>;
+}
+
+world plugin {
+    export tool;
+}
+

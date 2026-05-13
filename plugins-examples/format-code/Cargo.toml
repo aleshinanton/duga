@@ -1,0 +1,15 @@
+[package]
+name = "format-code"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+duga-plugin-abi = { path = "../../crates/duga-plugin-abi", features = ["guest"] }
+serde_json = "1"

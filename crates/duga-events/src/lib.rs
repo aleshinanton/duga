@@ -52,6 +52,10 @@ pub enum Event {
         text: Option<String>,
         tool_calls: Vec<ToolCall>,
     },
+    LlmTokenDelta {
+        model: String,
+        delta: String,
+    },
     ToolCallStarted {
         tool_call: ToolCall,
         attempt: u32,
@@ -72,7 +76,10 @@ pub enum Event {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct StoredEvent {
     pub seq: u64,
-    pub timestamp_ms: u128,
+    #[serde(default)]
+    pub ts: String,
+    #[serde(default)]
+    pub timestamp_ms: u64,
     #[serde(flatten)]
     pub event: Event,
 }
@@ -81,6 +88,7 @@ impl StoredEvent {
     pub fn new(seq: u64, event: Event) -> Self {
         Self {
             seq,
+            ts: now_rfc3339(),
             timestamp_ms: now_ms(),
             event,
         }
@@ -152,6 +160,7 @@ impl EventSink for JsonlSink {
     fn emit<'a>(&'a self, event: Event) -> EventFuture<'a> {
         Box::pin(async move {
             let stored = StoredEvent::new(self.seq.next(), event);
+            validate_stored_event(&stored)?;
             let line = serde_json::to_string(&stored)?;
             let mut file = self.file.lock().map_err(|_| EventError::Sink {
                 sink: self.name.clone(),
@@ -303,11 +312,29 @@ impl EventSink for RedactingSink {
     }
 }
 
-fn now_ms() -> u128 {
+fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+fn validate_stored_event(event: &StoredEvent) -> Result<(), EventError> {
+    let value = serde_json::to_value(event)?;
+    for field in ["seq", "ts", "type"] {
+        if value.get(field).is_none() {
+            return Err(EventError::Sink {
+                sink: "jsonl".into(),
+                message: format!("stored event missing required field '{field}'"),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -402,6 +429,7 @@ mod tests {
         let contents = std::fs::read_to_string(path).unwrap();
         let stored: StoredEvent = serde_json::from_str(contents.trim()).unwrap();
         assert_eq!(stored.seq, 1);
+        assert!(!stored.ts.is_empty());
         assert_eq!(
             stored.event,
             Event::AgentFinished {

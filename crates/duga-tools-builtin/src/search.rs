@@ -65,7 +65,7 @@ impl Tool for SearchTool {
             success: true,
             output,
             metadata: serde_json::json!({}),
-            duration_ms: start.elapsed().as_millis(),
+            duration_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
             stdout_bytes: 0,
             stderr_bytes: 0,
             truncated: false,
