@@ -66,7 +66,7 @@ impl Default for ProgressMode {
 pub struct FrontendConfig {
     #[serde(default)]
     pub progress_mode: ProgressMode,
-    #[serde(default = "default_confirmation_timeout")]
+    #[serde(with = "duration_format", default = "default_confirmation_timeout")]
     pub confirmation_timeout: Duration,
 }
 
