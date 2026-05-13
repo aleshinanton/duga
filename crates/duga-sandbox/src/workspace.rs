@@ -91,6 +91,52 @@ impl Workspace {
             Ok(resolved)
         }
     }
+
+    // ── TASK-5.4: Directory and path utility methods ─────────────────────
+
+    /// Create a directory and all of its parent components.
+    pub fn create_dir_all(&self, path: &Path) -> Result<(), WorkspaceError> {
+        let resolved = self.resolve(path)?;
+        self.root_dir.create_dir_all(&resolved).map_err(Into::into)
+    }
+
+    /// Remove a file.
+    pub fn remove_file(&self, path: &Path) -> Result<(), WorkspaceError> {
+        let resolved = self.resolve(path)?;
+        self.root_dir.remove_file(&resolved).map_err(Into::into)
+    }
+
+    /// Check whether a path exists within the workspace.
+    pub fn exists(&self, path: &Path) -> bool {
+        match self.resolve(path) {
+            Ok(resolved) => self.root_dir.metadata(&resolved).is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    /// Check whether a path is a regular file.
+    pub fn is_file(&self, path: &Path) -> bool {
+        match self.resolve(path) {
+            Ok(resolved) => self
+                .root_dir
+                .metadata(&resolved)
+                .map(|m| m.is_file())
+                .unwrap_or(false),
+            Err(_) => false,
+        }
+    }
+
+    /// Check whether a path is a directory.
+    pub fn is_dir(&self, path: &Path) -> bool {
+        match self.resolve(path) {
+            Ok(resolved) => self
+                .root_dir
+                .metadata(&resolved)
+                .map(|m| m.is_dir())
+                .unwrap_or(false),
+            Err(_) => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -174,5 +220,81 @@ mod tests {
         let ws = Workspace::open(dir.path()).unwrap();
         let resolved = ws.resolve(Path::new("foo//bar")).unwrap();
         assert_eq!(resolved, PathBuf::from("foo/bar"));
+    }
+
+    // ── TASK-5.4 tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_create_dir_all() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        ws.create_dir_all(Path::new("a/b/c")).unwrap();
+        assert!(ws.exists(Path::new("a/b/c")));
+        assert!(ws.is_dir(Path::new("a/b/c")));
+    }
+
+    #[test]
+    fn test_create_dir_all_idempotent() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        ws.create_dir_all(Path::new(".")).unwrap(); // no-op
+        assert!(ws.exists(Path::new(".")));
+    }
+
+    #[test]
+    fn test_write_and_remove_file() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        ws.create_dir_all(Path::new("sub")).unwrap();
+        // Use std::fs to create the file via the resolved workspace path
+        let resolved = ws.resolve(Path::new("sub/test.txt")).unwrap();
+        let full_path = ws.root_path().join(&resolved);
+        std::fs::write(&full_path, b"hello").unwrap();
+        assert!(ws.exists(Path::new("sub/test.txt")));
+        assert!(ws.is_file(Path::new("sub/test.txt")));
+        ws.remove_file(Path::new("sub/test.txt")).unwrap();
+        assert!(!ws.exists(Path::new("sub/test.txt")));
+    }
+
+    #[test]
+    fn test_exists_false_for_missing() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        assert!(!ws.exists(Path::new("nonexistent")));
+    }
+
+    #[test]
+    fn test_is_file_false_for_dir() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        ws.create_dir_all(Path::new("mydir")).unwrap();
+        assert!(!ws.is_file(Path::new("mydir")));
+        assert!(ws.is_dir(Path::new("mydir")));
+    }
+
+    #[test]
+    fn test_is_dir_false_for_file() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let f = ws.root_dir().create("test.txt").unwrap();
+        drop(f);
+        assert!(!ws.is_dir(Path::new("test.txt")));
+        assert!(ws.is_file(Path::new("test.txt")));
+    }
+
+    #[test]
+    fn test_remove_file_escaping_path_rejected() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let result = ws.remove_file(Path::new("../etc/passwd"));
+        assert!(matches!(result, Err(crate::error::WorkspaceError::PathEscapesWorkspace(_))));
+    }
+
+    #[test]
+    fn test_create_dir_all_escaping_path_rejected() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let result = ws.create_dir_all(Path::new("../../evil"));
+        assert!(matches!(result, Err(crate::error::WorkspaceError::PathEscapesWorkspace(_))));
     }
 }
