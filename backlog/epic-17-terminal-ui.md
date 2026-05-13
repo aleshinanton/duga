@@ -8,6 +8,16 @@
 
 Add an interactive terminal UI frontend on top of the shared duga runtime. The TUI should provide a local chat/task interface, live agent progress, tool-call visibility, cancellation, replay browsing, and safe confirmation UX for risky operations without duplicating harness wiring.
 
+This epic relies on shared infrastructure from `duga-runtime` (TASK-16.1) and `duga-sandbox` (TASK-16.2a). The following features are **not duplicated** — they come from the shared crates:
+- **Provider resolution + LLM building** → `duga-runtime`
+- **Tool registration (builtins + WASM plugins)** → `duga-runtime`
+- **MEMORY.md persistent context** → `duga-runtime` (shared with Telegram, CLI)
+- **SKILL.md loading + prompt injection** → `duga-runtime` (shared with Telegram, CLI)
+- **Tool confirmation hooks** → `duga-runtime` (TUI provides the modal dialog UI)
+- **Docker sandbox executor** → `duga-sandbox` (shared with Telegram, CLI)
+- **SSE streaming** → `duga-llm` (shared)
+- **Real token counting** → `duga-llm` (shared)
+
 ---
 
 ### TASK-17.1: Create duga-tui crate with ratatui setup
@@ -25,7 +35,7 @@ Add an interactive terminal UI frontend on top of the shared duga runtime. The T
   - `main() -> anyhow::Result<()>`
   - `run_tui(config: Config) -> anyhow::Result<()>`
   - `draw(frame: &mut Frame, app: &App)`
-- **Dependencies:** TASK-16.1, TASK-12.6
+- **Dependencies:** TASK-16.1 (shared runtime: providers, tools, MEMORY.md, SKILL.md, confirmation hooks), TASK-16.2a (Docker sandbox), TASK-12.6
 - **Implementation steps:**
   1. Add crate to the workspace.
   2. Add `ratatui`, `crossterm`, `tokio`, `anyhow`, and `tracing-subscriber`.
@@ -45,7 +55,7 @@ Add an interactive terminal UI frontend on top of the shared duga runtime. The T
 
 - **§SPEC:** §32 (config loading), §26 (cancellation)
 - **Labels:** `layer/tui`, `layer/cli`, `priority/critical`
-- **Description:** Add optional TUI config for rendering mode, theme, progress verbosity, keybindings, and confirmation defaults. Implement guarded raw-mode and alternate-screen lifecycle.
+- **Description:** Add optional TUI config for rendering mode, theme, progress verbosity, keybindings, and confirmation defaults. Implement guarded raw-mode and alternate-screen lifecycle. Includes support for the shared Docker sandbox mode from `duga-sandbox` (TASK-16.2a).
 - **Files affected:**
   - `crates/duga-config/src/config.rs`
   - `crates/duga-tui/src/terminal.rs` (new)
@@ -209,12 +219,12 @@ Add an interactive terminal UI frontend on top of the shared duga runtime. The T
   - `render_tool_panel(frame, area, tool_call)`
   - `request_confirmation(tool_call) -> ConfirmationDecision`
   - `confirm_active()` / `deny_active()`
-- **Dependencies:** TASK-17.6
+- **Dependencies:** TASK-17.6, TASK-16.1 (shared confirmation hooks in `duga-runtime`)
 - **Implementation steps:**
   1. Track tool-call lifecycle from events.
-  2. Render collapsed and expanded tool views.
-  3. Add confirmation modal for configured risky tools.
-  4. Return deny/timeout as explicit tool errors.
+  2. Render collapsed and expanded tool views (output in transcript, details in side panel).
+  3. Wire the shared confirmation hook from `duga-runtime` — TUI provides a modal dialog callback. On tool requiring confirmation, show modal with tool name + args + [y/n] prompt. Accept `y`/`n` keys.
+  4. Return deny/timeout as explicit tool errors via the shared hook.
 - **Definition of Done:** Users can inspect and approve/deny risky local actions from the TUI.
 - **Acceptance criteria:**
   - Bash/write actions can require confirmation.
