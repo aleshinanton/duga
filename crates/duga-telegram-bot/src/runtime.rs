@@ -1,0 +1,106 @@
+//! Agent runtime integration for Telegram.
+//!
+//! Wires Telegram messages into the duga agent loop, attaching event bridges,
+//! JSONL replay sinks, and Telegram-specific context.
+
+use crate::log::BotLogger;
+use crate::render::TelegramEventRenderer;
+use anyhow::{Context, Result};
+use duga_config::{Config, TelegramConfig};
+use duga_events::{JsonlSink, RedactingSink};
+use duga_runtime::events::FrontendEventBridge;
+use duga_runtime::{build_agent, build_dispatcher, build_llm, resolve_provider};
+use duga_sandbox::Workspace;
+use std::sync::Arc;
+use teloxide::prelude::*;
+
+#[derive(Clone)]
+pub struct TelegramRuntime {
+    config: Config,
+}
+
+/// Request to run a task in a chat.
+pub struct RunRequest {
+    pub chat_id: i64,
+    pub task: String,
+}
+
+impl TelegramRuntime {
+    pub fn new(config: Config) -> Self {
+        Self { config }
+    }
+
+    /// Run the agent loop for a chat message and return the final text.
+    pub async fn run_task_for_chat(
+        &self,
+        chat_id: i64,
+        task: String,
+        bot: Bot,
+        telegram_config: &TelegramConfig,
+        _bot_logger: Arc<BotLogger>,
+    ) -> Result<String> {
+        let selection = resolve_provider(&self.config)?;
+        let llm = build_llm(&selection.provider, &selection.model)?;
+
+        let workspace =
+            Arc::new(Workspace::open(&self.config.workspace.root).context("opening workspace")?);
+
+        let dispatcher = build_dispatcher(&self.config, workspace.clone())?;
+
+        // Set up event bridges.
+        let (frontend_tx, frontend_bridge) = FrontendEventBridge::new(256);
+        let frontend_sink =
+            Arc::new(duga_runtime::events::FrontendEventSink::with_name(frontend_tx, "telegram"));
+
+        // JSONL replay sink for the chat.
+        let chat_dir = telegram_config.data_dir.join(chat_id.to_string());
+        tokio::fs::create_dir_all(&chat_dir).await?;
+        let jsonl_path = chat_dir.join("session.jsonl");
+        let jsonl_sink = Arc::new(JsonlSink::new(&jsonl_path)?);
+        let replay_sink = Arc::new(RedactingSink::new(jsonl_sink));
+
+        // Build frontend context for system prompt.
+        let system_prompt = format!(
+            "You are duga, a safe coding agent operating through Telegram.\n\
+             Chat ID: {chat_id}\n\
+             Use tools to accomplish the user's task.\n\
+             When using the bash tool, commands run in a sandboxed environment.\n\
+             Be concise — Telegram messages have length limits."
+        );
+
+        let mut agent = build_agent(
+            &self.config,
+            llm,
+            dispatcher,
+            workspace,
+            vec![frontend_sink, replay_sink],
+            Some(system_prompt),
+        )?;
+
+        // Extract the inner receiver from the bridge for the renderer.
+        let mut renderer_rx = frontend_bridge.into_inner();
+
+        // Spawn the renderer task.
+        let mut renderer = TelegramEventRenderer::new(bot.clone(), ChatId(chat_id));
+        let renderer_handle =
+            tokio::spawn(async move { renderer.run(&mut renderer_rx).await });
+
+        // Run the agent loop.
+        let cancellation = duga_sandbox::CancellationToken::new();
+        let result = agent.run(task.clone(), cancellation).await;
+
+        let _ = renderer_handle.await;
+
+        match result {
+            Ok(run_result) => {
+                let text = run_result.message.text.unwrap_or_default();
+                tracing::info!("chat {chat_id} run completed successfully");
+                Ok(text)
+            }
+            Err(e) => {
+                tracing::error!("chat {chat_id} run failed: {e}");
+                Err(anyhow::anyhow!("Agent run failed: {e}"))
+            }
+        }
+    }
+}

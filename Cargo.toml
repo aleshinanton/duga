@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/*",
+    "crates/duga-runtime",
+    "crates/duga-telegram-bot",
     "crates/duga-tools-builtin",
 ]
 

@@ -4,7 +4,8 @@ pub mod config;
 pub mod error;
 
 pub use config::{
-    Config, EnvironmentConfig, MemoryConfig, PluginConfig, PluginModuleConfig, SandboxConfig,
-    WasiCapabilities, WorkspaceConfig,
+    Config, EnvironmentConfig, FrontendConfig, MemoryConfig, PluginConfig, PluginModuleConfig,
+    ProgressMode, ProviderKind, SandboxConfig, SandboxMode, TelegramAttachmentConfig, TelegramConfig,
+    ThinkingLevel, WasiCapabilities, WorkspaceConfig,
 };
 pub use error::ConfigError;

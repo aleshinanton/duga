@@ -18,6 +18,7 @@ No hardcoded workflows. No orchestration DAGs. Just a bounded, observable, repla
 |----------|-------------|
 | [docs/architecture.md](docs/architecture.md) | Full architecture specification (core loop, tools, memory, sandbox, plugins, threat model) |
 | [docs/implementation-plan.md](docs/implementation-plan.md) | Implementation plan (crate tree, phases, testing strategy, GAP tracking) |
+| [docs/telegram-bot.md](docs/telegram-bot.md) | Telegram bot frontend setup and usage |
 | [docs/](docs/) | All documentation |
 
 ## Quick Start
@@ -59,6 +60,17 @@ model: "qwen3.6:27b-coding-nvfp4"
 ```bash
 BASE_URL=http://localhost:11434/v1 ./target/release/duga-harness --config duga-config.yaml "Your task"
 ```
+
+### Telegram Bot
+
+```bash
+# Build and run the Telegram bot
+cargo build --release -p duga-telegram-bot
+export TELEGRAM_BOT_TOKEN="your-bot-token"
+./target/release/duga-telegram-bot --config duga.yaml
+```
+
+See [docs/telegram-bot.md](docs/telegram-bot.md) for full configuration, triggers, commands, safety model, and scheduled events.
 
 ## Philosophy
 

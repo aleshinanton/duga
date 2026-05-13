@@ -254,8 +254,13 @@ mod tests {
         Config {
             provider: None,
             model: model.into(),
+            thinking_level: duga_config::ThinkingLevel::default(),
+            context_window: None,
             agent: duga_types::config::AgentConfig::default(),
             sandbox: duga_config::SandboxConfig {
+                mode: duga_config::SandboxMode::default(),
+                container: None,
+                workspace_mount: None,
                 timeout: std::time::Duration::from_secs(1),
                 allowed_binaries: vec![],
             },
@@ -271,6 +276,8 @@ mod tests {
                 dir: "./plugins".into(),
                 modules: vec![],
             },
+            frontend: duga_config::FrontendConfig::default(),
+            telegram: None,
         }
     }
 }

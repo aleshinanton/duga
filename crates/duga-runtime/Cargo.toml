@@ -1,0 +1,29 @@
+[package]
+name = "duga-runtime"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Shared runtime composition for duga frontends (CLI, Telegram, TUI)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+duga-config = { path = "../duga-config" }
+duga-core = { path = "../duga-core" }
+duga-events = { path = "../duga-events" }
+duga-llm = { path = "../duga-llm" }
+duga-plugin-host = { path = "../duga-plugin-host" }
+duga-sandbox = { path = "../duga-sandbox" }
+duga-tools = { path = "../duga-tools" }
+duga-tools-builtin = { path = "../duga-tools-builtin" }
+duga-types = { path = "../duga-types" }
+anyhow = "1"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "1"
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
