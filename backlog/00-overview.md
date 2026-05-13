@@ -26,7 +26,9 @@
 | EPIC-13 | Observability | 5 | §24, §25, §31 | 20 |
 | EPIC-14 | Testing Harness | 6 | §6a, §6b, §25 | 24 |
 | EPIC-15 | Build + CI | 6 | §33 | 24 |
-| **Total** | | **107** | | **440** |
+| EPIC-16 | Telegram Bot Frontend | 9 | §5, §24, §26, §32 | 36 |
+| EPIC-17 | Terminal UI Frontend | 9 | §5, §24, §26, §32 | 36 |
+| **Total** | | **125** | | **512** |
 
 ---
 
@@ -178,6 +180,31 @@ graph TD
     T15.3 --> T15.4[15.4 cargo-xtask build + dist commands]
     T15.4 --> T15.5[15.5 GitHub Actions CI matrix]
     T15.5 --> T15.6[15.6 cargo deny + clippy in CI]
+
+    %% Telegram bot frontend
+    T12.5 --> T16.1[16.1 Extract shared runtime composition]
+    T16.1 --> T16.2[16.2 Telegram config + validation]
+    T16.2 --> T16.3[16.3 duga-telegram-bot crate + teloxide setup]
+    T16.3 --> T16.4[16.4 Telegram auth + update handling]
+    T16.3 --> T16.5[16.5 Per-chat session manager + cancellation]
+    T7.2 --> T16.6[16.6 TelegramEventSink progress reporting]
+    T16.5 --> T16.7[16.7 Run AgentLoop per message]
+    T16.6 --> T16.7
+    T16.7 --> T16.8[16.8 Safety controls + tool confirmation]
+    T16.7 --> T16.9[16.9 Telegram bot integration tests]
+
+    %% Terminal UI frontend
+    T16.1 --> T17.1[17.1 duga-tui crate + ratatui setup]
+    T17.1 --> T17.2[17.2 TUI config + terminal startup]
+    T17.1 --> T17.3[17.3 App state + async event loop]
+    T17.3 --> T17.4[17.4 Transcript pane + input composer]
+    T7.2 --> T17.5[17.5 TuiEventSink + UI event mapping]
+    T17.3 --> T17.6[17.6 Run AgentLoop with cancellation]
+    T17.5 --> T17.6
+    T17.6 --> T17.7[17.7 Tool panels + confirmation dialogs]
+    T17.6 --> T17.8[17.8 Replay/session browser]
+    T17.7 --> T17.9[17.9 TUI integration tests + docs]
+    T17.8 --> T17.9
 ```
 
 ---
@@ -226,6 +253,8 @@ T14.1 → T14.2 → T14.3 → T14.4 → T14.5
 | **T11.9** Plugin cancellation | wasmtime fuel vs epoch choice (GAP G10); fuel is deterministic but may not interrupt infinite loops; epoch is wall-clock but non-deterministic | Plugin hangs block agent | Medium | Benchmark both approaches in P10. Default to fuel with generous limit; expose epoch as config option. Test with intentional infinite-loop plugin. |
 | **T2.2** Workspace path validation on macOS/Windows | cap_std `RESOLVE_BENEATH` only on Linux; macOS uses `O_NOFOLLOW` + manual checks; Windows uses `OBJ_DONT_REPARSE` | Path traversal on non-Linux | Medium | CI must run on all 3 OS. Test absolute path rejection, `..` traversal rejection, and symlink escape on each platform. File cap_std issues if behavior differs. |
 | **T10.3** LLM call cancellation | `tokio::select!` biased mode may starve LLM response; reqwest cancellation differs from tokio::process cancellation | Cancellation not responsive | Medium | Test with slow LLM mock that takes >1s. Verify cancellation returns within 100ms. Use `tokio::time::timeout` as backup. |
+| **T16.8** Telegram safety controls | Remote chat can trigger file writes or shell commands without local terminal context | Unsafe remote execution | High | Restrict allowed chat IDs, require per-tool confirmation for risky tools, default to final-only progress, and log decisions to JSONL replay. |
+| **T17.2** Terminal raw-mode restoration | Panic or cancellation can leave the terminal in raw/alternate-screen mode | Broken local terminal session | Medium | Use a terminal guard with Drop cleanup, install panic cleanup, and add smoke tests for startup/shutdown paths. |
 
 ---
 
@@ -289,6 +318,17 @@ T14.1 → T14.2 → T14.3 → T14.4 → T14.5
 | 28–29 | T15.5–T15.6, T4.10, T5.x integration | 16 |
 | 30 | Final integration, clippy clean, doc review | 8 |
 
+### Week 7 — Frontends (optional)
+
+| Day | Tasks | Hours |
+|-----|-------|-------|
+| 31 | T16.1–T16.3 | 12 |
+| 32 | T16.4–T16.6 | 12 |
+| 33 | T16.7–T16.9 | 12 |
+| 34 | T17.1–T17.3 | 12 |
+| 35 | T17.4–T17.6 | 12 |
+| 36 | T17.7–T17.9 | 12 |
+
 ---
 
 ## 6. GAP Resolution Required Before Tasks
@@ -314,6 +354,10 @@ Tasks blocked until their GAP is resolved:
 | G15 (hot reload) | T11.4 | Post-MVP; not blocking MVP |
 | G16 (platform cap_std) | T2.1, T2.2 | Confirm cap_std equivalents |
 | G17 (provider suite) | T8.8 | Mandatory conformance fixtures? |
+| G18 (Telegram session policy) | T16.5, T16.7 | One active run per chat, queue, or parallel runs? |
+| G19 (Telegram confirmation UX) | T16.8 | Pause tool call for confirm/deny, or fail and ask user to retry? |
+| G20 (TUI event loop model) | T17.3, T17.6 | Single async loop, actor model, or channels between UI/runtime tasks? |
+| G21 (TUI confirmation UX) | T17.7 | Modal confirmation, inline command, or side-panel approval flow? |
 
 ---
 
@@ -325,13 +369,15 @@ Applied consistently across all tasks:
 # Type
 epic/foundation, epic/security, epic/tools, epic/builtin-tools,
 epic/execution, epic/memory, epic/events, epic/llm, epic/validation,
-epic/loop, epic/wasm, epic/cli, epic/observability, epic/testing, epic/build
+epic/loop, epic/wasm, epic/cli, epic/observability, epic/testing,
+epic/build, epic/telegram, epic/tui
 
 # Layer
 layer/foundation, layer/security, layer/tools, layer/tools-builtin,
 layer/sandbox, layer/memory, layer/events, layer/llm,
 layer/validation, layer/loop, layer/wasm, layer/cli,
-layer/observability, layer/testing, layer/build
+layer/observability, layer/testing, layer/build, layer/frontend,
+layer/telegram, layer/tui
 
 # Priority
 priority/critical (MVP blocker, 52 tasks)
@@ -365,3 +411,5 @@ status/ready (unblocked, can be picked up)
 | `epic-13-observability.md` | EPIC-13: Observability (5 tasks) |
 | `epic-14-testing.md` | EPIC-14: Testing Harness (6 tasks) |
 | `epic-15-build-ci.md` | EPIC-15: Build + CI (6 tasks) |
+| `epic-16-telegram-bot.md` | EPIC-16: Telegram Bot Frontend (9 tasks) |
+| `epic-17-terminal-ui.md` | EPIC-17: Terminal UI Frontend (9 tasks) |
