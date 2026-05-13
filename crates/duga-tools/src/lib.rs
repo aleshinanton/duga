@@ -17,4 +17,5 @@ pub mod tool;
 
 pub use context::ToolContext;
 pub use dispatcher::{ToolDispatcher, ToolDispatcherError};
+pub use erased::ErasedTool;
 pub use tool::Tool;

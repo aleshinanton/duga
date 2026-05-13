@@ -1,19 +1,6 @@
-//! Event sink trait — for emitting tool events.
+//! Event sink compatibility exports for tool crates.
 
-pub trait EventSink: Send + Sync {
-    fn name(&self) -> &str {
-        "anonymous"
-    }
-}
-
-/// A no-op event sink for testing.
-pub struct NullSink;
-
-impl EventSink for NullSink {
-    fn name(&self) -> &str {
-        "null"
-    }
-}
+pub use duga_events::{Event, EventFuture, EventSink, NullSink};
 
 #[cfg(test)]
 mod tests {

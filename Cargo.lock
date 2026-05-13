@@ -166,8 +166,27 @@ dependencies = [
 name = "duga-core"
 version = "0.1.0"
 dependencies = [
+ "duga-events",
  "duga-llm",
+ "duga-sandbox",
+ "duga-tools",
  "duga-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "duga-events"
+version = "0.1.0"
+dependencies = [
+ "duga-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
  "tokio",
 ]
 
@@ -175,7 +194,10 @@ dependencies = [
 name = "duga-llm"
 version = "0.1.0"
 dependencies = [
+ "duga-events",
  "duga-types",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -199,6 +221,7 @@ dependencies = [
 name = "duga-tools"
 version = "0.1.0"
 dependencies = [
+ "duga-events",
  "duga-sandbox",
  "duga-types",
  "jsonschema",

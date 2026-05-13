@@ -39,8 +39,7 @@ pub trait Tool: Send + Sync {
 
     /// Generate the JSON Schema for the arguments.
     fn json_schema(&self) -> Value {
-        let schema = schemars::schema_for!(Self::Args);
-        serde_json::to_value(schema).expect("schema is always serializable")
+        crate::schema::generate_args_schema::<Self::Args>()
     }
 
     /// Build a `ToolSchema` from the tool's metadata.

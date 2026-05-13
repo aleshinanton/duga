@@ -3,7 +3,7 @@
 use crate::context::ToolContext;
 use crate::event_sink::EventSink;
 use crate::result::ToolCallResult;
-use crate::schema::deserialize_args;
+use crate::schema::{deserialize_args, sanitize_schema, validate_tool_args};
 use duga_sandbox::CancellationToken;
 use duga_sandbox::Workspace;
 use duga_types::error::ToolError;
@@ -47,7 +47,7 @@ impl<T: crate::tool::Tool + 'static> ErasedExecute for ErasedExecutor<T> {
                 Ok(a) => a,
                 Err(e) => {
                     return Err(ToolError::InvalidArgs(format!(
-                        "Deserialization failed: {}",
+                        "Argument deserialization failed: {}",
                         e
                     )));
                 }
@@ -84,7 +84,8 @@ impl ErasedTool {
     pub fn erase<T: crate::tool::Tool + 'static>(tool: T) -> Self {
         let name = tool.name().to_string();
         let description = tool.description().to_string();
-        let args_schema = tool.json_schema();
+        let mut args_schema = tool.json_schema();
+        sanitize_schema(&mut args_schema);
         let retryable = tool.retryable();
 
         let execute = Arc::new(ErasedExecutor {
@@ -112,6 +113,10 @@ impl ErasedTool {
         cancellation: CancellationToken,
         event_sink: &dyn EventSink,
     ) -> ToolCallResult {
+        if let Err(message) = validate_tool_args(&self.args_schema, &raw_args) {
+            return Err(ToolError::InvalidArgs(message));
+        }
+
         self.execute
             .execute(call_id, raw_args, workspace, cancellation, event_sink)
             .await
@@ -123,8 +128,11 @@ mod tests {
     use super::*;
     use crate::context::ToolContext;
     use crate::dispatcher::ToolDispatcher;
+    use crate::event_sink::NullSink;
     use crate::tool::Tool;
+    use duga_sandbox::{CancellationToken, Workspace};
     use duga_types::tool_call::CallId;
+    use duga_types::tool_call::ToolCall;
     use duga_types::tool_result::ToolResult;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
@@ -178,5 +186,62 @@ mod tests {
         let dispatcher = ToolDispatcher::new();
         dispatcher.register_erased(erased).unwrap();
         assert!(dispatcher.get("mock").is_some());
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_non_object_args() {
+        let dispatcher = ToolDispatcher::new();
+        dispatcher
+            .register_erased(ErasedTool::erase(MockTool))
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let call = ToolCall::new("mock", serde_json::json!("bad"));
+
+        let err = dispatcher
+            .dispatch(&call, &workspace, CancellationToken::new(), &NullSink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ToolError::InvalidArgs(message) if message.contains("JSON object")));
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_schema_violations_before_tool_runs() {
+        let dispatcher = ToolDispatcher::new();
+        dispatcher
+            .register_erased(ErasedTool::erase(MockTool))
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let call = ToolCall::new("mock", serde_json::json!({"unexpected": "field"}));
+
+        let err = dispatcher
+            .dispatch(&call, &workspace, CancellationToken::new(), &NullSink)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, ToolError::InvalidArgs(message) if message.contains("Schema validation failed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_accepts_valid_args() {
+        let dispatcher = ToolDispatcher::new();
+        dispatcher
+            .register_erased(ErasedTool::erase(MockTool))
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let call = ToolCall::new("mock", serde_json::json!({"msg": "hello"}));
+
+        let result = dispatcher
+            .dispatch(&call, &workspace, CancellationToken::new(), &NullSink)
+            .await
+            .unwrap();
+
+        assert_eq!(result.tool_call_id, call.id);
+        assert_eq!(result.output, "Mock received: hello");
     }
 }

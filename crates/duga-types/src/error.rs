@@ -272,6 +272,12 @@ pub enum AgentError {
     /// The summarizer failed.
     #[serde(rename = "summarizer_failed")]
     SummarizerFailed(String),
+    /// The LLM provider failed.
+    #[serde(rename = "llm_failed")]
+    LlmFailed(String),
+    /// Event emission failed.
+    #[serde(rename = "event_sink_failed")]
+    EventSinkFailed(String),
 }
 
 impl fmt::Display for AgentError {
@@ -287,6 +293,8 @@ impl fmt::Display for AgentError {
             AgentError::Cancelled => write!(f, "cancelled"),
             AgentError::ContextOverflow => write!(f, "context overflow"),
             AgentError::SummarizerFailed(msg) => write!(f, "summarizer failed: {}", msg),
+            AgentError::LlmFailed(msg) => write!(f, "llm failed: {}", msg),
+            AgentError::EventSinkFailed(msg) => write!(f, "event sink failed: {}", msg),
         }
     }
 }
@@ -373,6 +381,12 @@ mod tests {
         assert!(AgentError::SummarizerFailed("boom".into())
             .to_string()
             .contains("summarizer failed: boom"));
+        assert!(AgentError::LlmFailed("boom".into())
+            .to_string()
+            .contains("llm failed: boom"));
+        assert!(AgentError::EventSinkFailed("boom".into())
+            .to_string()
+            .contains("event sink failed: boom"));
     }
 
     #[test]
@@ -383,6 +397,11 @@ mod tests {
         assert_eq!(decoded, err);
 
         let err = AgentError::SummarizerFailed("oops".into());
+        let json = serde_json::to_string(&err).unwrap();
+        let decoded: AgentError = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, err);
+
+        let err = AgentError::LlmFailed("oops".into());
         let json = serde_json::to_string(&err).unwrap();
         let decoded: AgentError = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, err);
