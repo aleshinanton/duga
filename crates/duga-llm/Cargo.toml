@@ -5,3 +5,4 @@ edition = "2021"
 rust-version = "1.77"
 
 [dependencies]
+duga-types = { path = "../duga-types" }

@@ -163,8 +163,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "duga-core"
+version = "0.1.0"
+dependencies = [
+ "duga-llm",
+ "duga-types",
+ "tokio",
+]
+
+[[package]]
 name = "duga-llm"
 version = "0.1.0"
+dependencies = [
+ "duga-types",
+]
 
 [[package]]
 name = "duga-sandbox"
