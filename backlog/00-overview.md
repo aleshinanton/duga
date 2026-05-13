@@ -26,9 +26,11 @@
 | EPIC-13 | Observability | 5 | §24, §25, §31 | 20 |
 | EPIC-14 | Testing Harness | 6 | §6a, §6b, §25 | 24 |
 | EPIC-15 | Build + CI | 6 | §33 | 24 |
-| EPIC-16 | Telegram Bot Frontend | 16 | §5, §24, §26, §32 | 83 |
-| EPIC-17 | Terminal UI Frontend | 9 | §5, §24, §26, §32 | 36 |
-| **Total** | | **132** | | **559** |
+| EPIC-16 | Telegram Bot Frontend | 12 | §5, §24, §26, §32 | 63 |
+| EPIC-17 | Terminal UI Frontend | 9 | §5, §24, §26, §32 | 40 |
+| EPIC-18 | Frontend Shared Runtime | 6 | §5, §13–17, §21–26, §31–32 | 30 |
+| EPIC-19 | Provider Compatibility Follow-up | 4 | §6a, §32 | 14 |
+| **Total** | | **138** | | **587** |
 
 ---
 
@@ -181,49 +183,67 @@ graph TD
     T15.4 --> T15.5[15.5 GitHub Actions CI matrix]
     T15.5 --> T15.6[15.6 cargo deny + clippy in CI]
 
+    %% Frontend shared runtime
+    T12.5 --> T18.1[18.1 Shared runtime composition]
+    T12.1 --> T18.2[18.2 Shared typed frontend/runtime config]
+    T18.1 --> T18.3[18.3 MEMORY.md + SKILL.md loading]
+    T7.2 --> T18.4[18.4 Non-blocking frontend event bridge]
+    T3.4 --> T18.5[18.5 Shared tool confirmation middleware]
+    T18.1 --> T18.5
+    T2.4 --> T18.6[18.6 CommandExecutor abstraction + Docker mode]
+    T18.2 --> T18.6
+
     %% Telegram bot frontend
-    T12.5 --> T16.1[16.1 Extract shared runtime + MEMORY.md + SKILL.md + confirmation hooks]
-    T16.1 --> T16.2[16.2 Telegram config + validation]
-    T2.4 --> T16.2a[16.2a Docker sandbox executor in duga-sandbox - shared]
-    T16.1 --> T16.2a
-    T16.2 --> T16.3[16.3 duga-telegram-bot crate]
-    T16.2a --> T16.3
-    T16.3 --> T16.4[16.4 Telegram auth + commands + callbacks]
-    T16.3 --> T16.5[16.5 Per-chat session manager + ChannelQueue]
-    T7.2 --> T16.6[16.6 TelegramEventSink + live message editing]
-    T16.5 --> T16.7[16.7 Run AgentLoop per message]
-    T16.6 --> T16.7
-    T16.1 --> T16.7
-    T16.7 --> T16.8[16.8 Tool confirmation - Telegram inline keyboard UI]
-    T16.1 --> T16.8
-    T16.7 --> T16.9[16.9 Scheduled events - immediate/one-shot/periodic]
-    T8.6 --> T16.10[16.10 Streaming LLM to Telegram]
+    T18.2 --> T16.1[16.1 Telegram config + validation]
+    T18.1 --> T16.2[16.2 duga-telegram-bot crate]
+    T18.6 --> T16.2
+    T16.1 --> T16.2
+    T16.2 --> T16.3[16.3 Telegram auth + commands + callbacks]
+    T16.3 --> T16.4[16.4 Per-chat session manager + ChannelQueue]
+    T18.4 --> T16.5[16.5 Telegram renderer + live message editing]
+    T16.4 --> T16.6[16.6 Run AgentLoop per message]
+    T16.5 --> T16.6
+    T18.1 --> T16.6
+    T18.3 --> T16.6
+    T16.6 --> T16.7[16.7 Telegram confirmation UI]
+    T18.5 --> T16.7
+    T16.6 --> T16.8[16.8 Scheduled events]
+    T8.6 --> T16.9[16.9 Streaming LLM to Telegram]
+    T16.5 --> T16.9
+    T16.2 --> T16.10[16.10 Attachment downloading]
     T16.6 --> T16.10
-    T16.3 --> T16.11[16.11 Attachment downloading]
-    T16.7 --> T16.11
-    T16.5 --> T16.12[16.12 Message logging - log.jsonl + context.jsonl]
-    T16.7 --> T16.13[16.13 Integration tests + docs]
-    T16.8 --> T16.13
-    T16.9 --> T16.13
-    T16.10 --> T16.13
-    T16.11 --> T16.13
-    T16.12 --> T16.13
+    T16.4 --> T16.11[16.11 Message logging]
+    T16.6 --> T16.12[16.12 Integration tests + docs]
+    T16.7 --> T16.12
+    T16.8 --> T16.12
+    T16.9 --> T16.12
+    T16.10 --> T16.12
+    T16.11 --> T16.12
 
     %% Terminal UI frontend
-    T16.1 --> T17.1[17.1 duga-tui crate + ratatui setup - uses shared runtime]
-    T16.2a --> T17.1
-    T17.1 --> T17.2[17.2 TUI config + terminal + Docker sandbox support]
+    T18.1 --> T17.1[17.1 duga-tui crate + ratatui setup]
+    T18.2 --> T17.1
+    T18.6 --> T17.1
+    T17.1 --> T17.2[17.2 TUI config + terminal lifecycle]
     T17.1 --> T17.3[17.3 App state + async event loop]
     T17.3 --> T17.4[17.4 Transcript pane + input composer]
-    T7.2 --> T17.5[17.5 TuiEventSink + UI event mapping]
-    T17.3 --> T17.6[17.6 Run AgentLoop with cancellation - uses shared runtime]
+    T18.4 --> T17.5[17.5 TUI renderer + UI event mapping]
+    T17.3 --> T17.6[17.6 Run AgentLoop with cancellation]
     T17.5 --> T17.6
-    T16.1 --> T17.6
-    T17.6 --> T17.7[17.7 Tool panels + confirmation dialogs - uses shared hooks]
-    T16.1 --> T17.7
+    T18.1 --> T17.6
+    T18.3 --> T17.6
+    T17.6 --> T17.7[17.7 Tool panels + confirmation dialogs]
+    T18.5 --> T17.7
     T17.6 --> T17.8[17.8 Replay/session browser]
     T17.7 --> T17.9[17.9 TUI integration tests + docs]
     T17.8 --> T17.9
+
+    %% Provider compatibility follow-up
+    T18.2 --> T19.1[19.1 Provider history + examples]
+    T8.3 --> T19.2[19.2 OpenAI-compatible conformance tests]
+    T8.6 --> T19.2
+    T19.1 --> T19.3[19.3 Provider config migration notes]
+    T19.2 --> T19.4[19.4 Native Ollama decision gate]
 ```
 
 ---
@@ -272,8 +292,9 @@ T14.1 → T14.2 → T14.3 → T14.4 → T14.5
 | **T11.9** Plugin cancellation | wasmtime fuel vs epoch choice (GAP G10); fuel is deterministic but may not interrupt infinite loops; epoch is wall-clock but non-deterministic | Plugin hangs block agent | Medium | Benchmark both approaches in P10. Default to fuel with generous limit; expose epoch as config option. Test with intentional infinite-loop plugin. |
 | **T2.2** Workspace path validation on macOS/Windows | cap_std `RESOLVE_BENEATH` only on Linux; macOS uses `O_NOFOLLOW` + manual checks; Windows uses `OBJ_DONT_REPARSE` | Path traversal on non-Linux | Medium | CI must run on all 3 OS. Test absolute path rejection, `..` traversal rejection, and symlink escape on each platform. File cap_std issues if behavior differs. |
 | **T10.3** LLM call cancellation | `tokio::select!` biased mode may starve LLM response; reqwest cancellation differs from tokio::process cancellation | Cancellation not responsive | Medium | Test with slow LLM mock that takes >1s. Verify cancellation returns within 100ms. Use `tokio::time::timeout` as backup. |
-| **T16.8** Telegram safety controls | Remote chat can trigger file writes or shell commands without local terminal context | Unsafe remote execution | High | Restrict allowed chat IDs, require per-tool confirmation for risky tools via shared `duga-runtime` hooks with Telegram inline keyboard UI, default to final-only progress, and log decisions to JSONL replay. |
-| **T16.2a** Docker sandbox executor | `docker exec` requires Docker daemon; path translation between host and container may be fragile | Agent can't execute commands | Medium | Validate container at startup, test path translation thoroughly, provide clear error messages with fix instructions. |
+| **T16.7** Telegram confirmation UI | Remote chat can trigger file writes or shell commands without local terminal context | Unsafe remote execution | High | Restrict allowed chat IDs, require shared confirmation middleware for risky tools with Telegram inline keyboard UI, default to conservative progress, and log decisions to JSONL replay. |
+| **T18.4** Frontend event bridge | Slow Telegram API calls or TUI rendering could block `AgentLoop::emit` if implemented directly in an event sink | Agent slowed or failed by UI transport | High | Use bounded mpsc channels and renderer workers; JSONL sinks remain strict, UI sinks are best-effort with logged drops. |
+| **T18.6** Docker sandbox executor | `docker exec` requires Docker daemon; path translation between host and container may be fragile | Agent can't execute commands | Medium | Introduce `CommandExecutor`, validate container at startup, keep file tools host/capability-bounded, test path translation, and provide clear fix instructions. |
 | **T17.2** Terminal raw-mode restoration | Panic or cancellation can leave the terminal in raw/alternate-screen mode | Broken local terminal session | Medium | Use a terminal guard with Drop cleanup, install panic cleanup, and add smoke tests for startup/shutdown paths. |
 
 ---
@@ -342,14 +363,16 @@ T14.1 → T14.2 → T14.3 → T14.4 → T14.5
 
 | Day | Tasks | Hours |
 |-----|-------|-------|
-| 31 | T16.1 (shared runtime + memory + skills + hooks) | 12 |
-| 32 | T16.2, T16.2a (Docker sandbox), T16.3 (bot crate) | 15 |
-| 33 | T16.4 (auth), T16.5 (sessions), T16.6 (sink) | 18 |
-| 34 | T16.7 (run agent), T16.8 (confirmation), T16.9 (events) | 19 |
-| 35 | T16.10 (streaming), T16.11 (attachments), T16.12 (logging) | 13 |
-| 36 | T16.13 (tests + docs), T17.1–T17.2 (TUI setup) | 14 |
-| 37 | T17.3–T17.6 (TUI core) | 17 |
-| 38 | T17.7–T17.9 (TUI panels + tests) | 15 |
+| 31 | T18.1–T18.2 (shared runtime + typed config) | 10 |
+| 32 | T18.3–T18.5 (memory, skills, event bridge, confirmation middleware) | 14 |
+| 33 | T18.6, T16.1–T16.2 (Docker executor + Telegram startup) | 14 |
+| 34 | T16.3–T16.5 (auth, sessions, renderer) | 18 |
+| 35 | T16.6–T16.8 (run agent, confirmation UI, events) | 19 |
+| 36 | T16.9–T16.12 (streaming, attachments, logging, tests/docs) | 18 |
+| 37 | T17.1–T17.4 (TUI setup, state, input) | 16 |
+| 38 | T17.5–T17.7 (TUI renderer, runtime, confirmations) | 14 |
+| 39 | T17.8–T17.9 (replay browser + tests/docs) | 10 |
+| 40 | T19.1–T19.4 (provider compatibility follow-up) | 14 |
 
 ---
 
@@ -376,10 +399,10 @@ Tasks blocked until their GAP is resolved:
 | G15 (hot reload) | T11.4 | Post-MVP; not blocking MVP |
 | G16 (platform cap_std) | T2.1, T2.2 | Confirm cap_std equivalents |
 | G17 (provider suite) | T8.8 | Mandatory conformance fixtures? |
-| G18 (Telegram session policy) | T16.5, T16.7 | One active run per chat, queue, or parallel runs? → **Resolved: one run per chat with ChannelQueue serialization** |
-| G19 (Telegram confirmation UX) | T16.8 | Pause tool call for confirm/deny, or fail and ask user to retry? → **Resolved: shared hook in `duga-runtime` pauses dispatch; Telegram sends inline keyboard, TUI shows modal dialog** |
-| G20 (TUI event loop model) | T17.3, T17.6 | Single async loop, actor model, or channels between UI/runtime tasks? |
-| G21 (TUI confirmation UX) | T17.7 | Modal confirmation, inline command, or side-panel approval flow? → **Resolved: uses shared `duga-runtime` hook; TUI renders modal with y/n keys** |
+| G18 (Telegram session policy) | T16.4, T16.6 | One active run per chat, queue, or parallel runs? -> **Resolved: one run per chat with ChannelQueue serialization; different chats may run in parallel.** |
+| G19 (confirmation middleware) | T16.7, T17.7, T18.5 | Pause tool call for confirm/deny, or fail and ask user to retry? -> **Resolved: shared middleware pauses only the pending tool call; Telegram/TUI provide UI-specific approval.** |
+| G20 (TUI event loop model) | T17.3, T17.6 | Single async loop, actor model, or channels between UI/runtime tasks? -> **Resolved: channels between UI/runtime tasks using the EPIC-18 frontend event bridge.** |
+| G21 (Docker filesystem scope) | T18.6 | Do all tools execute in Docker, or only process execution? -> **Resolved: Docker mode applies to `bash`/process execution; read/write/search remain host capability tools over the bind-mounted workspace.** |
 
 ---
 
@@ -392,14 +415,16 @@ Applied consistently across all tasks:
 epic/foundation, epic/security, epic/tools, epic/builtin-tools,
 epic/execution, epic/memory, epic/events, epic/llm, epic/validation,
 epic/loop, epic/wasm, epic/cli, epic/observability, epic/testing,
-epic/build, epic/telegram, epic/tui
+epic/build, epic/telegram, epic/tui, epic/frontend-runtime,
+epic/provider-compatibility
 
 # Layer
 layer/foundation, layer/security, layer/tools, layer/tools-builtin,
 layer/sandbox, layer/memory, layer/events, layer/llm,
 layer/validation, layer/loop, layer/wasm, layer/cli,
 layer/observability, layer/testing, layer/build, layer/frontend,
-layer/telegram, layer/tui
+layer/telegram, layer/tui, layer/runtime, layer/config,
+layer/provider, layer/docs
 
 # Priority
 priority/critical (MVP blocker, 52 tasks)
@@ -433,5 +458,7 @@ status/ready (unblocked, can be picked up)
 | `epic-13-observability.md` | EPIC-13: Observability (5 tasks) |
 | `epic-14-testing.md` | EPIC-14: Testing Harness (6 tasks) |
 | `epic-15-build-ci.md` | EPIC-15: Build + CI (6 tasks) |
-| `epic-16-telegram-bot.md` | EPIC-16: Telegram Bot Frontend (9 tasks) |
+| `epic-16-telegram-bot.md` | EPIC-16: Telegram Bot Frontend (12 tasks) |
 | `epic-17-terminal-ui.md` | EPIC-17: Terminal UI Frontend (9 tasks) |
+| `epic-18-frontend-shared-runtime.md` | EPIC-18: Frontend Shared Runtime (6 tasks) |
+| `epic-19-provider-compatibility.md` | EPIC-19: Provider Compatibility Follow-up (4 tasks) |

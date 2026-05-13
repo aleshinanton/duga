@@ -8,13 +8,14 @@
 
 Add an interactive terminal UI frontend on top of the shared duga runtime. The TUI should provide a local chat/task interface, live agent progress, tool-call visibility, cancellation, replay browsing, and safe confirmation UX for risky operations without duplicating harness wiring.
 
-This epic relies on shared infrastructure from `duga-runtime` (TASK-16.1) and `duga-sandbox` (TASK-16.2a). The following features are **not duplicated** — they come from the shared crates:
+This epic relies on shared infrastructure from EPIC-18. The following features are **not duplicated** — they come from shared crates:
 - **Provider resolution + LLM building** → `duga-runtime`
 - **Tool registration (builtins + WASM plugins)** → `duga-runtime`
 - **MEMORY.md persistent context** → `duga-runtime` (shared with Telegram, CLI)
 - **SKILL.md loading + prompt injection** → `duga-runtime` (shared with Telegram, CLI)
 - **Tool confirmation hooks** → `duga-runtime` (TUI provides the modal dialog UI)
 - **Docker sandbox executor** → `duga-sandbox` (shared with Telegram, CLI)
+- **Non-blocking frontend event bridge** → `duga-runtime` (TUI renders from an mpsc channel)
 - **SSE streaming** → `duga-llm` (shared)
 - **Real token counting** → `duga-llm` (shared)
 
@@ -35,7 +36,7 @@ This epic relies on shared infrastructure from `duga-runtime` (TASK-16.1) and `d
   - `main() -> anyhow::Result<()>`
   - `run_tui(config: Config) -> anyhow::Result<()>`
   - `draw(frame: &mut Frame, app: &App)`
-- **Dependencies:** TASK-16.1 (shared runtime: providers, tools, MEMORY.md, SKILL.md, confirmation hooks), TASK-16.2a (Docker sandbox), TASK-12.6
+- **Dependencies:** TASK-18.1 (shared runtime), TASK-18.2 (typed config), TASK-18.6 (Docker executor), TASK-12.6
 - **Implementation steps:**
   1. Add crate to the workspace.
   2. Add `ratatui`, `crossterm`, `tokio`, `anyhow`, and `tracing-subscriber`.
@@ -55,7 +56,7 @@ This epic relies on shared infrastructure from `duga-runtime` (TASK-16.1) and `d
 
 - **§SPEC:** §32 (config loading), §26 (cancellation)
 - **Labels:** `layer/tui`, `layer/cli`, `priority/critical`
-- **Description:** Add optional TUI config for rendering mode, theme, progress verbosity, keybindings, and confirmation defaults. Implement guarded raw-mode and alternate-screen lifecycle. Includes support for the shared Docker sandbox mode from `duga-sandbox` (TASK-16.2a).
+- **Description:** Add optional TUI config for rendering mode, theme, progress verbosity, keybindings, and confirmation defaults. Implement guarded raw-mode and alternate-screen lifecycle. Shared runtime fields and Docker sandbox mode come from EPIC-18 typed config.
 - **Files affected:**
   - `crates/duga-config/src/config.rs`
   - `crates/duga-tui/src/terminal.rs` (new)
@@ -78,8 +79,8 @@ This epic relies on shared infrastructure from `duga-runtime` (TASK-16.1) and `d
   ```
 - **Dependencies:** TASK-17.1, TASK-12.1, TASK-12.3
 - **Implementation steps:**
-  1. Add `tui: Option<TuiConfig>` to `Config`.
-  2. Validate non-empty keybinding names.
+  1. Add `tui: Option<TuiConfig>` with `#[serde(default)]`.
+  2. Use typed keybinding/theme config where practical and validate non-empty values.
   3. Add terminal guard cleanup for raw mode and alternate screen.
   4. Install panic cleanup for terminal restoration.
 - **Definition of Done:** TUI config parses and terminal cleanup is reliable.
@@ -148,30 +149,29 @@ This epic relies on shared infrastructure from `duga-runtime` (TASK-16.1) and `d
 
 ---
 
-### TASK-17.5: TuiEventSink for live progress
+### TASK-17.5: TUI event renderer for live progress
 
 - **§SPEC:** §24 (events), §31 (observability)
 - **Labels:** `layer/tui`, `layer/events`, `priority/high`
-- **Description:** Implement an `EventSink` that maps agent events into UI events. It should support final-only mode and detailed progress mode.
+- **Description:** Consume frontend events from the EPIC-18 non-blocking event bridge and map them into TUI state updates. Rendering must happen from the TUI event loop, never inside `AgentLoop::emit()`.
 - **Files affected:**
   - `crates/duga-tui/src/sink.rs` (new)
   - `crates/duga-tui/src/formatting.rs` (new)
-- **Types involved:** `TuiEventSink`, `UiEventFormatter`
+- **Types involved:** `TuiEventRenderer`, `UiEventFormatter`
 - **Functions to implement:**
-  - `TuiEventSink::new(tx, options)`
-  - `impl EventSink for TuiEventSink`
+  - `TuiEventRenderer::new(rx, options)`
   - `format_event(event: &Event) -> Option<TranscriptItem>`
-- **Dependencies:** TASK-7.2, TASK-17.3
+- **Dependencies:** TASK-18.4, TASK-17.3
 - **Implementation steps:**
-  1. Map LLM, tool, error, cancellation, and final events.
+  1. Map LLM, tool, error, cancellation, and final frontend events.
   2. Preserve structured fields for tool panels.
   3. Redact secrets consistently with JSONL sinks.
-  4. Throttle high-volume token/progress events.
-- **Definition of Done:** Live agent progress appears in the TUI through the event system.
+  4. Coalesce high-volume token/progress events before redraw.
+- **Definition of Done:** Live agent progress appears in the TUI without blocking the core loop.
 - **Acceptance criteria:**
   - Final answer is always visible.
   - Tool events can be collapsed or expanded.
-  - High-volume updates do not freeze rendering.
+  - High-volume updates do not freeze rendering or fail the agent run.
 - **Test plan:** event-to-UI mapping tests with captured events.
 - **Estimated effort:** 4 hours
 
@@ -181,7 +181,7 @@ This epic relies on shared infrastructure from `duga-runtime` (TASK-16.1) and `d
 
 - **§SPEC:** §5 (loop), §26 (cancellation), §32 (composition root)
 - **Labels:** `layer/tui`, `layer/loop`, `priority/critical`
-- **Description:** Wire submitted prompts into `duga-runtime::build_agent`. Spawn an agent run, attach `TuiEventSink` plus JSONL replay sink, and support cancellation from keyboard or command input.
+- **Description:** Wire submitted prompts into `duga-runtime::build_agent`. Spawn an agent run, attach the EPIC-18 non-blocking TUI event bridge plus JSONL replay sink, and support cancellation from keyboard or command input.
 - **Files affected:**
   - `crates/duga-tui/src/runtime.rs` (new)
   - `crates/duga-tui/src/app.rs`
@@ -189,12 +189,12 @@ This epic relies on shared infrastructure from `duga-runtime` (TASK-16.1) and `d
 - **Functions to implement:**
   - `start_run(prompt, config, tx) -> RunHandle`
   - `cancel_active_run()`
-- **Dependencies:** TASK-16.1, TASK-17.3, TASK-17.5
+- **Dependencies:** TASK-18.1, TASK-18.3, TASK-18.4, TASK-17.3, TASK-17.5
 - **Implementation steps:**
   1. Build agent through `duga-runtime`.
   2. Create per-run cancellation token.
   3. Spawn `AgentLoop::run`.
-  4. Send completion or error back into app state.
+  4. Send completion or error back into app state through the UI channel.
 - **Definition of Done:** TUI can run the same agent flow as the CLI and cancel it.
 - **Acceptance criteria:**
   - Submitted prompt produces a final response.
@@ -209,21 +209,20 @@ This epic relies on shared infrastructure from `duga-runtime` (TASK-16.1) and `d
 
 - **§SPEC:** §13-16 (sandbox), §24 (events), §26 (cancellation)
 - **Labels:** `layer/tui`, `layer/security`, `priority/critical`
-- **Description:** Add tool-call panels with arguments, status, duration, truncated output, and explicit confirmation for risky tools when configured.
+- **Description:** Add tool-call panels with arguments, status, duration, truncated output, and explicit confirmation UI for risky tools when configured. Confirmation enforcement itself is shared middleware from EPIC-18.
 - **Files affected:**
   - `crates/duga-tui/src/tools.rs` (new)
   - `crates/duga-tui/src/confirm.rs` (new)
-  - `crates/duga-runtime/src/tools.rs` (confirmation hook support)
-- **Types involved:** `ToolPanel`, `ConfirmationDialog`, `ToolConfirmationPolicy`
+- **Types involved:** `ToolPanel`, `ConfirmationDialog`, `ConfirmationRequest`, `ConfirmationDecision`
 - **Functions to implement:**
   - `render_tool_panel(frame, area, tool_call)`
-  - `request_confirmation(tool_call) -> ConfirmationDecision`
+  - `show_confirmation(request) -> ConfirmationDecision`
   - `confirm_active()` / `deny_active()`
-- **Dependencies:** TASK-17.6, TASK-16.1 (shared confirmation hooks in `duga-runtime`)
+- **Dependencies:** TASK-17.6, TASK-18.5
 - **Implementation steps:**
   1. Track tool-call lifecycle from events.
   2. Render collapsed and expanded tool views (output in transcript, details in side panel).
-  3. Wire the shared confirmation hook from `duga-runtime` — TUI provides a modal dialog callback. On tool requiring confirmation, show modal with tool name + args + [y/n] prompt. Accept `y`/`n` keys.
+  3. Wire the shared confirmation provider from `duga-runtime`: TUI provides a modal dialog callback. On tool requiring confirmation, show modal with tool name + args + [y/n] prompt. Accept `y`/`n` keys.
   4. Return deny/timeout as explicit tool errors via the shared hook.
 - **Definition of Done:** Users can inspect and approve/deny risky local actions from the TUI.
 - **Acceptance criteria:**
@@ -274,7 +273,7 @@ This epic relies on shared infrastructure from `duga-runtime` (TASK-16.1) and `d
   - `docs/tui.md` (new)
 - **Types involved:** test backend, mock runtime, mock LLM, `CapturingEventSink`
 - **Functions to implement:** test helpers for simulated key input and rendered frame assertions
-- **Dependencies:** TASK-17.1-TASK-17.8
+- **Dependencies:** TASK-17.1 through TASK-17.8, TASK-18.1 through TASK-18.6
 - **Implementation steps:**
   1. Use ratatui test backend for deterministic render checks.
   2. Simulate prompt submission, progress, cancellation, and confirmation.
