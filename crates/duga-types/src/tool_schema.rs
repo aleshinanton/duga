@@ -14,7 +14,11 @@ pub struct ToolSchema {
 }
 
 impl ToolSchema {
-    pub fn new(name: impl Into<String>, description: impl Into<String>, args_schema: Value) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        args_schema: Value,
+    ) -> Self {
         Self {
             name: name.into(),
             description: description.into(),

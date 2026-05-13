@@ -197,7 +197,8 @@ mod tests {
 
     #[test]
     fn test_duration_deserialize_minutes() {
-        let json = r#"{"max_steps": 10, "max_tool_calls": 20, "max_runtime": "5m", "retry_on_error": 1}"#;
+        let json =
+            r#"{"max_steps": 10, "max_tool_calls": 20, "max_runtime": "5m", "retry_on_error": 1}"#;
         let lim: AgentLimits = serde_json::from_str(json).unwrap();
         assert_eq!(lim.max_runtime, Duration::from_secs(300));
     }
@@ -249,6 +250,7 @@ mod tests {
     fn test_duration_zero_rejected() {
         let json = r#"{"max_runtime": "0s"}"#;
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct H {
             #[serde(with = "duration_format")]
             max_runtime: Duration,

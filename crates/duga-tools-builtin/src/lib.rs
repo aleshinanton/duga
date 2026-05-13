@@ -4,11 +4,11 @@
 //! Each tool implements the `Tool` trait and uses the security primitives from
 //! `duga-sandbox` (Workspace, BinaryRegistry, ShellSession, run_captured).
 
-pub mod read;
-pub mod write;
 pub mod bash;
+pub mod read;
 pub mod search;
 pub mod think;
+pub mod write;
 
 #[cfg(test)]
 mod tests;

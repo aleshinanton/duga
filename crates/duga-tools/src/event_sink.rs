@@ -10,7 +10,9 @@ pub trait EventSink: Send + Sync {
 pub struct NullSink;
 
 impl EventSink for NullSink {
-    fn name(&self) -> &str { "null" }
+    fn name(&self) -> &str {
+        "null"
+    }
 }
 
 #[cfg(test)]

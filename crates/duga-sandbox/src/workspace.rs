@@ -32,11 +32,13 @@ impl Workspace {
             _ => WorkspaceError::Io(e.to_string()),
         })?;
 
-        let root_dir =
-            cap_std::fs::Dir::open_ambient_dir(&root_path, cap_std::ambient_authority())
-                .map_err(|e| WorkspaceError::Io(e.to_string()))?;
+        let root_dir = cap_std::fs::Dir::open_ambient_dir(&root_path, cap_std::ambient_authority())
+            .map_err(|e| WorkspaceError::Io(e.to_string()))?;
 
-        Ok(Self { root_dir: Arc::new(root_dir), root_path })
+        Ok(Self {
+            root_dir: Arc::new(root_dir),
+            root_path,
+        })
     }
 
     /// Returns a reference to the capability-bounded directory.
@@ -195,7 +197,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let result = ws.resolve(Path::new("/etc/passwd"));
-        assert!(matches!(result, Err(WorkspaceError::PathEscapesWorkspace(_))));
+        assert!(matches!(
+            result,
+            Err(WorkspaceError::PathEscapesWorkspace(_))
+        ));
     }
 
     #[test]
@@ -203,7 +208,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let result = ws.resolve(Path::new("foo/../bar"));
-        assert!(matches!(result, Err(WorkspaceError::PathEscapesWorkspace(_))));
+        assert!(matches!(
+            result,
+            Err(WorkspaceError::PathEscapesWorkspace(_))
+        ));
     }
 
     #[test]
@@ -287,7 +295,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let result = ws.remove_file(Path::new("../etc/passwd"));
-        assert!(matches!(result, Err(crate::error::WorkspaceError::PathEscapesWorkspace(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::WorkspaceError::PathEscapesWorkspace(_))
+        ));
     }
 
     #[test]
@@ -295,6 +306,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let result = ws.create_dir_all(Path::new("../../evil"));
-        assert!(matches!(result, Err(crate::error::WorkspaceError::PathEscapesWorkspace(_))));
+        assert!(matches!(
+            result,
+            Err(crate::error::WorkspaceError::PathEscapesWorkspace(_))
+        ));
     }
 }

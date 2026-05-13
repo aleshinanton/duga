@@ -196,22 +196,30 @@ impl<'de> serde::de::Visitor<'de> for ToolErrorVisitor {
             "Timeout" => Ok(ToolError::Timeout),
             "Cancelled" => Ok(ToolError::Cancelled),
             "Denied" => {
-                let _key: String = map.next_key()?.ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                let _key: String = map
+                    .next_key()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                 let msg = map.next_value::<String>()?;
                 Ok(ToolError::Denied(msg))
             }
             "InvalidArgs" => {
-                let _key: String = map.next_key()?.ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                let _key: String = map
+                    .next_key()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                 let msg = map.next_value::<String>()?;
                 Ok(ToolError::InvalidArgs(msg))
             }
             "Io" => {
-                let _key: String = map.next_key()?.ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                let _key: String = map
+                    .next_key()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                 let msg: String = map.next_value()?;
                 Ok(ToolError::Io(msg))
             }
             "Plugin" => {
-                let _key: String = map.next_key()?.ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                let _key: String = map
+                    .next_key()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
                 let msg = map.next_value::<String>()?;
                 Ok(ToolError::Plugin(msg))
             }
@@ -219,7 +227,12 @@ impl<'de> serde::de::Visitor<'de> for ToolErrorVisitor {
             _ => Err(serde::de::Error::unknown_variant(
                 &variant,
                 &[
-                    "Timeout", "Cancelled", "Denied", "InvalidArgs", "Io", "Plugin",
+                    "Timeout",
+                    "Cancelled",
+                    "Denied",
+                    "InvalidArgs",
+                    "Io",
+                    "Plugin",
                     "OutputLimitExceeded",
                 ],
             )),
@@ -299,9 +312,18 @@ mod tests {
     fn test_tool_error_display() {
         assert_eq!(ToolError::Timeout.to_string(), "tool execution timed out");
         assert_eq!(ToolError::Denied("foo".into()).to_string(), "denied: foo");
-        assert_eq!(ToolError::Cancelled.to_string(), "tool execution was cancelled");
-        assert_eq!(ToolError::Plugin("boom".into()).to_string(), "plugin error: boom");
-        assert_eq!(ToolError::OutputLimitExceeded.to_string(), "output limit exceeded");
+        assert_eq!(
+            ToolError::Cancelled.to_string(),
+            "tool execution was cancelled"
+        );
+        assert_eq!(
+            ToolError::Plugin("boom".into()).to_string(),
+            "plugin error: boom"
+        );
+        assert_eq!(
+            ToolError::OutputLimitExceeded.to_string(),
+            "output limit exceeded"
+        );
         let io_err = ToolError::Io("disk full".into());
         assert!(io_err.to_string().contains("disk full"));
     }

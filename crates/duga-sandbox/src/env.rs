@@ -14,6 +14,12 @@ const SECRET_PATTERNS: &[&str] = &["_TOKEN", "_KEY", "_SECRET", "_PASSWORD"];
 /// The fixed `PATH` value assigned to all subprocesses.
 pub const SANITIZED_PATH: &str = "/usr/bin:/bin";
 
+/// Checks whether a variable controls executable or dynamic-library resolution.
+pub fn is_protected_var(name: &str) -> bool {
+    let upper = name.to_uppercase();
+    upper == "PATH" || upper.starts_with("LD_") || upper.starts_with("DYLD_")
+}
+
 /// Checks whether a variable name matches a known secret pattern (case-insensitive).
 pub fn is_secret_pattern(name: &str) -> bool {
     let upper = name.to_uppercase();
@@ -28,15 +34,28 @@ pub fn is_secret_pattern(name: &str) -> bool {
 ///   into `warnings` so the caller can log or emit them.
 ///
 /// Returns the environment map ready for `Command::envs()`.
-pub fn build(allowed: &std::collections::HashSet<String>, warnings: &mut Vec<String>) -> HashMap<String, String> {
+pub fn build(
+    allowed: &std::collections::HashSet<String>,
+    warnings: &mut Vec<String>,
+) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
     for (key, value) in env::vars() {
         if !allowed.contains(&key) {
             continue;
         }
+        if is_protected_var(&key) {
+            warnings.push(format!(
+                "Protected env var not passed to subprocess: {}",
+                key
+            ));
+            continue;
+        }
         if is_secret_pattern(&key) {
-            warnings.push(format!("Secret-pattern env var passed to subprocess: {}", key));
+            warnings.push(format!(
+                "Secret-pattern env var passed to subprocess: {}",
+                key
+            ));
         }
         env.insert(key, value);
     }
@@ -61,6 +80,14 @@ mod tests {
         assert!(!is_secret_pattern("HOME"));
         assert!(!is_secret_pattern("PATH"));
         assert!(!is_secret_pattern("USER"));
+    }
+
+    #[test]
+    fn test_is_protected_var() {
+        assert!(is_protected_var("PATH"));
+        assert!(is_protected_var("LD_PRELOAD"));
+        assert!(is_protected_var("DYLD_INSERT_LIBRARIES"));
+        assert!(!is_protected_var("HOME"));
     }
 
     #[test]
@@ -98,5 +125,6 @@ mod tests {
         let allowed: HashSet<String> = ["PATH".into()].iter().cloned().collect();
         let env = build(&allowed, &mut warnings);
         assert_eq!(env["PATH"], SANITIZED_PATH);
+        assert!(warnings.iter().any(|w| w.contains("Protected env var")));
     }
 }

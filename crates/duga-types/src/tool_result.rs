@@ -4,9 +4,9 @@
 //! output, timing, and byte counts. The builder pattern allows
 //! incremental construction from process output or error paths.
 
-use serde::{Deserialize, Serialize};
 use crate::error::ToolError;
 use crate::tool_call::CallId;
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
 /// The result of a single tool invocation.
@@ -231,8 +231,7 @@ mod tests {
     #[test]
     fn test_from_outcome_io_error() {
         let id = CallId::new();
-        let outcome: Result<ToolResult, ToolError> =
-            Err(ToolError::Io("file missing".into()));
+        let outcome: Result<ToolResult, ToolError> = Err(ToolError::Io("file missing".into()));
         let started = Instant::now();
         let result = ToolResult::from_outcome(id, "read", outcome, started);
         assert!(!result.success);

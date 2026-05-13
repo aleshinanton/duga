@@ -1,7 +1,7 @@
 //! BashTool — dispatch to run_captured or ShellSession with timeout enforcement.
 
 use duga_sandbox::binary_registry::BinaryRegistry;
-use duga_sandbox::exec::{run_captured, CancellationToken};
+use duga_sandbox::exec::run_captured;
 use duga_sandbox::shell_session::{SessionCommand, ShellSession};
 use duga_sandbox::Workspace;
 use duga_tools::context::ToolContext;
@@ -36,24 +36,38 @@ pub struct BashTool {
 
 impl std::fmt::Debug for BashTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BashTool").field("timeout", &self.timeout).finish()
+        f.debug_struct("BashTool")
+            .field("timeout", &self.timeout)
+            .finish()
     }
 }
 
 impl Clone for BashTool {
     fn clone(&self) -> Self {
         Self {
-            sessions: self.sessions.clone(), registry: self.registry.clone(),
-            workspace: self.workspace.clone(), limits: self.limits.clone(), timeout: self.timeout,
+            sessions: self.sessions.clone(),
+            registry: self.registry.clone(),
+            workspace: self.workspace.clone(),
+            limits: self.limits.clone(),
+            timeout: self.timeout,
         }
     }
 }
 
 impl BashTool {
     pub fn with_sandbox(
-        registry: Arc<BinaryRegistry>, workspace: Arc<Workspace>, limits: OutputLimits, timeout: Duration,
+        registry: Arc<BinaryRegistry>,
+        workspace: Arc<Workspace>,
+        limits: OutputLimits,
+        timeout: Duration,
     ) -> Self {
-        Self { sessions: Arc::new(Mutex::new(HashMap::new())), registry, workspace, limits, timeout }
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            registry,
+            workspace,
+            limits,
+            timeout,
+        }
     }
 }
 
@@ -62,88 +76,152 @@ impl Default for BashTool {
         Self::with_sandbox(
             Arc::new(BinaryRegistry::default()),
             Arc::new(Workspace::open("/tmp").unwrap()),
-            OutputLimits::default(), Duration::from_secs(120),
+            OutputLimits::default(),
+            Duration::from_secs(120),
         )
     }
 }
 
 impl Tool for BashTool {
     type Args = BashArgs;
-    fn name(&self) -> &str { "bash" }
-    fn description(&self) -> &str { "Execute a command in the sandbox" }
-    fn retryable(&self) -> bool { false }
+    fn name(&self) -> &str {
+        "bash"
+    }
+    fn description(&self) -> &str {
+        "Execute a command in the sandbox"
+    }
+    fn retryable(&self) -> bool {
+        false
+    }
 
-    async fn execute(&self, _ctx: ToolContext<'_>, args: Self::Args) -> ToolCallResult {
+    async fn execute(&self, ctx: ToolContext<'_>, args: Self::Args) -> ToolCallResult {
         let start = std::time::Instant::now();
-        if args.command.is_empty() { return Err(ToolError::InvalidArgs("Empty command".into())); }
+        if args.command.is_empty() {
+            return Err(ToolError::InvalidArgs("Empty command".into()));
+        }
+        if ctx.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
 
         let sc = ShellSession::classify(&args.command);
 
         match sc {
             SessionCommand::Cd(path) => {
-                let resolved = self.workspace.resolve(&path)
+                let resolved = self
+                    .workspace
+                    .resolve(&path)
                     .map_err(|_| ToolError::Denied("cd failed".into()))?;
                 if let Some(sid) = args.session {
                     let mut s = self.sessions.lock().await;
-                    let sess = s.entry(sid).or_insert_with(|| ShellSession::new(PathBuf::from(".")));
+                    let sess = s
+                        .entry(sid)
+                        .or_insert_with(|| ShellSession::new(PathBuf::from(".")));
                     sess.apply(SessionCommand::Cd(resolved.clone()), &self.workspace)
                         .map_err(|e| ToolError::Denied(e.to_string()))?;
                 }
                 Ok(ToolResult {
-                    tool_call_id: CallId::new(), success: true, output: resolved.display().to_string(),
+                    tool_call_id: CallId::new(),
+                    success: true,
+                    output: resolved.display().to_string(),
                     metadata: serde_json::json!({"action": "cd"}),
-                    duration_ms: start.elapsed().as_millis(), stdout_bytes: 0, stderr_bytes: 0, truncated: false,
+                    duration_ms: start.elapsed().as_millis(),
+                    stdout_bytes: 0,
+                    stderr_bytes: 0,
+                    truncated: false,
                 })
             }
             SessionCommand::Export(key, value) => {
                 if let Some(sid) = args.session {
                     let mut s = self.sessions.lock().await;
-                    let sess = s.entry(sid).or_insert_with(|| ShellSession::new(PathBuf::from(".")));
-                    sess.apply(SessionCommand::Export(key.clone(), value.clone()), &self.workspace)
-                        .map_err(|e| ToolError::Denied(e.to_string()))?;
+                    let sess = s
+                        .entry(sid)
+                        .or_insert_with(|| ShellSession::new(PathBuf::from(".")));
+                    sess.apply(
+                        SessionCommand::Export(key.clone(), value.clone()),
+                        &self.workspace,
+                    )
+                    .map_err(|e| ToolError::Denied(e.to_string()))?;
                 }
                 Ok(ToolResult {
-                    tool_call_id: CallId::new(), success: true,
+                    tool_call_id: CallId::new(),
+                    success: true,
                     output: format!("exported {}={}", key, value),
                     metadata: serde_json::json!({"action": "export"}),
-                    duration_ms: start.elapsed().as_millis(), stdout_bytes: 0, stderr_bytes: 0, truncated: false,
+                    duration_ms: start.elapsed().as_millis(),
+                    stdout_bytes: 0,
+                    stderr_bytes: 0,
+                    truncated: false,
                 })
             }
             SessionCommand::Unset(key) => {
                 if let Some(sid) = args.session {
                     let mut s = self.sessions.lock().await;
-                    let sess = s.entry(sid).or_insert_with(|| ShellSession::new(PathBuf::from(".")));
+                    let sess = s
+                        .entry(sid)
+                        .or_insert_with(|| ShellSession::new(PathBuf::from(".")));
                     sess.apply(SessionCommand::Unset(key.clone()), &self.workspace)
                         .map_err(|e| ToolError::Denied(e.to_string()))?;
                 }
                 Ok(ToolResult {
-                    tool_call_id: CallId::new(), success: true, output: format!("unset {}", key),
+                    tool_call_id: CallId::new(),
+                    success: true,
+                    output: format!("unset {}", key),
                     metadata: serde_json::json!({"action": "unset"}),
-                    duration_ms: start.elapsed().as_millis(), stdout_bytes: 0, stderr_bytes: 0, truncated: false,
+                    duration_ms: start.elapsed().as_millis(),
+                    stdout_bytes: 0,
+                    stderr_bytes: 0,
+                    truncated: false,
                 })
             }
             SessionCommand::Pwd => {
                 let cwd = if let Some(sid) = args.session {
                     let s = self.sessions.lock().await;
-                    s.get(&sid).map(|x| x.cwd().clone()).unwrap_or_else(|| PathBuf::from("."))
-                } else { PathBuf::from(".") };
+                    s.get(&sid)
+                        .map(|x| x.cwd().clone())
+                        .unwrap_or_else(|| PathBuf::from("."))
+                } else {
+                    PathBuf::from(".")
+                };
                 Ok(ToolResult {
-                    tool_call_id: CallId::new(), success: true, output: cwd.display().to_string(),
+                    tool_call_id: CallId::new(),
+                    success: true,
+                    output: cwd.display().to_string(),
                     metadata: serde_json::json!({"action": "pwd"}),
-                    duration_ms: start.elapsed().as_millis(), stdout_bytes: 0, stderr_bytes: 0, truncated: false,
+                    duration_ms: start.elapsed().as_millis(),
+                    stdout_bytes: 0,
+                    stderr_bytes: 0,
+                    truncated: false,
                 })
             }
             SessionCommand::Spawn(cmd_parts) => {
-                let bin = cmd_parts.first().ok_or_else(|| ToolError::InvalidArgs("no binary".into()))?;
-                let bpath = self.registry.resolve(bin).map_err(|e| ToolError::Denied(e.to_string()))?.to_path_buf();
+                let bin = cmd_parts
+                    .first()
+                    .ok_or_else(|| ToolError::InvalidArgs("no binary".into()))?;
+                let bpath = self
+                    .registry
+                    .resolve(bin)
+                    .map_err(|e| ToolError::Denied(e.to_string()))?
+                    .to_path_buf();
                 let (cwd, env) = if let Some(sid) = args.session {
                     let s = self.sessions.lock().await;
-                    s.get(&sid).map(|x| (x.cwd().clone(), x.env().clone())).unwrap_or_default()
-                } else { (PathBuf::from("."), HashMap::new()) };
-                let cancel = CancellationToken::new();
-                let r = tokio::time::timeout(self.timeout, run_captured(
-                    &bpath, &cmd_parts[1..], &self.workspace, &cwd, &env, &self.limits, self.timeout, cancel,
-                )).await.map_err(|_| ToolError::Timeout)??;
+                    s.get(&sid)
+                        .map(|x| (x.cwd().clone(), x.env().clone()))
+                        .unwrap_or_default()
+                } else {
+                    (PathBuf::from("."), HashMap::new())
+                };
+                let cancel = ctx.cancellation.clone();
+                let r = run_captured(
+                    &bpath,
+                    &cmd_parts[1..],
+                    &self.workspace,
+                    &cwd,
+                    &env,
+                    &self.limits,
+                    self.timeout,
+                    cancel,
+                )
+                .await?;
                 Ok(r)
             }
         }
@@ -153,12 +231,17 @@ impl Tool for BashTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use duga_sandbox::exec::CancellationToken;
     use duga_tools::event_sink::NullSink;
     use tempfile::tempdir;
 
     fn make_ctx(ws: &Workspace) -> ToolContext<'static> {
         let ws: &'static Workspace = unsafe { std::mem::transmute(ws) };
-        ToolContext { workspace: ws, cancellation: CancellationToken::new(), event_sink: &NullSink }
+        ToolContext {
+            workspace: ws,
+            cancellation: CancellationToken::new(),
+            event_sink: &NullSink,
+        }
     }
 
     #[test]
@@ -166,11 +249,22 @@ mod tests {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let r = Arc::new(BinaryRegistry::new(&["echo".into()]).unwrap());
-        let tool = BashTool::with_sandbox(r, Arc::new(ws.clone()), OutputLimits::default(), Duration::from_secs(30));
+        let tool = BashTool::with_sandbox(
+            r,
+            Arc::new(ws.clone()),
+            OutputLimits::default(),
+            Duration::from_secs(30),
+        );
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(tool.execute(make_ctx(&ws), BashArgs {
-            command: vec!["echo".into(), "hello".into()], session: None,
-        })).unwrap();
+        let result = rt
+            .block_on(tool.execute(
+                make_ctx(&ws),
+                BashArgs {
+                    command: vec!["echo".into(), "hello".into()],
+                    session: None,
+                },
+            ))
+            .unwrap();
         assert!(result.output.contains("hello"));
     }
 
@@ -179,9 +273,51 @@ mod tests {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let r = Arc::new(BinaryRegistry::new(&["echo".into()]).unwrap());
-        let tool = BashTool::with_sandbox(r, Arc::new(ws.clone()), OutputLimits::default(), Duration::from_secs(30));
+        let tool = BashTool::with_sandbox(
+            r,
+            Arc::new(ws.clone()),
+            OutputLimits::default(),
+            Duration::from_secs(30),
+        );
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(tool.execute(make_ctx(&ws), BashArgs { command: vec![], session: None }));
+        let result = rt.block_on(tool.execute(
+            make_ctx(&ws),
+            BashArgs {
+                command: vec![],
+                session: None,
+            },
+        ));
         assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_bash_respects_cancelled_context() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let r = Arc::new(BinaryRegistry::new(&["sleep".into()]).unwrap());
+        let tool = BashTool::with_sandbox(
+            r,
+            Arc::new(ws.clone()),
+            OutputLimits::default(),
+            Duration::from_secs(30),
+        );
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let sink = NullSink;
+        let ctx = ToolContext {
+            workspace: &ws,
+            cancellation: cancel,
+            event_sink: &sink,
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(tool.execute(
+            ctx,
+            BashArgs {
+                command: vec!["sleep".into(), "1".into()],
+                session: None,
+            },
+        ));
+        assert!(matches!(result, Err(ToolError::Cancelled)));
     }
 }

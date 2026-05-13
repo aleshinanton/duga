@@ -34,26 +34,44 @@ impl std::fmt::Debug for ThinkTool {
         f.debug_struct("ThinkTool")
             .field("calls", &self.call_count.load(Ordering::SeqCst))
             .field("tokens", &self.token_count.load(Ordering::SeqCst))
-            .field("limits", &self.limits).finish()
+            .field("limits", &self.limits)
+            .finish()
     }
 }
 
 impl ThinkTool {
     pub fn new(limits: ThinkLimits) -> Self {
-        Self { call_count: Arc::new(AtomicUsize::new(0)), token_count: Arc::new(AtomicUsize::new(0)), limits }
+        Self {
+            call_count: Arc::new(AtomicUsize::new(0)),
+            token_count: Arc::new(AtomicUsize::new(0)),
+            limits,
+        }
     }
-    fn estimate_tokens(text: &str) -> usize { (text.split_whitespace().count() as f64 * 1.3).ceil() as usize }
+    fn estimate_tokens(text: &str) -> usize {
+        (text.split_whitespace().count() as f64 * 1.3).ceil() as usize
+    }
 }
 
 impl Default for ThinkTool {
-    fn default() -> Self { Self::new(ThinkLimits { max_calls: 8, max_tokens: 4096 }) }
+    fn default() -> Self {
+        Self::new(ThinkLimits {
+            max_calls: 8,
+            max_tokens: 4096,
+        })
+    }
 }
 
 impl Tool for ThinkTool {
     type Args = ThinkArgs;
-    fn name(&self) -> &str { "think" }
-    fn description(&self) -> &str { "Think through a problem step by step" }
-    fn retryable(&self) -> bool { false }
+    fn name(&self) -> &str {
+        "think"
+    }
+    fn description(&self) -> &str {
+        "Think through a problem step by step"
+    }
+    fn retryable(&self) -> bool {
+        false
+    }
 
     async fn execute(&self, _ctx: ToolContext<'_>, args: Self::Args) -> ToolCallResult {
         let start = std::time::Instant::now();
@@ -70,9 +88,14 @@ impl Tool for ThinkTool {
             return Err(ToolError::Denied("think token limit reached".into()));
         }
         Ok(ToolResult {
-            tool_call_id: CallId::new(), success: true, output: args.thought,
+            tool_call_id: CallId::new(),
+            success: true,
+            output: args.thought,
             metadata: serde_json::json!({"estimated_tokens": est}),
-            duration_ms: start.elapsed().as_millis(), stdout_bytes: 0, stderr_bytes: 0, truncated: false,
+            duration_ms: start.elapsed().as_millis(),
+            stdout_bytes: 0,
+            stderr_bytes: 0,
+            truncated: false,
         })
     }
 }
@@ -87,16 +110,30 @@ mod tests {
 
     fn make_ctx(ws: &Workspace) -> ToolContext<'static> {
         let ws: &'static Workspace = unsafe { std::mem::transmute(ws) };
-        ToolContext { workspace: ws, cancellation: CancellationToken::new(), event_sink: &NullSink }
+        ToolContext {
+            workspace: ws,
+            cancellation: CancellationToken::new(),
+            event_sink: &NullSink,
+        }
     }
 
     #[test]
     fn test_think_basic() {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
-        let tool = ThinkTool::new(ThinkLimits { max_calls: 10, max_tokens: 1000 });
+        let tool = ThinkTool::new(ThinkLimits {
+            max_calls: 10,
+            max_tokens: 1000,
+        });
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let r = rt.block_on(tool.execute(make_ctx(&ws), ThinkArgs { thought: "hello".into() })).unwrap();
+        let r = rt
+            .block_on(tool.execute(
+                make_ctx(&ws),
+                ThinkArgs {
+                    thought: "hello".into(),
+                },
+            ))
+            .unwrap();
         assert_eq!(r.output, "hello");
     }
 
@@ -104,9 +141,26 @@ mod tests {
     fn test_think_limit() {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
-        let tool = ThinkTool::new(ThinkLimits { max_calls: 1, max_tokens: 1000 });
+        let tool = ThinkTool::new(ThinkLimits {
+            max_calls: 1,
+            max_tokens: 1000,
+        });
         let rt = tokio::runtime::Runtime::new().unwrap();
-        assert!(rt.block_on(tool.execute(make_ctx(&ws), ThinkArgs { thought: "a".into() })).is_ok());
-        assert!(rt.block_on(tool.execute(make_ctx(&ws), ThinkArgs { thought: "b".into() })).is_err());
+        assert!(rt
+            .block_on(tool.execute(
+                make_ctx(&ws),
+                ThinkArgs {
+                    thought: "a".into()
+                }
+            ))
+            .is_ok());
+        assert!(rt
+            .block_on(tool.execute(
+                make_ctx(&ws),
+                ThinkArgs {
+                    thought: "b".into()
+                }
+            ))
+            .is_err());
     }
 }

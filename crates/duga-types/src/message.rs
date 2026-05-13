@@ -57,10 +57,7 @@ impl Message {
     }
 
     pub fn user(text: impl Into<String>) -> Self {
-        Self::new(
-            Role::User,
-            vec![ContentBlock::Text { text: text.into() }],
-        )
+        Self::new(Role::User, vec![ContentBlock::Text { text: text.into() }])
     }
 
     pub fn assistant(text: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
@@ -75,18 +72,12 @@ impl Message {
     }
 
     pub fn system(text: impl Into<String>) -> Self {
-        Self::new(
-            Role::System,
-            vec![ContentBlock::Text { text: text.into() }],
-        )
+        Self::new(Role::System, vec![ContentBlock::Text { text: text.into() }])
     }
 
     pub fn tool(tool_call_id: uuid::Uuid, output: String) -> Self {
-        Self::new(
-            Role::Tool,
-            vec![ContentBlock::Text { text: output }],
-        )
-        .with_name(tool_call_id.to_string())
+        Self::new(Role::Tool, vec![ContentBlock::Text { text: output }])
+            .with_name(tool_call_id.to_string())
     }
 
     fn with_name(mut self, name: String) -> Self {

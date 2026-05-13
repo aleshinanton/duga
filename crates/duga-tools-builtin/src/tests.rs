@@ -22,14 +22,29 @@ use crate::write::WriteTool;
 fn setup() -> (TempDir, Arc<Workspace>, ToolDispatcher) {
     let d = TempDir::new().unwrap();
     let ws = Arc::new(Workspace::open(d.path()).unwrap());
-    let r = Arc::new(BinaryRegistry::new(&["echo".into(), "cat".into(), "bash".into(), "sh".into()]).unwrap());
+    let r = Arc::new(
+        BinaryRegistry::new(&["echo".into(), "cat".into(), "bash".into(), "sh".into()]).unwrap(),
+    );
     let l = OutputLimits::default();
     let dp = ToolDispatcher::new();
-    dp.register_erased(ErasedTool::erase(ReadTool::new())).unwrap();
-    dp.register_erased(ErasedTool::erase(WriteTool::new())).unwrap();
-    dp.register_erased(ErasedTool::erase(BashTool::with_sandbox(r.clone(), ws.clone(), l.clone(), Duration::from_secs(30)))).unwrap();
-    dp.register_erased(ErasedTool::erase(SearchTool::new())).unwrap();
-    dp.register_erased(ErasedTool::erase(ThinkTool::new(ThinkLimits { max_calls: 100, max_tokens: 10000 }))).unwrap();
+    dp.register_erased(ErasedTool::erase(ReadTool::new()))
+        .unwrap();
+    dp.register_erased(ErasedTool::erase(WriteTool::new()))
+        .unwrap();
+    dp.register_erased(ErasedTool::erase(BashTool::with_sandbox(
+        r.clone(),
+        ws.clone(),
+        l.clone(),
+        Duration::from_secs(30),
+    )))
+    .unwrap();
+    dp.register_erased(ErasedTool::erase(SearchTool::new()))
+        .unwrap();
+    dp.register_erased(ErasedTool::erase(ThinkTool::new(ThinkLimits {
+        max_calls: 100,
+        max_tokens: 10000,
+    })))
+    .unwrap();
     (d, ws, dp)
 }
 
@@ -39,9 +54,37 @@ async fn test_write_read_roundtrip() {
     let c = CancellationToken::new();
     let s = NullSink;
 
-    dp.dispatch(&ToolCall::new("write", json!({"path":"t.txt","content":"hello\nworld"})), &ws, c.clone(), &s).await.unwrap();
-    let r = dp.dispatch(&ToolCall::new("read", json!({"path":"t.txt"})), &ws, c.clone(), &s).await.unwrap();
+    dp.dispatch(
+        &ToolCall::new("write", json!({"path":"t.txt","content":"hello\nworld"})),
+        &ws,
+        c.clone(),
+        &s,
+    )
+    .await
+    .unwrap();
+    let r = dp
+        .dispatch(
+            &ToolCall::new("read", json!({"path":"t.txt"})),
+            &ws,
+            c.clone(),
+            &s,
+        )
+        .await
+        .unwrap();
     assert_eq!(r.output, "hello\nworld");
+}
+
+#[tokio::test]
+async fn test_dispatch_preserves_tool_call_id() {
+    let (_d, ws, dp) = setup();
+    let c = CancellationToken::new();
+    let s = NullSink;
+    let call = ToolCall::new("write", json!({"path":"id.txt","content":"hello"}));
+    let expected = call.id.clone();
+
+    let r = dp.dispatch(&call, &ws, c, &s).await.unwrap();
+
+    assert_eq!(r.tool_call_id, expected);
 }
 
 #[tokio::test]
@@ -49,8 +92,23 @@ async fn test_search_finds() {
     let (_d, ws, dp) = setup();
     let c = CancellationToken::new();
     let s = NullSink;
-    dp.dispatch(&ToolCall::new("write", json!({"path":"d.txt","content":"foo\nbar"})), &ws, c.clone(), &s).await.unwrap();
-    let r = dp.dispatch(&ToolCall::new("search", json!({"query":"foo"})), &ws, c.clone(), &s).await.unwrap();
+    dp.dispatch(
+        &ToolCall::new("write", json!({"path":"d.txt","content":"foo\nbar"})),
+        &ws,
+        c.clone(),
+        &s,
+    )
+    .await
+    .unwrap();
+    let r = dp
+        .dispatch(
+            &ToolCall::new("search", json!({"query":"foo"})),
+            &ws,
+            c.clone(),
+            &s,
+        )
+        .await
+        .unwrap();
     assert!(r.output.contains("foo"));
 }
 
@@ -59,7 +117,15 @@ async fn test_think_works() {
     let (_d, ws, dp) = setup();
     let c = CancellationToken::new();
     let s = NullSink;
-    let r = dp.dispatch(&ToolCall::new("think", json!({"thought":"hello"})), &ws, c.clone(), &s).await.unwrap();
+    let r = dp
+        .dispatch(
+            &ToolCall::new("think", json!({"thought":"hello"})),
+            &ws,
+            c.clone(),
+            &s,
+        )
+        .await
+        .unwrap();
     assert_eq!(r.output, "hello");
 }
 
@@ -68,8 +134,23 @@ async fn test_bash_cat() {
     let (_d, ws, dp) = setup();
     let c = CancellationToken::new();
     let s = NullSink;
-    dp.dispatch(&ToolCall::new("write", json!({"path":"x.txt","content":"data"})), &ws, c.clone(), &s).await.unwrap();
-    let r = dp.dispatch(&ToolCall::new("bash", json!({"command":["cat","x.txt"]})), &ws, c.clone(), &s).await.unwrap();
+    dp.dispatch(
+        &ToolCall::new("write", json!({"path":"x.txt","content":"data"})),
+        &ws,
+        c.clone(),
+        &s,
+    )
+    .await
+    .unwrap();
+    let r = dp
+        .dispatch(
+            &ToolCall::new("bash", json!({"command":["cat","x.txt"]})),
+            &ws,
+            c.clone(),
+            &s,
+        )
+        .await
+        .unwrap();
     assert!(r.output.contains("data"));
 }
 
@@ -78,7 +159,31 @@ async fn test_errors() {
     let (_d, ws, dp) = setup();
     let c = CancellationToken::new();
     let s = NullSink;
-    assert!(dp.dispatch(&ToolCall::new("write", json!({"path":"../x","content":"x"})), &ws, c.clone(), &s).await.is_err());
-    assert!(dp.dispatch(&ToolCall::new("read", json!({"path":"no"})), &ws, c.clone(), &s).await.is_err());
-    assert!(dp.dispatch(&ToolCall::new("search", json!({"query":"["})), &ws, c.clone(), &s).await.is_err());
+    assert!(dp
+        .dispatch(
+            &ToolCall::new("write", json!({"path":"../x","content":"x"})),
+            &ws,
+            c.clone(),
+            &s
+        )
+        .await
+        .is_err());
+    assert!(dp
+        .dispatch(
+            &ToolCall::new("read", json!({"path":"no"})),
+            &ws,
+            c.clone(),
+            &s
+        )
+        .await
+        .is_err());
+    assert!(dp
+        .dispatch(
+            &ToolCall::new("search", json!({"query":"["})),
+            &ws,
+            c.clone(),
+            &s
+        )
+        .await
+        .is_err());
 }

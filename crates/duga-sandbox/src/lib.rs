@@ -7,12 +7,12 @@
 //! - `ShellSession` — persistent shell state (cwd, env) without a running shell process
 //! - `run_captured()` — the single process-spawning function with output limits and cancellation
 
-pub mod workspace;
 pub mod binary_registry;
 pub mod env;
-pub mod shell_session;
-pub mod exec;
 pub mod error;
+pub mod exec;
+pub mod shell_session;
+pub mod workspace;
 
 pub use error::{BinaryError, ShellSessionError, WorkspaceError};
 pub use exec::{run_captured, CancellationToken};

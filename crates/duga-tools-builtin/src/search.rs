@@ -23,56 +23,100 @@ pub struct SearchArgs {
 pub struct SearchTool;
 
 impl SearchTool {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Tool for SearchTool {
     type Args = SearchArgs;
-    fn name(&self) -> &str { "search" }
-    fn description(&self) -> &str { "Search for a pattern in workspace files" }
+    fn name(&self) -> &str {
+        "search"
+    }
+    fn description(&self) -> &str {
+        "Search for a pattern in workspace files"
+    }
 
     async fn execute(&self, ctx: ToolContext<'_>, args: Self::Args) -> ToolCallResult {
         let start = std::time::Instant::now();
         let search_root = if let Some(p) = &args.path {
-            ctx.workspace.resolve(&PathBuf::from(p))
+            ctx.workspace
+                .resolve(&PathBuf::from(p))
                 .map_err(|_| ToolError::Denied(format!("path escapes: {}", p)))?
-        } else { PathBuf::from(".") };
+        } else {
+            PathBuf::from(".")
+        };
         let full_root = ctx.workspace.root_path().join(&search_root);
 
         let pattern = if args.literal.unwrap_or(false) {
             Regex::new(&regex::escape(&args.query))
-        } else { Regex::new(&args.query) }
-            .map_err(|e| ToolError::InvalidArgs(format!("Invalid regex: {}", e)))?;
+        } else {
+            Regex::new(&args.query)
+        }
+        .map_err(|e| ToolError::InvalidArgs(format!("Invalid regex: {}", e)))?;
 
         let max = args.max_results.unwrap_or(200);
         let output = tokio::task::spawn_blocking(move || search_files(&full_root, &pattern, max))
-            .await.map_err(|_| ToolError::Plugin("search panicked".into()))?;
+            .await
+            .map_err(|_| ToolError::Plugin("search panicked".into()))?;
 
         Ok(ToolResult {
-            tool_call_id: CallId::new(), success: true, output,
+            tool_call_id: CallId::new(),
+            success: true,
+            output,
             metadata: serde_json::json!({}),
-            duration_ms: start.elapsed().as_millis(), stdout_bytes: 0, stderr_bytes: 0, truncated: false,
+            duration_ms: start.elapsed().as_millis(),
+            stdout_bytes: 0,
+            stderr_bytes: 0,
+            truncated: false,
         })
     }
 }
 
 fn search_files(root: &PathBuf, pattern: &Regex, max_results: usize) -> String {
     let mut results: Vec<String> = Vec::new();
-    for entry in walkdir::WalkDir::new(root).min_depth(1).max_depth(50).follow_links(false) {
-        if results.len() >= max_results { break; }
-        let entry = match entry { Ok(e) => e, Err(_) => continue };
+    for entry in walkdir::WalkDir::new(root)
+        .min_depth(1)
+        .max_depth(50)
+        .follow_links(false)
+    {
+        if results.len() >= max_results {
+            break;
+        }
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
         let path = entry.path();
-        if !path.is_file() { continue; }
-        if path.components().any(|c| c.as_os_str() == ".git") { continue; }
-        let content = match std::fs::read_to_string(path) { Ok(s) => s, Err(_) => continue };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if path.components().any(|c| c.as_os_str() == ".git") {
+            continue;
+        }
+        let content = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
         for (i, line) in content.lines().enumerate() {
-            if results.len() >= max_results { break; }
-            if pattern.is_match(line) { results.push(format!("{}:{}: {}", path.display(), i + 1, line)); }
+            if results.len() >= max_results {
+                break;
+            }
+            if pattern.is_match(line) {
+                results.push(format!("{}:{}: {}", path.display(), i + 1, line));
+            }
         }
     }
     let mut out = results.join("\n");
-    if out.is_empty() { out = "No matches found".into(); }
-    if results.len() >= max_results { out.push_str(&format!("\n... (truncated, reached max_results of {})", max_results)); }
+    if out.is_empty() {
+        out = "No matches found".into();
+    }
+    if results.len() >= max_results {
+        out.push_str(&format!(
+            "\n... (truncated, reached max_results of {})",
+            max_results
+        ));
+    }
     out
 }
 
@@ -86,7 +130,11 @@ mod tests {
 
     fn make_ctx(ws: &Workspace) -> ToolContext<'static> {
         let ws: &'static Workspace = unsafe { std::mem::transmute(ws) };
-        ToolContext { workspace: ws, cancellation: CancellationToken::new(), event_sink: &NullSink }
+        ToolContext {
+            workspace: ws,
+            cancellation: CancellationToken::new(),
+            event_sink: &NullSink,
+        }
     }
 
     #[test]
@@ -95,9 +143,17 @@ mod tests {
         std::fs::write(dir.path().join("t.txt"), "hello world\nfoo\nhello again").unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let r = rt.block_on(SearchTool::new().execute(make_ctx(&ws), SearchArgs {
-            query: "hello".into(), path: None, literal: None, max_results: None,
-        })).unwrap();
+        let r = rt
+            .block_on(SearchTool::new().execute(
+                make_ctx(&ws),
+                SearchArgs {
+                    query: "hello".into(),
+                    path: None,
+                    literal: None,
+                    max_results: None,
+                },
+            ))
+            .unwrap();
         assert!(r.output.contains("hello"));
     }
 
@@ -106,9 +162,44 @@ mod tests {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let r = rt.block_on(SearchTool::new().execute(make_ctx(&ws), SearchArgs {
-            query: "[bad".into(), path: None, literal: None, max_results: None,
-        }));
+        let r = rt.block_on(SearchTool::new().execute(
+            make_ctx(&ws),
+            SearchArgs {
+                query: "[bad".into(),
+                path: None,
+                literal: None,
+                max_results: None,
+            },
+        ));
         assert!(r.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_search_skips_file_symlink() {
+        let workspace_dir = tempdir().unwrap();
+        let outside_dir = tempdir().unwrap();
+        std::fs::write(outside_dir.path().join("secret.txt"), "needle").unwrap();
+        std::os::unix::fs::symlink(
+            outside_dir.path().join("secret.txt"),
+            workspace_dir.path().join("link.txt"),
+        )
+        .unwrap();
+
+        let ws = Workspace::open(workspace_dir.path()).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let r = rt
+            .block_on(SearchTool::new().execute(
+                make_ctx(&ws),
+                SearchArgs {
+                    query: "needle".into(),
+                    path: None,
+                    literal: None,
+                    max_results: None,
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(r.output, "No matches found");
     }
 }

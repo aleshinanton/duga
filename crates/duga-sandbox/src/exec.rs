@@ -26,13 +26,16 @@ use tokio::sync::watch;
 #[derive(Debug, Clone)]
 pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
-    tx:        Arc<watch::Sender<()>>,
+    tx: Arc<watch::Sender<()>>,
 }
 
 impl Default for CancellationToken {
     fn default() -> Self {
         let (tx, _) = watch::channel(());
-        Self { cancelled: Arc::new(AtomicBool::new(false)), tx: Arc::new(tx) }
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            tx: Arc::new(tx),
+        }
     }
 }
 
@@ -144,11 +147,23 @@ pub async fn run_captured(
         return Err(ToolError::Cancelled);
     }
 
-    let full_cwd = workspace.root_path().join(cwd);
+    if let Some(key) = env.keys().find(|key| crate::env::is_protected_var(key)) {
+        return Err(ToolError::Denied(format!(
+            "protected environment variable cannot be set: {}",
+            key
+        )));
+    }
+
+    let resolved_cwd = workspace
+        .resolve(cwd)
+        .map_err(|e| ToolError::Denied(e.to_string()))?;
+    let full_cwd = workspace.root_path().join(resolved_cwd);
 
     let mut child = tokio::process::Command::new(binary)
         .args(args)
         .current_dir(&full_cwd)
+        .env_clear()
+        .env("PATH", crate::env::SANITIZED_PATH)
         .envs(env)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -159,86 +174,97 @@ pub async fn run_captured(
     let stdout_fd = child.stdout.take().expect("stdout piped");
     let stderr_fd = child.stderr.take().expect("stderr piped");
 
-    // ── Wait future with timeout ─────────────────────────────────────────
-    // Cancellation watcher via tokio::sync::watch
-    let mut cancel_rx = cancel.subscribe();
-
-    // Wrap child.wait() in a timeout. The resulting future is !Unpin
-    // (because Child::wait borrows Child which is !Unpin), so pin it.
-    tokio::pin! {
-        let child_wait = tokio::time::timeout(timeout, child.wait());
-    }
-
-    // Biased select: timeout checked first, then cancellation, then natural exit.
-    let exit_status = tokio::select! {
-        biased;
-
-        result = child_wait.as_mut() => {
-            match result {
-                Ok(Ok(status)) => status,
-                Ok(Err(e)) => return Err(ToolError::Io(e.to_string())),
-                Err(_) => {
-                    // Timeout elapsed — child is dropped at return, killing it (kill_on_drop)
-                    return Err(ToolError::Timeout);
-                }
-            }
-        }
-
-        // Cancellation branch
-        _ = cancel_rx.changed() => {
-            // child is dropped on return, killing it (kill_on_drop)
-            return Err(ToolError::Cancelled);
-        }
-    };
-
-    // ── Process exited normally; read output with limits ─────────────────
-
-    // Helper: read up to `limit` bytes from an async reader.
-    async fn read_limited<R: AsyncReadExt + Unpin>(
-        reader: &mut R,
+    // Helper: drain a stream until EOF while retaining only up to `limit` bytes.
+    async fn read_limited<R: AsyncReadExt + Unpin + Send + 'static>(
+        mut reader: R,
         limit: u64,
-    ) -> (u64, Vec<u8>, bool) {
+    ) -> Result<(u64, Vec<u8>, bool), ToolError> {
         let mut buf = Vec::new();
         let mut scratch = vec![0u8; 8192];
         let mut total: u64 = 0;
         let mut truncated = false;
 
         loop {
-            let remaining = limit.saturating_sub(total);
-            if remaining == 0 {
-                truncated = true;
-                break;
-            }
-            let to_read = remaining.min(scratch.len() as u64) as usize;
-            match reader.read(&mut scratch[..to_read]).await {
+            match reader.read(&mut scratch).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    let take = n.min(remaining as usize);
+                    total = total.saturating_add(n as u64);
+                    let remaining = limit.saturating_sub(buf.len() as u64) as usize;
+                    if remaining == 0 {
+                        truncated = true;
+                        continue;
+                    }
+                    let take = n.min(remaining);
                     buf.extend_from_slice(&scratch[..take]);
-                    total += take as u64;
                     if take < n {
                         truncated = true;
-                        break;
                     }
                 }
-                Err(_) => break,
+                Err(e) => return Err(ToolError::Io(e.to_string())),
             }
         }
 
-        (total, buf, truncated)
+        Ok((total, buf, truncated))
     }
 
-    let mut stdout_reader = tokio::io::BufReader::new(stdout_fd);
-    let (stdout_bytes, stdout_buf, stdout_trunc) =
-        read_limited(&mut stdout_reader, limits.max_stdout_bytes).await;
+    let stdout_task = tokio::spawn(read_limited(
+        tokio::io::BufReader::new(stdout_fd),
+        limits.max_stdout_bytes,
+    ));
+    let stderr_task = tokio::spawn(read_limited(
+        tokio::io::BufReader::new(stderr_fd),
+        limits.max_stderr_bytes,
+    ));
 
-    let mut stderr_reader = tokio::io::BufReader::new(stderr_fd);
-    let (stderr_bytes, stderr_buf, stderr_trunc) =
-        read_limited(&mut stderr_reader, limits.max_stderr_bytes).await;
+    // ── Wait future with timeout ─────────────────────────────────────────
+    // Cancellation watcher via tokio::sync::watch
+    let mut cancel_rx = cancel.subscribe();
+
+    // Biased select: timeout checked first, then cancellation, then natural exit.
+    let exit_status = tokio::select! {
+        biased;
+
+        result = tokio::time::timeout(timeout, child.wait()) => {
+            match result {
+                Ok(Ok(status)) => status,
+                Ok(Err(e)) => return Err(ToolError::Io(e.to_string())),
+                Err(_) => {
+                    let _ = child.kill().await;
+                    stdout_task.abort();
+                    stderr_task.abort();
+                    return Err(ToolError::Timeout);
+                }
+            }
+        }
+
+        _ = cancel_rx.changed() => {
+            let _ = child.kill().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(ToolError::Cancelled);
+        }
+    };
+
+    // ── Process exited normally; collect drained output ───────────────────
+    let (stdout_bytes, mut stdout_buf, stdout_trunc) = stdout_task
+        .await
+        .map_err(|e| ToolError::Io(format!("stdout reader failed: {}", e)))??;
+    let (stderr_bytes, mut stderr_buf, stderr_trunc) = stderr_task
+        .await
+        .map_err(|e| ToolError::Io(format!("stderr reader failed: {}", e)))??;
 
     // Combined limit check
-    let combined_bytes = stdout_bytes + stderr_bytes;
+    let combined_bytes = stdout_bytes.saturating_add(stderr_bytes);
     let combined_trunc = combined_bytes > limits.max_combined_bytes;
+    if combined_trunc {
+        let max = limits.max_combined_bytes as usize;
+        if stdout_buf.len() >= max {
+            stdout_buf.truncate(max);
+            stderr_buf.clear();
+        } else {
+            stderr_buf.truncate(max - stdout_buf.len());
+        }
+    }
     let truncated = stdout_trunc || stderr_trunc || combined_trunc;
 
     // ── Build output string ──────────────────────────────────────────────
@@ -304,6 +330,92 @@ mod tests {
             max_stderr_bytes: 4 * 1024 * 1024,
             max_combined_bytes: 8 * 1024 * 1024,
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_subprocess_environment_is_cleared() {
+        std::env::set_var("DUGA_SECRET_TEST", "secret");
+
+        let binary = which::which("sh").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let result = run_captured(
+            &binary,
+            &[
+                "-c".into(),
+                "printf '%s' \"${DUGA_SECRET_TEST-unset}\"".into(),
+            ],
+            &ws,
+            Path::new("."),
+            &HashMap::new(),
+            &default_limits(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        std::env::remove_var("DUGA_SECRET_TEST");
+        assert_eq!(result.output, "unset");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_protected_environment_override_is_rejected() {
+        let binary = which::which("true").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let mut env = HashMap::new();
+        env.insert("PATH".to_string(), "/tmp/evil".to_string());
+
+        let result = run_captured(
+            &binary,
+            &[],
+            &ws,
+            Path::new("."),
+            &env,
+            &default_limits(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(ToolError::Denied(_))));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_large_output_does_not_deadlock_before_truncation() {
+        let binary = which::which("sh").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let limits = OutputLimits {
+            max_stdout_bytes: 1024,
+            max_stderr_bytes: 1024,
+            max_combined_bytes: 1024,
+        };
+
+        let result = run_captured(
+            &binary,
+            &[
+                "-c".into(),
+                "i=0; while [ \"$i\" -lt 100000 ]; do printf x; i=$((i + 1)); done".into(),
+            ],
+            &ws,
+            Path::new("."),
+            &HashMap::new(),
+            &limits,
+            Duration::from_secs(5),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.truncated);
+        assert!(result
+            .output
+            .contains("[TRUNCATED] stdout exceeded 1024 byte limit"));
     }
 
     // ── TASK-5.1: exit code handling and output formatting ──────────────
@@ -407,8 +519,14 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(result.output.contains("STDERR:"), "stderr-only should still label");
-        assert!(result.output.contains("STDOUT:"), "stdout label present even if empty");
+        assert!(
+            result.output.contains("STDERR:"),
+            "stderr-only should still label"
+        );
+        assert!(
+            result.output.contains("STDOUT:"),
+            "stdout label present even if empty"
+        );
     }
 
     #[cfg(unix)]
@@ -433,8 +551,14 @@ mod tests {
         .unwrap();
 
         // stdout only → no labels, just the text
-        assert!(!result.output.contains("STDOUT:"), "stdout only should not have label");
-        assert!(!result.output.contains("STDERR:"), "stdout only should not have STDERR label");
+        assert!(
+            !result.output.contains("STDOUT:"),
+            "stdout only should not have label"
+        );
+        assert!(
+            !result.output.contains("STDERR:"),
+            "stdout only should not have STDERR label"
+        );
         assert!(result.output.contains("hello"));
     }
 
@@ -442,7 +566,10 @@ mod tests {
     async fn test_format_output_format_output_fn() {
         // Test the standalone format_output function directly
         assert_eq!(format_output("hello", "", Some(0)), "hello");
-        assert_eq!(format_output("", "err", Some(1)), "STDOUT:\n\nSTDERR:\nerr\nEXIT: 1");
+        assert_eq!(
+            format_output("", "err", Some(1)),
+            "STDOUT:\n\nSTDERR:\nerr\nEXIT: 1"
+        );
         assert!(format_output("out", "err", Some(0)).contains("STDOUT:"));
         assert!(format_output("out", "err", None).contains("SIGNAL"));
     }
@@ -469,7 +596,10 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, Err(ToolError::Timeout)), "sleep 0.2 with 50ms timeout should timeout");
+        assert!(
+            matches!(result, Err(ToolError::Timeout)),
+            "sleep 0.2 with 50ms timeout should timeout"
+        );
     }
 
     #[cfg(unix)]
@@ -499,7 +629,10 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, Err(ToolError::Cancelled)), "cancelled sleep should return Cancelled");
+        assert!(
+            matches!(result, Err(ToolError::Cancelled)),
+            "cancelled sleep should return Cancelled"
+        );
     }
 
     #[cfg(unix)]
@@ -530,7 +663,10 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result, Err(ToolError::Timeout)), "timeout should win over later cancel");
+        assert!(
+            matches!(result, Err(ToolError::Timeout)),
+            "timeout should win over later cancel"
+        );
     }
 
     // ── TASK-5.3: truncation formatting ────────────────────────────────
@@ -570,7 +706,10 @@ mod tests {
 
         let result = run_captured(
             &binary,
-            &["-c".into(), "echo 'this is a long output that exceeds the tiny limit'".into()],
+            &[
+                "-c".into(),
+                "echo 'this is a long output that exceeds the tiny limit'".into(),
+            ],
             &ws,
             Path::new("."),
             &HashMap::new(),
@@ -582,8 +721,14 @@ mod tests {
         .unwrap();
 
         assert!(result.truncated, "should be marked truncated");
-        assert!(result.output.contains("[TRUNCATED]"), "should contain truncation notice");
-        assert!(result.output.contains("stdout"), "should mention stdout in notice");
+        assert!(
+            result.output.contains("[TRUNCATED]"),
+            "should contain truncation notice"
+        );
+        assert!(
+            result.output.contains("stdout"),
+            "should mention stdout in notice"
+        );
     }
 
     #[tokio::test]
@@ -607,7 +752,10 @@ mod tests {
         .unwrap();
 
         assert!(!result.truncated, "short output should not be truncated");
-        assert!(!result.output.contains("[TRUNCATED]"), "no truncation notice");
+        assert!(
+            !result.output.contains("[TRUNCATED]"),
+            "no truncation notice"
+        );
     }
 
     // ── TASK-5.5: edge cases & combined scenarios ───────────────────────

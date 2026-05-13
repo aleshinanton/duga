@@ -3,8 +3,8 @@
 //! Used during context window overflow to compress older messages
 //! while preserving pinned facts verbatim.
 
-use serde::{Deserialize, Serialize};
 use crate::llm::Seq;
+use serde::{Deserialize, Serialize};
 
 /// Instruction to the summarizer about which messages to compress.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

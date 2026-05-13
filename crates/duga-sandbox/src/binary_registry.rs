@@ -30,8 +30,8 @@ impl BinaryRegistry {
                 return Err(BinaryError::NotFound("<empty>".into()));
             }
 
-            let path =
-                which::which(name).map_err(|e| BinaryError::WhichFailed(name.clone(), e.to_string()))?;
+            let path = which::which(name)
+                .map_err(|e| BinaryError::WhichFailed(name.clone(), e.to_string()))?;
             let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
             allowed.insert(name.clone(), canonical);
         }

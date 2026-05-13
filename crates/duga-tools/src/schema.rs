@@ -4,8 +4,7 @@ use jsonschema::Validator;
 use serde_json::Value;
 
 pub fn validate_schema(schema: &Value, instance: &Value) -> Result<(), Vec<String>> {
-    let compiled = Validator::new(schema)
-        .map_err(|e| vec![e.to_string()])?;
+    let compiled = Validator::new(schema).map_err(|e| vec![e.to_string()])?;
 
     let errors: Vec<String> = compiled
         .iter_errors(instance)
@@ -19,8 +18,6 @@ pub fn validate_schema(schema: &Value, instance: &Value) -> Result<(), Vec<Strin
     }
 }
 
-pub fn deserialize_args<T: serde::de::DeserializeOwned>(
-    value: Value,
-) -> Result<T, String> {
+pub fn deserialize_args<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|e| e.to_string())
 }

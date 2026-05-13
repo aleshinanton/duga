@@ -7,13 +7,13 @@
 //! - `ToolDispatcher` — registry and dispatch engine
 //! - Schema validation helpers
 
-pub mod tool;
 pub mod context;
-pub mod event_sink;
-pub mod erased;
 pub mod dispatcher;
-pub mod schema;
+pub mod erased;
+pub mod event_sink;
 pub mod result;
+pub mod schema;
+pub mod tool;
 
 pub use context::ToolContext;
 pub use dispatcher::{ToolDispatcher, ToolDispatcherError};

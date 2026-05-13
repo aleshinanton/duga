@@ -114,6 +114,9 @@ impl ShellSession {
                 Ok(None)
             }
             SessionCommand::Export(key, value) => {
+                if crate::env::is_protected_var(&key) {
+                    return Err(ShellSessionError::ProtectedEnv(key));
+                }
                 self.env.insert(key, value);
                 Ok(None)
             }
@@ -181,10 +184,7 @@ mod tests {
     #[test]
     fn test_classify_spawn() {
         let cmd = ShellSession::classify(&["ls".into(), "-la".into()]);
-        assert_eq!(
-            cmd,
-            SessionCommand::Spawn(vec!["ls".into(), "-la".into()])
-        );
+        assert_eq!(cmd, SessionCommand::Spawn(vec!["ls".into(), "-la".into()]));
     }
 
     #[test]
@@ -200,7 +200,9 @@ mod tests {
     fn test_apply_pwd() {
         let (_dir, _ws) = make_ws();
         let mut sess = ShellSession::new(PathBuf::from("src"));
-        let result = sess.apply(SessionCommand::Pwd, &Workspace::open("/tmp").unwrap()).unwrap();
+        let result = sess
+            .apply(SessionCommand::Pwd, &Workspace::open("/tmp").unwrap())
+            .unwrap();
         assert_eq!(result, Some("src".into()));
     }
 
@@ -208,12 +210,21 @@ mod tests {
     fn test_apply_export() {
         let (_dir, ws) = make_ws();
         let mut sess = ShellSession::new(PathBuf::from("."));
-        sess.apply(
-            SessionCommand::Export("FOO".into(), "bar".into()),
-            &ws,
-        )
-        .unwrap();
+        sess.apply(SessionCommand::Export("FOO".into(), "bar".into()), &ws)
+            .unwrap();
         assert_eq!(sess.env().get("FOO"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn test_apply_export_rejects_protected_env() {
+        let (_dir, ws) = make_ws();
+        let mut sess = ShellSession::new(PathBuf::from("."));
+        let result = sess.apply(
+            SessionCommand::Export("PATH".into(), "/tmp/evil".into()),
+            &ws,
+        );
+        assert!(matches!(result, Err(ShellSessionError::ProtectedEnv(_))));
+        assert!(!sess.env().contains_key("PATH"));
     }
 
     #[test]

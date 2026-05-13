@@ -44,4 +44,6 @@ pub enum ShellSessionError {
     MissingUnsetArgument,
     #[error("invalid cwd: {0}")]
     InvalidCwd(String),
+    #[error("protected environment variable cannot be set: {0}")]
+    ProtectedEnv(String),
 }

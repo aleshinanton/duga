@@ -15,17 +15,51 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 /// Type-erased execute function signature.
-type ErasedFn = Arc<
-    dyn Fn(
-            CallId,
-            Value,
-            &'static Workspace,
-            CancellationToken,
-            &'static dyn EventSink,
-        ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send>>
-        + Send
-        + Sync,
->;
+type ErasedFuture<'a> = Pin<Box<dyn Future<Output = ToolCallResult> + Send + 'a>>;
+
+trait ErasedExecute: Send + Sync {
+    fn execute<'a>(
+        &self,
+        call_id: CallId,
+        raw_args: Value,
+        workspace: &'a Workspace,
+        cancellation: CancellationToken,
+        event_sink: &'a dyn EventSink,
+    ) -> ErasedFuture<'a>;
+}
+
+struct ErasedExecutor<T> {
+    tool: Arc<T>,
+}
+
+impl<T: crate::tool::Tool + 'static> ErasedExecute for ErasedExecutor<T> {
+    fn execute<'a>(
+        &self,
+        call_id: CallId,
+        raw_args: Value,
+        workspace: &'a Workspace,
+        cancellation: CancellationToken,
+        event_sink: &'a dyn EventSink,
+    ) -> ErasedFuture<'a> {
+        let tool = self.tool.clone();
+        Box::pin(async move {
+            let args: T::Args = match deserialize_args(raw_args) {
+                Ok(a) => a,
+                Err(e) => {
+                    return Err(ToolError::InvalidArgs(format!(
+                        "Deserialization failed: {}",
+                        e
+                    )));
+                }
+            };
+
+            let ctx = ToolContext::new(workspace, cancellation, event_sink);
+            let mut result = tool.execute(ctx, args).await?;
+            result.tool_call_id = call_id;
+            Ok(result)
+        })
+    }
+}
 
 /// A type-erased tool for registration in `ToolDispatcher`.
 #[derive(Clone)]
@@ -34,7 +68,7 @@ pub struct ErasedTool {
     pub description: String,
     pub args_schema: Value,
     pub retryable: bool,
-    execute: ErasedFn,
+    execute: Arc<dyn ErasedExecute>,
 }
 
 impl std::fmt::Debug for ErasedTool {
@@ -53,31 +87,9 @@ impl ErasedTool {
         let args_schema = tool.json_schema();
         let retryable = tool.retryable();
 
-        let tool_arc = Arc::new(tool);
-
-        let execute = Arc::new(
-            move |_call_id: CallId,
-                  raw_args: Value,
-                  workspace: &'static Workspace,
-                  cancellation: CancellationToken,
-                  event_sink: &'static dyn EventSink| {
-                let tool = tool_arc.clone();
-                Box::pin(async move {
-                    let args: T::Args = match deserialize_args(raw_args) {
-                        Ok(a) => a,
-                        Err(e) => {
-                            return Err(ToolError::InvalidArgs(format!(
-                                "Deserialization failed: {}",
-                                e
-                            )));
-                        }
-                    };
-
-                    let ctx = ToolContext::new(workspace, cancellation, event_sink);
-                    tool.execute(ctx, args).await
-                }) as Pin<Box<dyn Future<Output = ToolCallResult> + Send>>
-            },
-        ) as ErasedFn;
+        let execute = Arc::new(ErasedExecutor {
+            tool: Arc::new(tool),
+        });
 
         Self {
             name,
@@ -96,11 +108,13 @@ impl ErasedTool {
         &self,
         call_id: CallId,
         raw_args: Value,
-        workspace: &'static Workspace,
+        workspace: &Workspace,
         cancellation: CancellationToken,
-        event_sink: &'static dyn EventSink,
+        event_sink: &dyn EventSink,
     ) -> ToolCallResult {
-        (self.execute)(call_id, raw_args, workspace, cancellation, event_sink).await
+        self.execute
+            .execute(call_id, raw_args, workspace, cancellation, event_sink)
+            .await
     }
 }
 
@@ -112,8 +126,8 @@ mod tests {
     use crate::tool::Tool;
     use duga_types::tool_call::CallId;
     use duga_types::tool_result::ToolResult;
-    use serde::{Deserialize, Serialize};
     use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
 
     struct MockTool;
 
@@ -125,9 +139,15 @@ mod tests {
     impl Tool for MockTool {
         type Args = MockArgs;
 
-        fn name(&self) -> &str { "mock" }
-        fn description(&self) -> &str { "A mock tool for testing" }
-        fn retryable(&self) -> bool { true }
+        fn name(&self) -> &str {
+            "mock"
+        }
+        fn description(&self) -> &str {
+            "A mock tool for testing"
+        }
+        fn retryable(&self) -> bool {
+            true
+        }
 
         async fn execute(&self, _ctx: ToolContext<'_>, args: Self::Args) -> ToolCallResult {
             Ok(ToolResult {

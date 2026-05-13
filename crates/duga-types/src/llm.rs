@@ -2,8 +2,8 @@
 //!
 //! Defines the interface between the agent loop and the LLM providers.
 
-use serde::{Deserialize, Serialize};
 use crate::message::AssistantMessage;
+use serde::{Deserialize, Serialize};
 
 /// Options for a single LLM call.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

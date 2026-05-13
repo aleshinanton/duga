@@ -55,7 +55,10 @@ impl ToolDispatcher {
             .collect()
     }
 
-    pub fn tool_schema(&self, name: &str) -> Result<duga_types::tool_schema::ToolSchema, ToolDispatcherError> {
+    pub fn tool_schema(
+        &self,
+        name: &str,
+    ) -> Result<duga_types::tool_schema::ToolSchema, ToolDispatcherError> {
         self.tools
             .read()
             .unwrap()
@@ -92,11 +95,7 @@ impl ToolDispatcher {
         let call_id = call.id.clone();
         let raw_args = call.raw_args.clone();
 
-        // SAFETY: transmute for erased execution
-        let workspace_static: &'static Workspace = unsafe { std::mem::transmute(workspace) };
-        let sink_static: &'static dyn EventSink = unsafe { std::mem::transmute(event_sink) };
-
-        tool.execute(call_id, raw_args, workspace_static, cancellation, sink_static)
+        tool.execute(call_id, raw_args, workspace, cancellation, event_sink)
             .await
     }
 }
