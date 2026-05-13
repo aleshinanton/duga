@@ -13,8 +13,8 @@ mod bot_flow {
             allow_all_chats_for_dev: false,
             ..Default::default()
         };
-        assert!(is_allowed_chat(&config, 123));
-        assert!(!is_allowed_chat(&config, 789));
+        assert!(is_allowed_chat(&config, None, 123));
+        assert!(!is_allowed_chat(&config, None, 789));
     }
 
     #[test]
@@ -24,7 +24,7 @@ mod bot_flow {
             allow_all_chats_for_dev: true,
             ..Default::default()
         };
-        assert!(is_allowed_chat(&config, 999));
+        assert!(is_allowed_chat(&config, None, 999));
     }
 
     #[test]

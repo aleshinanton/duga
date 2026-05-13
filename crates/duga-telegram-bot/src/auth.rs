@@ -3,7 +3,10 @@
 //! Handles chat authorization, command extraction, mention stripping,
 //! and inline callback parsing.
 
+use dashmap::DashMap;
 use duga_config::TelegramConfig;
+use std::sync::Arc;
+use teloxide::prelude::*;
 use teloxide::types::{ChatId, Message};
 
 /// Callback actions from inline buttons.
@@ -17,12 +20,57 @@ pub enum CallbackAction {
     Unknown(String),
 }
 
+/// Resolved usernames → chat IDs, populated at startup.
+pub struct UsernameRegistry {
+    map: DashMap<String, i64>,
+}
+
+impl UsernameRegistry {
+    pub fn new() -> Self {
+        Self { map: DashMap::new() }
+    }
+
+    /// Resolve configured usernames to chat IDs by calling get_chat.
+    pub async fn resolve(bot: &Bot, usernames: &[String]) -> Arc<Self> {
+        let registry = Arc::new(Self::new());
+        for username in usernames {
+            let target = format!("@{username}");
+            match bot.get_chat(target).await {
+                Ok(chat) => {
+                    let id = chat.id.0;
+                    registry.map.insert(username.to_lowercase(), id);
+                    tracing::info!("resolved @{username} → chat_id {id}");
+                }
+                Err(e) => {
+                    tracing::warn!("failed to resolve @{username}: {e}");
+                }
+            }
+        }
+        registry
+    }
+}
+
 /// Check whether a chat is authorized to interact with the bot.
-pub fn is_allowed_chat(config: &TelegramConfig, chat_id: i64) -> bool {
+pub fn is_allowed_chat(
+    config: &TelegramConfig,
+    username_registry: Option<&UsernameRegistry>,
+    chat_id: i64,
+) -> bool {
     if config.allow_all_chats_for_dev {
         return true;
     }
-    config.allowed_chat_ids.contains(&chat_id)
+    if config.allowed_chat_ids.contains(&chat_id) {
+        return true;
+    }
+    // Check resolved usernames.
+    if let Some(registry) = username_registry {
+        for entry in registry.map.iter() {
+            if *entry.value() == chat_id {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Resolve the effective chat ID from a message (works for both DM and groups).
@@ -76,9 +124,9 @@ mod tests {
             allow_all_chats_for_dev: false,
             ..Default::default()
         };
-        assert!(is_allowed_chat(&config, 123));
-        assert!(is_allowed_chat(&config, 456));
-        assert!(!is_allowed_chat(&config, 789));
+        assert!(is_allowed_chat(&config, None, 123));
+        assert!(is_allowed_chat(&config, None, 456));
+        assert!(!is_allowed_chat(&config, None, 789));
     }
 
     #[test]
@@ -88,7 +136,7 @@ mod tests {
             allow_all_chats_for_dev: true,
             ..Default::default()
         };
-        assert!(is_allowed_chat(&config, 999));
+        assert!(is_allowed_chat(&config, None, 999));
     }
 
     #[test]

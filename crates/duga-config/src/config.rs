@@ -92,6 +92,8 @@ pub struct TelegramConfig {
     #[serde(default)]
     pub allowed_chat_ids: Vec<i64>,
     #[serde(default)]
+    pub allowed_chat_usernames: Vec<String>,
+    #[serde(default)]
     pub allow_all_chats_for_dev: bool,
     #[serde(default = "default_true")]
     pub send_tool_events: bool,
@@ -162,6 +164,7 @@ impl Default for TelegramConfig {
         Self {
             token_env: default_telegram_token_env(),
             allowed_chat_ids: Vec::new(),
+            allowed_chat_usernames: Vec::new(),
             allow_all_chats_for_dev: false,
             send_tool_events: true,
             send_final_only: false,

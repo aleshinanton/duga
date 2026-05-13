@@ -1,0 +1,114 @@
+# duga Telegram bot — DeepSeek V3 config
+# Run with:
+#   export DEEPSEEK_API_KEY="sk-..."
+#   export TELEGRAM_BOT_TOKEN="..."
+#   cargo run --release -p duga-telegram-bot -- --config duga-deepseek.yaml
+
+provider: "openai"
+model: "deepseek-v4-flash"
+
+# DeepSeek V4 Flash with thinking support.
+# thinking_level controls extended thinking depth.
+# Values: off | low | medium | high
+thinking_level: "medium"
+context_window: 1000000
+
+agent:
+  limits:
+    max_steps: 30
+    max_tool_calls: 60
+    max_runtime: 15m
+    retry_on_error: 2
+  features:
+    streaming: true
+  output:
+    max_stdout_bytes: 8192
+    max_stderr_bytes: 8192
+    max_combined_bytes: 16384
+  think:
+    max_calls: 8
+    max_tokens: 8192
+
+sandbox:
+  mode: "capability"
+  timeout: 60s
+  allowed_binaries:
+    - /usr/bin/cat
+    - /usr/bin/ls
+    - /usr/bin/grep
+    - /usr/bin/find
+    - /usr/bin/head
+    - /usr/bin/tail
+    - /usr/bin/wc
+    - /usr/bin/sort
+    - /usr/bin/uniq
+    - /usr/bin/cut
+    - /usr/bin/tr
+    - /usr/bin/sed
+    - /usr/bin/awk
+    - /usr/bin/xargs
+    - /usr/bin/git
+    - /usr/bin/cargo
+    - /usr/bin/rustc
+    - /usr/bin/python3
+    - /usr/bin/node
+    - /usr/bin/npm
+    - /usr/bin/curl
+    - /usr/bin/wget
+    - /usr/bin/jq
+    - /usr/bin/make
+    - /usr/bin/cmake
+    - /usr/bin/docker
+    - /usr/bin/rg
+    - /usr/bin/fd
+    - /usr/bin/bat
+    - /usr/bin/which
+
+workspace:
+  root: "~/duga-workspace"
+
+environment:
+  allowed:
+    - HOME
+    - PATH
+    - CARGO_HOME
+    - RUSTUP_HOME
+    - DEEPSEEK_API_KEY
+    - OPENAI_API_KEY
+    - ANTHROPIC_API_KEY
+    - GIT_AUTHOR_NAME
+    - GIT_AUTHOR_EMAIL
+    - GIT_COMMITTER_NAME
+    - GIT_COMMITTER_EMAIL
+
+memory:
+  max_tokens: 32768
+  compress_at_ratio: 0.7
+
+plugins:
+  dir: "./plugins"
+  modules: []
+
+frontend:
+  progress_mode: "summary"
+  confirmation_timeout: 60s
+
+telegram:
+  token_env: "TELEGRAM_BOT_TOKEN"
+  allowed_chat_usernames:
+    # Your Telegram @username (without @)
+    - antonaleshin
+  allowed_chat_ids:
+    # Or use numeric chat IDs instead
+  send_tool_events: true
+  send_final_only: false
+  require_confirmation_for:
+    - bash
+    - write
+  events_dir: "./events"
+  skills_dir: "./skills"
+  data_dir: "./data"
+  attachments:
+    enabled: true
+    max_file_size_mb: 20
+    download_dir: "attachments"
