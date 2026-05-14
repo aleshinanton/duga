@@ -4,7 +4,9 @@
 //! and inline callback parsing.
 
 use duga_config::TelegramConfig;
-use teloxide::types::{ChatId, Message, User, UserId};
+use teloxide::types::{ChatId, Message, User};
+#[cfg(test)]
+use teloxide::types::UserId;
 /// Callback actions from inline buttons.
 #[derive(Clone, Debug)]
 pub enum CallbackAction {
