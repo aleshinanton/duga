@@ -1,6 +1,6 @@
 //! Telegram bot startup and update routing.
 
-use crate::auth::{is_allowed_chat, parse_callback_data, resolve_chat_id, strip_mention, UsernameRegistry};
+use crate::auth::{is_allowed_chat, parse_callback_data, resolve_chat_id, strip_mention};
 use crate::log::BotLogger;
 use crate::runtime::{RunRequest, TelegramRuntime};
 use crate::session::SessionManager;
@@ -17,13 +17,6 @@ pub async fn run(config: &Config, token: &str) -> Result<()> {
 
     let telegram_config = config.telegram.as_ref().unwrap().clone();
 
-    // Resolve allowed usernames to chat IDs.
-    let username_registry = if !telegram_config.allowed_chat_usernames.is_empty() {
-        Some(UsernameRegistry::resolve(&bot, &telegram_config.allowed_chat_usernames).await)
-    } else {
-        None
-    };
-
     let session_manager = Arc::new(SessionManager::new());
     let bot_logger = Arc::new(BotLogger::new(telegram_config.data_dir.clone()));
     let runtime = Arc::new(TelegramRuntime::new(config.clone()));
@@ -35,7 +28,6 @@ pub async fn run(config: &Config, token: &str) -> Result<()> {
             let bot_logger = bot_logger.clone();
             let runtime = runtime.clone();
             let bot_username = bot_username.clone();
-            let username_registry = username_registry.clone();
 
             move |bot_moved: Bot, msg: Message| {
                 let bot = bot_moved.clone();
@@ -44,7 +36,6 @@ pub async fn run(config: &Config, token: &str) -> Result<()> {
                 let bot_logger = bot_logger.clone();
                 let runtime = runtime.clone();
                 let bot_username = bot_username.clone();
-                let username_registry = username_registry.clone();
 
                 async move {
                     handle_message(
@@ -55,7 +46,6 @@ pub async fn run(config: &Config, token: &str) -> Result<()> {
                         bot_logger,
                         runtime,
                         bot_username,
-                        username_registry,
                     )
                     .await;
                     Ok::<_, anyhow::Error>(())
@@ -69,17 +59,15 @@ pub async fn run(config: &Config, token: &str) -> Result<()> {
             let session_manager = session_manager.clone();
             let telegram_config = telegram_config.clone();
             let runtime = runtime.clone();
-            let username_registry = username_registry.clone();
 
             move |bot_moved: Bot, cb: CallbackQuery| {
                 let bot = bot_moved.clone();
                 let session_manager = session_manager.clone();
                 let telegram_config = telegram_config.clone();
                 let runtime = runtime.clone();
-                let username_registry = username_registry.clone();
 
                 async move {
-                    handle_callback_query(bot, cb, session_manager, telegram_config, runtime, username_registry)
+                    handle_callback_query(bot, cb, session_manager, telegram_config, runtime)
                         .await;
                     Ok::<_, anyhow::Error>(())
                 }
@@ -107,7 +95,6 @@ async fn handle_message(
     bot_logger: Arc<BotLogger>,
     runtime: Arc<TelegramRuntime>,
     bot_username: String,
-    username_registry: Option<Arc<UsernameRegistry>>,
 ) {
     let chat_id = resolve_chat_id(&msg).unwrap_or(msg.chat.id);
     let chat_id_i64 = chat_id.0;
@@ -122,12 +109,8 @@ async fn handle_message(
     }
 
     // Check authorization.
-    let is_allowed = is_allowed_chat(
-        &telegram_config,
-        username_registry.as_deref(),
-        chat_id_i64,
-    );
-    if !is_allowed {
+    let sender = msg.from.as_ref();
+    if !is_allowed_chat(&telegram_config, chat_id_i64, sender) {
         tracing::warn!("unauthorized chat {chat_id_i64}");
         return;
     }
@@ -177,10 +160,10 @@ async fn handle_callback_query(
     session_manager: Arc<SessionManager>,
     telegram_config: duga_config::TelegramConfig,
     runtime: Arc<TelegramRuntime>,
-    username_registry: Option<Arc<UsernameRegistry>>,
 ) {
     let chat_id = cb.message.as_ref().map(|m| m.chat().id.0).unwrap_or(0);
-    if !is_allowed_chat(&telegram_config, username_registry.as_deref(), chat_id) {
+    let sender = Some(&cb.from);
+    if !is_allowed_chat(&telegram_config, chat_id, sender) {
         return;
     }
 

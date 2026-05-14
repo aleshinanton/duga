@@ -48,20 +48,18 @@ sandbox:
     - /usr/bin/awk
     - /usr/bin/xargs
     - /usr/bin/git
-    - /usr/bin/cargo
-    - /usr/bin/rustc
+    - /home/pi/.cargo/bin/cargo
+    - /home/pi/.cargo/bin/rustc
     - /usr/bin/python3
-    - /usr/bin/node
-    - /usr/bin/npm
+    - /run/user/1000/fnm_multishells/644359_1778735661942/bin/node
+    - /run/user/1000/fnm_multishells/644359_1778735661942/bin/npm
     - /usr/bin/curl
     - /usr/bin/wget
     - /usr/bin/jq
     - /usr/bin/make
-    - /usr/bin/cmake
     - /usr/bin/docker
-    - /usr/bin/rg
-    - /usr/bin/fd
-    - /usr/bin/bat
+    - /home/pi/.pi/agent/bin/rg
+    - /home/pi/.pi/agent/bin/fd
     - /usr/bin/which
 
 workspace:

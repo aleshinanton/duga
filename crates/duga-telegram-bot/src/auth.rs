@@ -3,58 +3,23 @@
 //! Handles chat authorization, command extraction, mention stripping,
 //! and inline callback parsing.
 
-use dashmap::DashMap;
 use duga_config::TelegramConfig;
-use std::sync::Arc;
-use teloxide::prelude::*;
-use teloxide::types::{ChatId, Message};
-
+use teloxide::types::{ChatId, Message, User, UserId};
 /// Callback actions from inline buttons.
 #[derive(Clone, Debug)]
 pub enum CallbackAction {
-    /// Approve a pending confirmation.
     Approve(String),
-    /// Deny a pending confirmation.
     Deny(String),
-    /// Unknown callback.
     Unknown(String),
 }
 
-/// Resolved usernames → chat IDs, populated at startup.
-pub struct UsernameRegistry {
-    map: DashMap<String, i64>,
-}
-
-impl UsernameRegistry {
-    pub fn new() -> Self {
-        Self { map: DashMap::new() }
-    }
-
-    /// Resolve configured usernames to chat IDs by calling get_chat.
-    pub async fn resolve(bot: &Bot, usernames: &[String]) -> Arc<Self> {
-        let registry = Arc::new(Self::new());
-        for username in usernames {
-            let target = format!("@{username}");
-            match bot.get_chat(target).await {
-                Ok(chat) => {
-                    let id = chat.id.0;
-                    registry.map.insert(username.to_lowercase(), id);
-                    tracing::info!("resolved @{username} → chat_id {id}");
-                }
-                Err(e) => {
-                    tracing::warn!("failed to resolve @{username}: {e}");
-                }
-            }
-        }
-        registry
-    }
-}
-
-/// Check whether a chat is authorized to interact with the bot.
+/// Check whether a chat is authorized.
+/// For DMs, checks sender's @username against allowed_chat_usernames.
+/// For groups, checks chat ID against allowed_chat_ids.
 pub fn is_allowed_chat(
     config: &TelegramConfig,
-    username_registry: Option<&UsernameRegistry>,
     chat_id: i64,
+    sender: Option<&User>,
 ) -> bool {
     if config.allow_all_chats_for_dev {
         return true;
@@ -62,10 +27,11 @@ pub fn is_allowed_chat(
     if config.allowed_chat_ids.contains(&chat_id) {
         return true;
     }
-    // Check resolved usernames.
-    if let Some(registry) = username_registry {
-        for entry in registry.map.iter() {
-            if *entry.value() == chat_id {
+    // Check sender's username.
+    if let Some(user) = sender {
+        if let Some(ref username) = user.username {
+            let lowered = username.to_lowercase();
+            if config.allowed_chat_usernames.iter().any(|u| u.to_lowercase() == lowered) {
                 return true;
             }
         }
@@ -73,21 +39,12 @@ pub fn is_allowed_chat(
     false
 }
 
-/// Resolve the effective chat ID from a message (works for both DM and groups).
+/// Resolve the effective chat ID from a message.
 pub fn resolve_chat_id(msg: &Message) -> Option<ChatId> {
-    if msg.chat.is_private() {
-        // In DM, the user's chat is the effective chat.
-        Some(msg.chat.id)
-    } else {
-        // In groups, use the group chat ID.
-        Some(msg.chat.id)
-    }
+    Some(msg.chat.id)
 }
 
-/// Strip the bot's @username mention from a message text.
-///
-/// In groups, messages look like "@duga_bot do the thing".
-/// This returns "do the thing".
+/// Strip the bot's @username mention from message text.
 pub fn strip_mention<'a>(text: &'a str, bot_username: &str) -> &'a str {
     let mention = format!("@{bot_username}");
     let text = text.trim();
@@ -99,8 +56,7 @@ pub fn strip_mention<'a>(text: &'a str, bot_username: &str) -> &'a str {
 }
 
 /// Parse callback data from inline button callbacks.
-///
-/// Format: `action:payload` (e.g., `approve:abc123`, `deny:abc123`).
+/// Format: `action:payload` (e.g., `approve:abc123`).
 pub fn parse_callback_data(data: &str) -> CallbackAction {
     if let Some((action, payload)) = data.split_once(':') {
         match action {
@@ -117,6 +73,19 @@ pub fn parse_callback_data(data: &str) -> CallbackAction {
 mod tests {
     use super::*;
 
+    fn make_user(username: Option<&str>) -> User {
+        User {
+            id: UserId(123),
+            is_bot: false,
+            first_name: "Test".into(),
+            last_name: None,
+            username: username.map(|s| s.into()),
+            language_code: None,
+            is_premium: false,
+            added_to_attachment_menu: false,
+        }
+    }
+
     #[test]
     fn test_is_allowed_chat() {
         let config = TelegramConfig {
@@ -124,9 +93,9 @@ mod tests {
             allow_all_chats_for_dev: false,
             ..Default::default()
         };
-        assert!(is_allowed_chat(&config, None, 123));
-        assert!(is_allowed_chat(&config, None, 456));
-        assert!(!is_allowed_chat(&config, None, 789));
+        assert!(is_allowed_chat(&config, 123, None));
+        assert!(is_allowed_chat(&config, 456, None));
+        assert!(!is_allowed_chat(&config, 789, None));
     }
 
     #[test]
@@ -136,7 +105,21 @@ mod tests {
             allow_all_chats_for_dev: true,
             ..Default::default()
         };
-        assert!(is_allowed_chat(&config, None, 999));
+        assert!(is_allowed_chat(&config, 999, None));
+    }
+
+    #[test]
+    fn test_is_allowed_by_username() {
+        let config = TelegramConfig {
+            allowed_chat_ids: vec![],
+            allowed_chat_usernames: vec!["testuser".into()],
+            allow_all_chats_for_dev: false,
+            ..Default::default()
+        };
+        let user = make_user(Some("TestUser"));
+        assert!(is_allowed_chat(&config, 999, Some(&user)));
+        assert!(!is_allowed_chat(&config, 999, Some(&make_user(Some("other")))));
+        assert!(!is_allowed_chat(&config, 999, None));
     }
 
     #[test]
