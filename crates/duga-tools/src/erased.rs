@@ -105,6 +105,10 @@ impl ErasedTool {
         ToolSchema::new(&self.name, &self.description, self.args_schema.clone())
     }
 
+    pub fn validate_args(&self, raw_args: &Value) -> Result<(), ToolError> {
+        validate_tool_args(&self.args_schema, raw_args).map_err(ToolError::InvalidArgs)
+    }
+
     pub async fn execute(
         &self,
         call_id: CallId,
@@ -113,9 +117,7 @@ impl ErasedTool {
         cancellation: CancellationToken,
         event_sink: &dyn EventSink,
     ) -> ToolCallResult {
-        if let Err(message) = validate_tool_args(&self.args_schema, &raw_args) {
-            return Err(ToolError::InvalidArgs(message));
-        }
+        self.validate_args(&raw_args)?;
 
         self.execute
             .execute(call_id, raw_args, workspace, cancellation, event_sink)
@@ -126,6 +128,10 @@ impl ErasedTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::confirmation::{
+        ConfirmationDecision, ConfirmationMiddleware, ConfirmationPolicy, ConfirmationProvider,
+        ConfirmationRequest,
+    };
     use crate::context::ToolContext;
     use crate::dispatcher::ToolDispatcher;
     use crate::event_sink::NullSink;
@@ -136,6 +142,8 @@ mod tests {
     use duga_types::tool_result::ToolResult;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     struct MockTool;
 
@@ -168,6 +176,19 @@ mod tests {
                 stderr_bytes: 0,
                 truncated: false,
             })
+        }
+    }
+
+    struct StaticProvider(ConfirmationDecision);
+
+    #[async_trait::async_trait]
+    impl ConfirmationProvider for StaticProvider {
+        async fn confirm(
+            &self,
+            _request: &ConfirmationRequest,
+            _timeout: Duration,
+        ) -> ConfirmationDecision {
+            self.0.clone()
         }
     }
 
@@ -243,5 +264,28 @@ mod tests {
 
         assert_eq!(result.tool_call_id, call.id);
         assert_eq!(result.output, "Mock received: hello");
+    }
+
+    #[tokio::test]
+    async fn dispatch_denies_when_confirmation_denied() {
+        let dispatcher = ToolDispatcher::new();
+        dispatcher
+            .register_erased(ErasedTool::erase(MockTool))
+            .unwrap();
+        dispatcher.set_confirmation(ConfirmationMiddleware::new(
+            ConfirmationPolicy::new(["mock"], Duration::from_secs(1)),
+            Arc::new(StaticProvider(ConfirmationDecision::Denied)),
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(dir.path()).unwrap();
+        let call = ToolCall::new("mock", serde_json::json!({"msg": "hello"}));
+
+        let err = dispatcher
+            .dispatch(&call, &workspace, CancellationToken::new(), &NullSink)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ToolError::Denied(message) if message.contains("mock")));
     }
 }

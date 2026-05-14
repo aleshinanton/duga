@@ -101,18 +101,18 @@ async fn handle_message(
 
     let text = msg.text().map(|t| t.to_string());
 
+    // Check authorization before commands or task handling.
+    let sender = msg.from.as_ref();
+    if !is_allowed_chat(&telegram_config, chat_id_i64, sender) {
+        tracing::warn!("unauthorized chat {chat_id_i64}");
+        return;
+    }
+
     if let Some(ref t) = text {
         if t.starts_with('/') {
             handle_command(&bot, chat_id, t, &session_manager).await;
             return;
         }
-    }
-
-    // Check authorization.
-    let sender = msg.from.as_ref();
-    if !is_allowed_chat(&telegram_config, chat_id_i64, sender) {
-        tracing::warn!("unauthorized chat {chat_id_i64}");
-        return;
     }
 
     let task = match text {

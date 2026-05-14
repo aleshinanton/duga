@@ -7,6 +7,7 @@ use crate::safety::PendingConfirmation;
 use anyhow::Result;
 use dashmap::DashMap;
 use duga_config::TelegramConfig;
+use duga_sandbox::CancellationToken;
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
@@ -15,6 +16,7 @@ use teloxide::types::ChatId;
 pub struct ChatSessionState {
     pub active: bool,
     pub pending_confirmation: Option<PendingConfirmation>,
+    pub cancellation: Option<CancellationToken>,
     pub cancelled: bool,
 }
 
@@ -40,18 +42,27 @@ impl SessionManager {
         runtime: TelegramRuntime,
         bot_logger: Arc<BotLogger>,
     ) -> Result<()> {
-        {
+        let cancellation = CancellationToken::new();
+        let already_active = {
             let mut session = self.sessions.entry(chat_id).or_default();
             if session.active {
-                bot.send_message(
-                    ChatId(chat_id),
-                    "⚠️ A task is already running. Use /stop to cancel it.",
-                )
-                .await?;
-                return Ok(());
+                true
+            } else {
+                session.active = true;
+                session.pending_confirmation = None;
+                session.cancellation = Some(cancellation.clone());
+                session.cancelled = false;
+                false
             }
-            session.active = true;
-            session.cancelled = false;
+        };
+
+        if already_active {
+            bot.send_message(
+                ChatId(chat_id),
+                "⚠️ A task is already running. Use /stop to cancel it.",
+            )
+            .await?;
+            return Ok(());
         }
 
         let manager = self.clone();
@@ -67,6 +78,8 @@ impl SessionManager {
                     bot_clone.clone(),
                     &config_clone,
                     logger_clone.clone(),
+                    manager.clone(),
+                    cancellation,
                 )
                 .await;
 
@@ -84,6 +97,8 @@ impl SessionManager {
 
             if let Some(mut session) = manager.sessions.get_mut(&chat_id) {
                 session.active = false;
+                session.pending_confirmation = None;
+                session.cancellation = None;
             }
         });
 
@@ -94,7 +109,60 @@ impl SessionManager {
     pub fn cancel(&self, chat_id: i64) {
         if let Some(mut session) = self.sessions.get_mut(&chat_id) {
             session.cancelled = true;
+            if let Some(cancellation) = &session.cancellation {
+                cancellation.cancel();
+            }
+            if let Some(pending) = session.pending_confirmation.take() {
+                let _ = pending.resolver.send(false);
+            }
         }
+    }
+
+    pub fn set_pending_confirmation(&self, chat_id: i64, pending: PendingConfirmation) -> bool {
+        let Some(mut session) = self.sessions.get_mut(&chat_id) else {
+            return false;
+        };
+        if !session.active || session.pending_confirmation.is_some() {
+            return false;
+        }
+        session.pending_confirmation = Some(pending);
+        true
+    }
+
+    pub fn clear_pending_confirmation(&self, chat_id: i64, confirmation_id: &str) -> bool {
+        let Some(mut session) = self.sessions.get_mut(&chat_id) else {
+            return false;
+        };
+        let matches = session
+            .pending_confirmation
+            .as_ref()
+            .is_some_and(|pending| pending.confirmation_id == confirmation_id);
+        if matches {
+            session.pending_confirmation = None;
+        }
+        matches
+    }
+
+    fn resolve_pending_confirmation(
+        &self,
+        chat_id: i64,
+        confirmation_id: &str,
+        approved: bool,
+    ) -> bool {
+        let Some(mut session) = self.sessions.get_mut(&chat_id) else {
+            return false;
+        };
+        let matches = session
+            .pending_confirmation
+            .as_ref()
+            .is_some_and(|pending| pending.confirmation_id == confirmation_id);
+        if !matches {
+            return false;
+        }
+        if let Some(pending) = session.pending_confirmation.take() {
+            let _ = pending.resolver.send(approved);
+        }
+        true
     }
 
     /// Get the current status of a chat's session.
@@ -123,26 +191,10 @@ impl SessionManager {
     ) -> Result<()> {
         match action {
             CallbackAction::Approve(id) => {
-                let pending = {
-                    let mut session = self.sessions.get_mut(&chat_id);
-                    session.as_mut().and_then(|s| s.pending_confirmation.take())
-                };
-                if let Some(pending) = pending {
-                    if pending.confirmation_id == id {
-                        let _ = pending.resolver.send(true);
-                    }
-                }
+                self.resolve_pending_confirmation(chat_id, &id, true);
             }
             CallbackAction::Deny(id) => {
-                let pending = {
-                    let mut session = self.sessions.get_mut(&chat_id);
-                    session.as_mut().and_then(|s| s.pending_confirmation.take())
-                };
-                if let Some(pending) = pending {
-                    if pending.confirmation_id == id {
-                        let _ = pending.resolver.send(false);
-                    }
-                }
+                self.resolve_pending_confirmation(chat_id, &id, false);
             }
             CallbackAction::Unknown(data) => {
                 tracing::warn!("unknown callback data: {data}");

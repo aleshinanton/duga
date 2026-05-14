@@ -5,12 +5,17 @@
 
 use crate::log::BotLogger;
 use crate::render::TelegramEventRenderer;
+use crate::safety::TelegramConfirmationProvider;
+use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use duga_config::{Config, TelegramConfig};
 use duga_events::{JsonlSink, RedactingSink};
 use duga_runtime::events::FrontendEventBridge;
-use duga_runtime::{build_agent, build_dispatcher, build_llm, resolve_provider};
-use duga_sandbox::Workspace;
+use duga_runtime::{
+    build_agent, build_dispatcher, build_llm, resolve_provider, ConfirmationMiddleware,
+    ConfirmationPolicy,
+};
+use duga_sandbox::{CancellationToken, Workspace};
 use std::sync::Arc;
 use teloxide::prelude::*;
 
@@ -38,6 +43,8 @@ impl TelegramRuntime {
         bot: Bot,
         telegram_config: &TelegramConfig,
         _bot_logger: Arc<BotLogger>,
+        session_manager: Arc<SessionManager>,
+        cancellation: CancellationToken,
     ) -> Result<String> {
         let selection = resolve_provider(&self.config)?;
         let llm = build_llm(&selection.provider, &selection.model)?;
@@ -46,11 +53,25 @@ impl TelegramRuntime {
             Arc::new(Workspace::open(&self.config.workspace.root).context("opening workspace")?);
 
         let dispatcher = build_dispatcher(&self.config, workspace.clone())?;
+        if !telegram_config.require_confirmation_for.is_empty() {
+            let policy = ConfirmationPolicy::new(
+                telegram_config.require_confirmation_for.clone(),
+                self.config.frontend.confirmation_timeout,
+            );
+            let provider = Arc::new(TelegramConfirmationProvider::new(
+                bot.clone(),
+                ChatId(chat_id),
+                session_manager,
+            ));
+            dispatcher.set_confirmation(ConfirmationMiddleware::new(policy, provider));
+        }
 
         // Set up event bridges.
         let (frontend_tx, frontend_bridge) = FrontendEventBridge::new(256);
-        let frontend_sink =
-            Arc::new(duga_runtime::events::FrontendEventSink::with_name(frontend_tx, "telegram"));
+        let frontend_sink = Arc::new(duga_runtime::events::FrontendEventSink::with_name(
+            frontend_tx,
+            "telegram",
+        ));
 
         // JSONL replay sink for the chat.
         let chat_dir = telegram_config.data_dir.join(chat_id.to_string());
@@ -82,12 +103,10 @@ impl TelegramRuntime {
 
         // Spawn the renderer task.
         let mut renderer = TelegramEventRenderer::new(bot.clone(), ChatId(chat_id));
-        let renderer_handle =
-            tokio::spawn(async move { renderer.run(&mut renderer_rx).await });
+        let renderer_handle = tokio::spawn(async move { renderer.run(&mut renderer_rx).await });
 
-        // Run the agent loop.
-        let cancellation = duga_sandbox::CancellationToken::new();
         let result = agent.run(task.clone(), cancellation).await;
+        drop(agent);
 
         let _ = renderer_handle.await;
 

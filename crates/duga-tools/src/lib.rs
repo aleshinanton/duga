@@ -7,6 +7,7 @@
 //! - `ToolDispatcher` — registry and dispatch engine
 //! - Schema validation helpers
 
+pub mod confirmation;
 pub mod context;
 pub mod dispatcher;
 pub mod erased;
@@ -15,6 +16,10 @@ pub mod result;
 pub mod schema;
 pub mod tool;
 
+pub use confirmation::{
+    ConfirmationDecision, ConfirmationMiddleware, ConfirmationPolicy, ConfirmationProvider,
+    ConfirmationRequest, MiddlewareDecision,
+};
 pub use context::ToolContext;
 pub use dispatcher::{ToolDispatcher, ToolDispatcherError};
 pub use erased::ErasedTool;

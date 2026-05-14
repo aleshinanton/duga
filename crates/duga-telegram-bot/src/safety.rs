@@ -3,7 +3,10 @@
 //! Sends inline keyboard prompts for risky tool calls (bash, write)
 //! and resolves approval/denial through callback buttons.
 
-use duga_runtime::confirmation::ConfirmationRequest;
+use crate::session::SessionManager;
+use duga_runtime::confirmation::{ConfirmationDecision, ConfirmationProvider, ConfirmationRequest};
+use std::sync::Arc;
+use std::time::Duration;
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup};
 use tokio::sync::oneshot;
@@ -31,13 +34,76 @@ pub async fn send_confirmation_prompt(
             "✅ Approve",
             format!("approve:{}", request.confirmation_id),
         ),
-        InlineKeyboardButton::callback(
-            "❌ Deny",
-            format!("deny:{}", request.confirmation_id),
-        ),
+        InlineKeyboardButton::callback("❌ Deny", format!("deny:{}", request.confirmation_id)),
     ]]);
 
     bot.send_message(chat_id, format!("⚠️ Allow this action?\n\n{label}"))
         .reply_markup(keyboard)
         .await
+}
+
+pub struct TelegramConfirmationProvider {
+    bot: Bot,
+    chat_id: ChatId,
+    session_manager: Arc<SessionManager>,
+}
+
+impl TelegramConfirmationProvider {
+    pub fn new(bot: Bot, chat_id: ChatId, session_manager: Arc<SessionManager>) -> Self {
+        Self {
+            bot,
+            chat_id,
+            session_manager,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ConfirmationProvider for TelegramConfirmationProvider {
+    async fn confirm(
+        &self,
+        request: &ConfirmationRequest,
+        timeout: Duration,
+    ) -> ConfirmationDecision {
+        let (tx, rx) = oneshot::channel();
+        let pending = PendingConfirmation {
+            confirmation_id: request.confirmation_id.clone(),
+            resolver: tx,
+        };
+
+        if !self
+            .session_manager
+            .set_pending_confirmation(self.chat_id.0, pending)
+        {
+            tracing::warn!(
+                chat_id = self.chat_id.0,
+                confirmation_id = %request.confirmation_id,
+                "unable to register pending confirmation"
+            );
+            return ConfirmationDecision::Denied;
+        }
+
+        if let Err(error) = send_confirmation_prompt(&self.bot, self.chat_id, request).await {
+            self.session_manager
+                .clear_pending_confirmation(self.chat_id.0, &request.confirmation_id);
+            tracing::warn!(
+                chat_id = self.chat_id.0,
+                confirmation_id = %request.confirmation_id,
+                error = %error,
+                "unable to send confirmation prompt"
+            );
+            return ConfirmationDecision::Denied;
+        }
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(true)) => ConfirmationDecision::Approved,
+            Ok(Ok(false)) => ConfirmationDecision::Denied,
+            Ok(Err(_)) => ConfirmationDecision::Denied,
+            Err(_) => {
+                self.session_manager
+                    .clear_pending_confirmation(self.chat_id.0, &request.confirmation_id);
+                ConfirmationDecision::Timeout
+            }
+        }
+    }
 }

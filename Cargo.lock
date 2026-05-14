@@ -571,7 +571,6 @@ name = "duga-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "duga-config",
  "duga-core",
  "duga-events",
@@ -612,6 +611,7 @@ name = "duga-telegram-bot"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "cron",
@@ -639,6 +639,7 @@ dependencies = [
 name = "duga-tools"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "duga-events",
  "duga-sandbox",
  "duga-types",

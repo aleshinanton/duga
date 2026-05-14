@@ -14,8 +14,8 @@ pub mod tools;
 
 pub use agent::{build_agent, BuiltRuntime};
 pub use confirmation::{
-    ConfirmationDecision, ConfirmationPolicy, ConfirmationProvider, ConfirmationRequest,
-    MiddlewareDecision,
+    ConfirmationDecision, ConfirmationMiddleware, ConfirmationPolicy, ConfirmationProvider,
+    ConfirmationRequest, MiddlewareDecision,
 };
 pub use events::{FrontendEvent, FrontendEventBridge, FrontendEventSink};
 pub use memory_context::{load_persistent_memory, format_memory_for_prompt, PersistentMemory};
