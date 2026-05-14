@@ -6,6 +6,7 @@
 
 use crate::formatting::{chunk_message, escape_telegram_plain_text, format_final_message};
 use duga_runtime::events::FrontendEvent;
+use std::collections::HashMap;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
 use tokio::sync::mpsc;
@@ -20,6 +21,8 @@ pub struct TelegramEventRenderer {
     delta_buffer: String,
     /// Buffer for tool action labels.
     action_labels: Vec<String>,
+    /// Map from tool_call_id to tool_name (ToolCallFinished lacks name).
+    tool_names: HashMap<String, String>,
     /// Whether the run has completed.
     finished: bool,
 }
@@ -32,6 +35,7 @@ impl TelegramEventRenderer {
             process_message_id: None,
             delta_buffer: String::new(),
             action_labels: Vec::new(),
+            tool_names: HashMap::new(),
             finished: false,
         }
     }
@@ -54,9 +58,11 @@ impl TelegramEventRenderer {
                 }
                 FrontendEvent::ToolCallStarted {
                     tool_name,
-                    tool_call_id: _,
+                    tool_call_id,
                     attempt,
                 } => {
+                    self.tool_names
+                        .insert(tool_call_id.clone(), tool_name.clone());
                     let label = if attempt > 1 {
                         format!("🔧 {tool_name} (attempt {attempt})")
                     } else {
@@ -66,10 +72,15 @@ impl TelegramEventRenderer {
                     let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::ToolCallFinished {
-                    tool_name,
+                    tool_call_id,
                     success,
                     ..
                 } => {
+                    let tool_name = self
+                        .tool_names
+                        .get(&tool_call_id)
+                        .map(|n| n.as_str())
+                        .unwrap_or("tool");
                     let label = if success {
                         format!("✅ {tool_name}")
                     } else {
@@ -164,17 +175,30 @@ impl TelegramEventRenderer {
         Ok(())
     }
 
-    /// Finalize the process message and send the final answer.
+    /// Finalize: edit the process message into a step history, then send
+    /// a clean final answer in a separate new message.
     async fn finalize_process_message(&mut self, final_text: Option<String>) {
-        // Delete or update the process message.
+        // Edit the process message into a final step-history summary.
         if let Some(msg_id) = self.process_message_id {
-            let _ = self
-                .bot
-                .delete_message(self.chat_id, msg_id)
-                .await;
+            let step_count = self.action_labels.len();
+            let mut text = format!("✅ Completed in {step_count} step(s)\n");
+
+            // Show all action labels (not just last 5) for the history.
+            for label in &self.action_labels {
+                text.push_str(label);
+                text.push('\n');
+            }
+
+            let chunks = chunk_message(&text);
+            if let Some(first) = chunks.first() {
+                let _ = self
+                    .bot
+                    .edit_message_text(self.chat_id, msg_id, first)
+                    .await;
+            }
         }
 
-        // Send the final answer.
+        // Send the final answer as a clean new message.
         if let Some(text) = final_text {
             let formatted = format_final_message(&text);
             let chunks = chunk_message(&formatted);

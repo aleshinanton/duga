@@ -71,10 +71,9 @@ impl SessionManager {
                 .await;
 
             match result {
-                Ok(final_text) => {
-                    if !final_text.is_empty() {
-                        let _ = bot_clone.send_message(ChatId(chat_id), &final_text).await;
-                    }
+                Ok(_final_text) => {
+                    // Final answer is already sent by the TelegramEventRenderer
+                    // via the RunFinished event (see render.rs::finalize_process_message).
                 }
                 Err(e) => {
                     let _ = bot_clone
