@@ -175,11 +175,24 @@ mod config_tests {
     fn validates_empty_allowed_chats_in_production() {
         let config = TelegramConfig {
             allowed_chat_ids: vec![],
+            allowed_chat_usernames: vec![],
             allow_all_chats_for_dev: false,
             ..Default::default()
         };
         // Validation would catch this at config load time.
         assert!(!config.allow_all_chats_for_dev);
         assert!(config.allowed_chat_ids.is_empty());
+        assert!(config.allowed_chat_usernames.is_empty());
+    }
+
+    #[test]
+    fn allows_usernames_when_ids_empty() {
+        let config = TelegramConfig {
+            allowed_chat_ids: vec![],
+            allowed_chat_usernames: vec!["testuser".into()],
+            allow_all_chats_for_dev: false,
+            ..Default::default()
+        };
+        assert!(!config.allowed_chat_usernames.is_empty());
     }
 }

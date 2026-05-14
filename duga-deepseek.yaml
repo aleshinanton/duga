@@ -98,8 +98,6 @@ telegram:
   allowed_chat_usernames:
     # Your Telegram @username (without @)
     - antonaleshin
-  allowed_chat_ids:
-    # Or use numeric chat IDs instead
   send_tool_events: true
   send_final_only: false
   require_confirmation_for:

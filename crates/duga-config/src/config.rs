@@ -346,9 +346,12 @@ impl Config {
                     telegram.token_env
                 );
             }
-            if !telegram.allow_all_chats_for_dev && telegram.allowed_chat_ids.is_empty() {
+            if !telegram.allow_all_chats_for_dev
+                && telegram.allowed_chat_ids.is_empty()
+                && telegram.allowed_chat_usernames.is_empty()
+            {
                 errors.push(
-                    "telegram.allowed_chat_ids must not be empty unless allow_all_chats_for_dev is true"
+                    "at least one of telegram.allowed_chat_ids or telegram.allowed_chat_usernames must be non-empty (or set allow_all_chats_for_dev: true)"
                         .into(),
                 );
             }
