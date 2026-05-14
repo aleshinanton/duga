@@ -5,11 +5,9 @@
 #   cargo run --release -p duga-telegram-bot -- --config duga-deepseek.yaml
 
 provider: "openai"
-model: "deepseek-v4-flash"
+model: "deepseek-chat"
 
-# DeepSeek V4 Flash with thinking support.
-# thinking_level controls extended thinking depth.
-# Values: off | low | medium | high
+# DeepSeek V3 chat model (no thinking — avoids reasoning_content roundtrip).
 thinking_level: "medium"
 context_window: 1000000
 
