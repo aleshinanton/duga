@@ -12,6 +12,7 @@ use serde_json::Value;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
+#[derive(Debug)]
 pub struct OpenAiClient {
     model: String,
     api_key: String,

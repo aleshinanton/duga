@@ -185,6 +185,14 @@ pub struct Config {
     pub provider: Option<String>,
     pub model: String,
     #[serde(default)]
+    pub provider_api_key: Option<String>,
+    #[serde(default)]
+    pub provider_api_key_env: Option<String>,
+    #[serde(default)]
+    pub provider_base_url: Option<String>,
+    #[serde(default)]
+    pub provider_base_url_env: Option<String>,
+    #[serde(default)]
     pub thinking_level: ThinkingLevel,
     #[serde(default)]
     pub context_window: Option<u32>,

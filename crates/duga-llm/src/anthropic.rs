@@ -13,6 +13,7 @@ use serde_json::Value;
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+#[derive(Debug)]
 pub struct AnthropicClient {
     model: String,
     api_key: String,

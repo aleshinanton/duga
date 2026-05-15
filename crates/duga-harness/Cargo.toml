@@ -18,6 +18,7 @@ duga-core = { path = "../duga-core" }
 duga-events = { path = "../duga-events" }
 duga-llm = { path = "../duga-llm" }
 duga-plugin-host = { path = "../duga-plugin-host" }
+duga-runtime = { path = "../duga-runtime" }
 duga-sandbox = { path = "../duga-sandbox" }
 duga-tools = { path = "../duga-tools" }
 duga-tools-builtin = { path = "../duga-tools-builtin" }

@@ -47,7 +47,7 @@ impl TelegramRuntime {
         cancellation: CancellationToken,
     ) -> Result<String> {
         let selection = resolve_provider(&self.config)?;
-        let llm = build_llm(&selection.provider, &selection.model)?;
+        let llm = build_llm(&selection.provider, &selection.model, &self.config)?;
 
         let workspace =
             Arc::new(Workspace::open(&self.config.workspace.root).context("opening workspace")?);

@@ -5,11 +5,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cli::Cli;
 use duga_config::Config;
-use duga_core::{AgentLoop, Summarizer, SummaryFuture};
+use duga_core::{AgentLoop, Memory, Summarizer, SummaryFuture};
 use duga_events::{JsonlSink, MultiSink, NullSink};
-use duga_llm::dummy::DummyClient;
-use duga_llm::{AnthropicClient, LlmClient, OpenAiClient};
 use duga_plugin_host::load_plugins;
+use duga_runtime::providers::{build_llm, resolve_provider};
 use duga_sandbox::{binary_registry::BinaryRegistry, CancellationToken, Workspace};
 use duga_tools::{ErasedTool, ToolDispatcher};
 use duga_types::llm::SummaryMessage;
@@ -88,8 +87,8 @@ async fn main() -> Result<()> {
     }
 
     let event_sink = build_sinks(&cli, &config)?;
-    let llm = build_provider(&selection.provider, &selection.model)?;
-    let memory = duga_core::Memory::new(
+    let llm = build_llm(&selection.provider, &selection.model, &config)?;
+    let memory = Memory::new(
         vec![Message::system("You are duga, a safe coding agent.")],
         config.memory.max_tokens,
         config.memory.compress_at_ratio,
@@ -129,63 +128,6 @@ fn init_tracing(verbose: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("initializing tracing: {e}"))
 }
 
-#[derive(Debug, PartialEq)]
-struct ProviderSelection {
-    provider: String,
-    model: String,
-}
-
-fn resolve_provider(config: &Config) -> Result<ProviderSelection> {
-    let model = config.model.trim();
-    let provider = config.provider.as_deref().map(str::trim);
-    if let Some(provider) = provider {
-        if provider.is_empty() {
-            return Err(anyhow::anyhow!("provider must not be empty"));
-        }
-        let model = match model.split_once('/') {
-            Some((embedded_provider, embedded_model)) if embedded_provider == provider => {
-                embedded_model
-            }
-            Some((embedded_provider, _)) => {
-                return Err(anyhow::anyhow!(
-                    "provider '{}' conflicts with model provider '{}'",
-                    provider,
-                    embedded_provider
-                ));
-            }
-            None => model,
-        };
-        return Ok(ProviderSelection {
-            provider: provider.into(),
-            model: model.into(),
-        });
-    }
-
-    let (provider, model) = model
-        .split_once('/')
-        .context("model must use provider/model format or config must set provider")?;
-    Ok(ProviderSelection {
-        provider: provider.into(),
-        model: model.into(),
-    })
-}
-
-fn build_provider(provider: &str, model_name: &str) -> Result<Arc<dyn LlmClient>> {
-    match provider {
-        "dummy" => Ok(Arc::new(DummyClient::with_response(
-            format!("{provider}/{model_name}"),
-            DummyClient::text_response(format!(
-                "Dummy provider for model '{model_name}' is wired correctly."
-            )),
-        ))),
-        "openai" => Ok(Arc::new(OpenAiClient::from_env(model_name)?)),
-        "anthropic" => Ok(Arc::new(AnthropicClient::from_env(model_name)?)),
-        other => Err(anyhow::anyhow!(
-            "unsupported LLM provider '{other}' (supported: dummy, openai, anthropic)"
-        )),
-    }
-}
-
 fn build_sinks(cli: &Cli, _config: &Config) -> Result<Arc<dyn duga_events::EventSink>> {
     std::fs::create_dir_all(&cli.replay_dir)
         .with_context(|| format!("creating replay dir {}", cli.replay_dir.display()))?;
@@ -195,89 +137,4 @@ fn build_sinks(cli: &Cli, _config: &Config) -> Result<Arc<dyn duga_events::Event
     sinks.push(Arc::new(jsonl));
     sinks.push(Arc::new(NullSink));
     Ok(Arc::new(sinks))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_provider_keeps_dummy_for_offline_smoke_tests() {
-        let provider = build_provider("dummy", "test").unwrap();
-        assert_eq!(provider.model(), "dummy/test");
-    }
-
-    #[test]
-    fn resolve_provider_supports_legacy_provider_model() {
-        let mut config = test_config("dummy/test");
-        config.provider = None;
-        assert_eq!(
-            resolve_provider(&config).unwrap(),
-            ProviderSelection {
-                provider: "dummy".into(),
-                model: "test".into()
-            }
-        );
-    }
-
-    #[test]
-    fn resolve_provider_supports_separate_provider_field() {
-        let mut config = test_config("test");
-        config.provider = Some("dummy".into());
-        assert_eq!(
-            resolve_provider(&config).unwrap(),
-            ProviderSelection {
-                provider: "dummy".into(),
-                model: "test".into()
-            }
-        );
-    }
-
-    #[test]
-    fn resolve_provider_rejects_conflicting_provider_sources() {
-        let mut config = test_config("openai/gpt");
-        config.provider = Some("anthropic".into());
-        let err = resolve_provider(&config).unwrap_err().to_string();
-        assert!(err.contains("conflicts"));
-    }
-
-    #[test]
-    fn build_provider_rejects_unknown_provider() {
-        let err = match build_provider("unknown", "qwen") {
-            Ok(_) => panic!("unknown provider should fail"),
-            Err(error) => error.to_string(),
-        };
-        assert!(err.contains("unsupported LLM provider"));
-    }
-
-    fn test_config(model: &str) -> Config {
-        Config {
-            provider: None,
-            model: model.into(),
-            thinking_level: duga_config::ThinkingLevel::default(),
-            context_window: None,
-            agent: duga_types::config::AgentConfig::default(),
-            sandbox: duga_config::SandboxConfig {
-                mode: duga_config::SandboxMode::default(),
-                container: None,
-                workspace_mount: None,
-                timeout: std::time::Duration::from_secs(1),
-                allowed_binaries: vec![],
-            },
-            workspace: duga_config::WorkspaceConfig { root: ".".into() },
-            environment: duga_config::EnvironmentConfig {
-                allowed: Default::default(),
-            },
-            memory: duga_config::MemoryConfig {
-                max_tokens: 1024,
-                compress_at_ratio: 0.8,
-            },
-            plugins: duga_config::PluginConfig {
-                dir: "./plugins".into(),
-                modules: vec![],
-            },
-            frontend: duga_config::FrontendConfig::default(),
-            telegram: None,
-        }
-    }
 }

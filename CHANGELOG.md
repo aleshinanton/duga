@@ -10,6 +10,10 @@ This project has not published versioned releases yet. Entries below summarize t
 
 - Added a project-wide changelog.
 - Added shared tool confirmation middleware in `duga-tools` and re-exported it through `duga-runtime`.
+- Added Docker sandbox executor with `CommandExecutor` trait, `CapabilityExecutor` (wraps `run_captured`), `DockerExecutor` (routes via `docker exec`), and `SandboxExecutor` enum.
+- Added provider credential config fields (`provider_api_key`, `provider_api_key_env`, `provider_base_url`, `provider_base_url_env`) with cascading resolution (literal → env var name → provider default).
+- Added OpenAI-compatible endpoint conformance tests in `crates/duga-llm/tests/openai_compat.rs` covering chat completions, tool calls, error responses, streaming SSE fixtures, Ollama-style edge cases, and auth behavior.
+- Refactored `duga-harness` CLI to use shared `duga-runtime` provider resolution instead of duplicated `build_provider`/`resolve_provider`.
 
 ### Fixed
 

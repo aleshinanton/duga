@@ -53,8 +53,47 @@ pub fn resolve_provider(config: &Config) -> Result<ProviderSelection> {
     })
 }
 
-/// Build an LLM client for the given provider and model.
-pub fn build_llm(provider: &str, model_name: &str) -> Result<Arc<dyn LlmClient>> {
+/// Resolve API key from config with cascading priority:
+/// 1. `provider_api_key` literal in config
+/// 2. `provider_api_key_env` env var
+/// 3. Provider's default env var (`default_env`)
+fn resolve_api_key(config: &Config, default_env: &str) -> Option<String> {
+    // 1. Literal value in config
+    if let Some(ref key) = config.provider_api_key {
+        return Some(key.clone());
+    }
+
+    // 2. Custom env var name
+    if let Some(ref env_name) = config.provider_api_key_env {
+        return std::env::var(env_name).ok();
+    }
+
+    // 3. Provider's default env var
+    std::env::var(default_env).ok()
+}
+
+/// Resolve base URL from config with cascading priority:
+/// 1. `provider_base_url` literal in config
+/// 2. `provider_base_url_env` env var
+/// 3. `BASE_URL` env var (shared default)
+fn resolve_base_url(config: &Config) -> Option<String> {
+    // 1. Literal value in config
+    if let Some(ref url) = config.provider_base_url {
+        return Some(url.clone());
+    }
+
+    // 2. Custom env var name
+    if let Some(ref env_name) = config.provider_base_url_env {
+        return std::env::var(env_name).ok();
+    }
+
+    // 3. Shared default env var
+    std::env::var("BASE_URL").ok()
+}
+
+/// Build an LLM client for the given provider and model,
+/// resolving credentials from config fields first, then env vars.
+pub fn build_llm(provider: &str, model_name: &str, config: &Config) -> Result<Arc<dyn LlmClient>> {
     match provider {
         "dummy" => Ok(Arc::new(DummyClient::with_response(
             format!("{provider}/{model_name}"),
@@ -62,8 +101,34 @@ pub fn build_llm(provider: &str, model_name: &str) -> Result<Arc<dyn LlmClient>>
                 "Dummy provider for model '{model_name}' is wired correctly."
             )),
         ))),
-        "openai" => Ok(Arc::new(OpenAiClient::from_env(model_name)?)),
-        "anthropic" => Ok(Arc::new(AnthropicClient::from_env(model_name)?)),
+        "openai" => {
+            let base_url = resolve_base_url(config);
+            let api_key = resolve_api_key(config, "OPENAI_API_KEY");
+            match api_key {
+                Some(key) => Ok(Arc::new(OpenAiClient::new(model_name, key, base_url))),
+                None if base_url.is_some() => {
+                    // Local endpoint — empty key is fine
+                    Ok(Arc::new(OpenAiClient::new(model_name, "", base_url)))
+                }
+                None => Err(anyhow::anyhow!(
+                    "OPENAI_API_KEY is not set; set provider_api_key, provider_api_key_env, or provider_base_url for local endpoints"
+                )),
+            }
+        }
+        "anthropic" => {
+            let base_url = resolve_base_url(config);
+            let api_key = resolve_api_key(config, "ANTHROPIC_API_KEY")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "ANTHROPIC_API_KEY is not set; set provider_api_key or provider_api_key_env"
+                    )
+                })?;
+            Ok(Arc::new(AnthropicClient::new(
+                model_name,
+                api_key,
+                base_url,
+            )))
+        }
         other => Err(anyhow::anyhow!(
             "unsupported LLM provider '{other}' (supported: dummy, openai, anthropic)"
         )),
@@ -83,6 +148,10 @@ mod tests {
         Config {
             provider: None,
             model: model.into(),
+            provider_api_key: None,
+            provider_api_key_env: None,
+            provider_base_url: None,
+            provider_base_url_env: None,
             thinking_level: Default::default(),
             context_window: None,
             agent: AgentConfig::default(),
@@ -146,7 +215,8 @@ mod tests {
 
     #[test]
     fn build_provider_rejects_unknown_provider() {
-        let err = match build_llm("unknown", "qwen") {
+        let config = test_config("unknown/qwen");
+        let err = match build_llm("unknown", "qwen", &config) {
             Ok(_) => panic!("unknown provider should fail"),
             Err(error) => error.to_string(),
         };
@@ -155,7 +225,88 @@ mod tests {
 
     #[test]
     fn build_provider_keeps_dummy_for_offline_smoke_tests() {
-        let provider = build_llm("dummy", "test").unwrap();
+        let config = test_config("dummy/test");
+        let provider = build_llm("dummy", "test", &config).unwrap();
         assert_eq!(provider.model(), "dummy/test");
+    }
+
+    #[test]
+    fn resolve_api_key_uses_literal_first() {
+        let mut config = test_config("test");
+        config.provider_api_key = Some("sk-literal".into());
+        std::env::set_var("CUSTOM_KEY", "sk-from-env");
+        config.provider_api_key_env = Some("CUSTOM_KEY".into());
+        std::env::remove_var("OPENAI_API_KEY");
+
+        let result = resolve_api_key(&config, "OPENAI_API_KEY");
+        std::env::remove_var("CUSTOM_KEY");
+
+        assert_eq!(result, Some("sk-literal".into()));
+    }
+
+    #[test]
+    fn resolve_api_key_falls_back_to_env_var_name() {
+        let mut config = test_config("test");
+        config.provider_api_key = None;
+        std::env::set_var("CUSTOM_KEY", "sk-from-env");
+        config.provider_api_key_env = Some("CUSTOM_KEY".into());
+        std::env::remove_var("OPENAI_API_KEY");
+
+        let result = resolve_api_key(&config, "OPENAI_API_KEY");
+        std::env::remove_var("CUSTOM_KEY");
+
+        assert_eq!(result, Some("sk-from-env".into()));
+    }
+
+    #[test]
+    fn resolve_api_key_falls_back_to_default_env() {
+        let config = test_config("test");
+        std::env::set_var("OPENAI_API_KEY", "sk-default");
+        let result = resolve_api_key(&config, "OPENAI_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
+        assert_eq!(result, Some("sk-default".into()));
+    }
+
+    #[test]
+    fn resolve_base_url_uses_literal_first() {
+        let mut config = test_config("test");
+        config.provider_base_url = Some("http://literal:8080/v1".into());
+        std::env::set_var("CUSTOM_URL", "http://from-env:8080/v1");
+        config.provider_base_url_env = Some("CUSTOM_URL".into());
+
+        let result = resolve_base_url(&config);
+        std::env::remove_var("CUSTOM_URL");
+
+        assert_eq!(result, Some("http://literal:8080/v1".into()));
+    }
+
+    #[test]
+    fn resolve_base_url_falls_back_to_env_var_name() {
+        let mut config = test_config("test");
+        config.provider_base_url = None;
+        std::env::set_var("CUSTOM_URL", "http://from-env:8080/v1");
+        config.provider_base_url_env = Some("CUSTOM_URL".into());
+
+        let result = resolve_base_url(&config);
+        std::env::remove_var("CUSTOM_URL");
+
+        assert_eq!(result, Some("http://from-env:8080/v1".into()));
+    }
+
+    #[test]
+    fn resolve_base_url_falls_back_to_default_env() {
+        let config = test_config("test");
+        std::env::set_var("BASE_URL", "http://default:8080/v1");
+        let result = resolve_base_url(&config);
+        std::env::remove_var("BASE_URL");
+        assert_eq!(result, Some("http://default:8080/v1".into()));
+    }
+
+    #[test]
+    fn resolve_base_url_none_when_nothing_set() {
+        let config = test_config("test");
+        std::env::remove_var("BASE_URL");
+        let result = resolve_base_url(&config);
+        assert_eq!(result, None);
     }
 }

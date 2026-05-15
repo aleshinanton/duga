@@ -11,10 +11,12 @@ pub mod binary_registry;
 pub mod env;
 pub mod error;
 pub mod exec;
+pub mod executor;
 pub mod shell_session;
 pub mod workspace;
 
 pub use error::{BinaryError, ShellSessionError, WorkspaceError};
 pub use exec::{run_captured, CancellationToken};
+pub use executor::{CommandExecutor, CommandSpec, DockerExecutor, SandboxExecutor, CapabilityExecutor};
 pub use shell_session::{SessionCommand, ShellSession};
 pub use workspace::Workspace;
