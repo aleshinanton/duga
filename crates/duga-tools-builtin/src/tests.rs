@@ -2,7 +2,7 @@
 
 use duga_sandbox::binary_registry::BinaryRegistry;
 use duga_sandbox::exec::CancellationToken;
-use duga_sandbox::Workspace;
+use duga_sandbox::{SandboxExecutor, Workspace};
 use duga_tools::dispatcher::ToolDispatcher;
 use duga_tools::erased::ErasedTool;
 use duga_tools::event_sink::NullSink;
@@ -36,6 +36,7 @@ fn setup() -> (TempDir, Arc<Workspace>, ToolDispatcher) {
         ws.clone(),
         l.clone(),
         Duration::from_secs(30),
+        Arc::new(SandboxExecutor::capability()),
     )))
     .unwrap();
     dp.register_erased(ErasedTool::erase(SearchTool::new()))

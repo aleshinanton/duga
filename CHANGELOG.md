@@ -21,6 +21,8 @@ This project has not published versioned releases yet. Entries below summarize t
 - Wired Telegram `/stop` to the active agent cancellation token so long-running LLM/tool work is interrupted.
 - Ensured failed Telegram agent runs unblock the renderer and clear active session state.
 - Moved Telegram slash-command handling behind authorization checks.
+- Wired Docker sandbox mode into bash execution, fixed Docker command argument handling, and drained Docker stdout/stderr concurrently.
+- Redacted literal `provider_api_key` values from `Config` debug output.
 
 ## [0.1.0] - Initial development
 
@@ -64,4 +66,3 @@ This project has not published versioned releases yet. Entries below summarize t
 
 - Added and reorganized architecture, implementation-plan, backlog, provider configuration, Telegram bot, and frontend planning documentation.
 - Added README setup notes for OpenAI, Anthropic, OpenAI-compatible `BASE_URL`, local Ollama-compatible usage, and Telegram bot startup.
-

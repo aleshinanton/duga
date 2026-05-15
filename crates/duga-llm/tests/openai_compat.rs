@@ -14,6 +14,7 @@ use duga_types::llm::LlmCallOptions;
 use duga_types::message::Message;
 use duga_types::tool_schema::ToolSchema;
 use serde_json::json;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -29,6 +30,38 @@ fn openai_client_for(mock_server: &MockServer, model: &str) -> OpenAiClient {
 
 fn openai_client_for_base_url(model: &str, base_url: &str) -> OpenAiClient {
     OpenAiClient::new(model, "", Some(base_url.to_string()))
+}
+
+static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+struct EnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    saved: Vec<(&'static str, Option<String>)>,
+}
+
+impl EnvGuard {
+    fn new(keys: &[&'static str]) -> Self {
+        let lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved = keys
+            .iter()
+            .map(|&key| (key, std::env::var(key).ok()))
+            .collect();
+        Self { _lock: lock, saved }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in &self.saved {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
 }
 
 fn mock_chat_response(content: &str) -> serde_json::Value {
@@ -77,6 +110,7 @@ fn mock_chat_response_with_tool_calls(tool_name: &str, args: serde_json::Value) 
 /// When using a local OpenAI-compatible endpoint, no API key is needed.
 #[tokio::test]
 async fn test_empty_api_key_accepted_with_base_url() {
+    let _env = EnvGuard::new(&["BASE_URL", "OPENAI_API_KEY"]);
     // Set BASE_URL but no API key
     let base_url = "http://localhost:11434/v1";
     std::env::set_var("BASE_URL", base_url);
@@ -93,6 +127,7 @@ async fn test_empty_api_key_accepted_with_base_url() {
 
 #[tokio::test]
 async fn test_missing_api_key_rejected_without_base_url() {
+    let _env = EnvGuard::new(&["BASE_URL", "OPENAI_API_KEY"]);
     std::env::remove_var("OPENAI_API_KEY");
     std::env::remove_var("BASE_URL");
 
@@ -109,6 +144,7 @@ async fn test_missing_api_key_rejected_without_base_url() {
 
 #[tokio::test]
 async fn test_api_key_accepted() {
+    let _env = EnvGuard::new(&["BASE_URL", "OPENAI_API_KEY"]);
     std::env::set_var("OPENAI_API_KEY", "sk-test-123");
     std::env::remove_var("BASE_URL");
 

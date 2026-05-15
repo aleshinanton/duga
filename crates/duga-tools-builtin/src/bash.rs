@@ -1,9 +1,8 @@
 //! BashTool — dispatch to run_captured or ShellSession with timeout enforcement.
 
 use duga_sandbox::binary_registry::BinaryRegistry;
-use duga_sandbox::exec::run_captured;
 use duga_sandbox::shell_session::{SessionCommand, ShellSession};
-use duga_sandbox::Workspace;
+use duga_sandbox::{CommandExecutor, CommandSpec, SandboxExecutor, Workspace};
 use duga_tools::context::ToolContext;
 use duga_tools::result::ToolCallResult;
 use duga_tools::Tool;
@@ -32,6 +31,7 @@ pub struct BashTool {
     pub workspace: Arc<Workspace>,
     pub limits: OutputLimits,
     pub timeout: Duration,
+    executor: Arc<dyn CommandExecutor>,
 }
 
 impl std::fmt::Debug for BashTool {
@@ -50,6 +50,7 @@ impl Clone for BashTool {
             workspace: self.workspace.clone(),
             limits: self.limits.clone(),
             timeout: self.timeout,
+            executor: self.executor.clone(),
         }
     }
 }
@@ -60,6 +61,7 @@ impl BashTool {
         workspace: Arc<Workspace>,
         limits: OutputLimits,
         timeout: Duration,
+        executor: Arc<dyn CommandExecutor>,
     ) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -67,7 +69,23 @@ impl BashTool {
             workspace,
             limits,
             timeout,
+            executor,
         }
+    }
+
+    pub fn with_capability_sandbox(
+        registry: Arc<BinaryRegistry>,
+        workspace: Arc<Workspace>,
+        limits: OutputLimits,
+        timeout: Duration,
+    ) -> Self {
+        Self::with_sandbox(
+            registry,
+            workspace,
+            limits,
+            timeout,
+            Arc::new(SandboxExecutor::capability()),
+        )
     }
 }
 
@@ -78,6 +96,7 @@ impl Default for BashTool {
             Arc::new(Workspace::open("/tmp").unwrap()),
             OutputLimits::default(),
             Duration::from_secs(120),
+            Arc::new(SandboxExecutor::capability()),
         )
     }
 }
@@ -211,17 +230,16 @@ impl Tool for BashTool {
                     (PathBuf::from("."), HashMap::new())
                 };
                 let cancel = ctx.cancellation.clone();
-                let r = run_captured(
-                    &bpath,
-                    &cmd_parts[1..],
-                    &self.workspace,
-                    &cwd,
-                    &env,
-                    &self.limits,
-                    self.timeout,
-                    cancel,
-                )
-                .await?;
+                let spec = CommandSpec {
+                    program: bpath.display().to_string(),
+                    args: cmd_parts[1..].to_vec(),
+                    cwd,
+                    env,
+                };
+                let r = self
+                    .executor
+                    .run(&spec, &self.workspace, &self.limits, self.timeout, cancel)
+                    .await?;
                 Ok(r)
             }
         }
@@ -254,6 +272,7 @@ mod tests {
             Arc::new(ws.clone()),
             OutputLimits::default(),
             Duration::from_secs(30),
+            Arc::new(SandboxExecutor::capability()),
         );
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt
@@ -278,6 +297,7 @@ mod tests {
             Arc::new(ws.clone()),
             OutputLimits::default(),
             Duration::from_secs(30),
+            Arc::new(SandboxExecutor::capability()),
         );
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(
@@ -301,6 +321,7 @@ mod tests {
             Arc::new(ws.clone()),
             OutputLimits::default(),
             Duration::from_secs(30),
+            Arc::new(SandboxExecutor::capability()),
         );
         let cancel = CancellationToken::new();
         cancel.cancel();

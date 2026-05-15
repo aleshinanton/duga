@@ -10,7 +10,7 @@ pub mod search;
 pub mod think;
 pub mod write;
 
-use duga_sandbox::{binary_registry::BinaryRegistry, Workspace};
+use duga_sandbox::{binary_registry::BinaryRegistry, CommandExecutor, Workspace};
 use duga_tools::{ErasedTool, ToolDispatcher, ToolDispatcherError};
 use duga_types::config::{OutputLimits, ThinkLimits as AgentThinkLimits};
 use std::sync::Arc;
@@ -23,6 +23,7 @@ pub fn register_builtin_tools(
     output_limits: OutputLimits,
     sandbox_timeout: Duration,
     think_limits: AgentThinkLimits,
+    executor: Arc<dyn CommandExecutor>,
 ) -> Result<(), ToolDispatcherError> {
     dispatcher.register_erased(ErasedTool::erase(read::ReadTool::new()))?;
     dispatcher.register_erased(ErasedTool::erase(write::WriteTool::new()))?;
@@ -38,6 +39,7 @@ pub fn register_builtin_tools(
         workspace,
         output_limits,
         sandbox_timeout,
+        executor,
     )))?;
     Ok(())
 }

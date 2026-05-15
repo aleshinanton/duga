@@ -179,7 +179,7 @@ impl Default for TelegramConfig {
 
 // ── Top-level Config ────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub provider: Option<String>,
@@ -206,6 +206,32 @@ pub struct Config {
     pub frontend: FrontendConfig,
     #[serde(default)]
     pub telegram: Option<TelegramConfig>,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field(
+                "provider_api_key",
+                &self.provider_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("provider_api_key_env", &self.provider_api_key_env)
+            .field("provider_base_url", &self.provider_base_url)
+            .field("provider_base_url_env", &self.provider_base_url_env)
+            .field("thinking_level", &self.thinking_level)
+            .field("context_window", &self.context_window)
+            .field("agent", &self.agent)
+            .field("sandbox", &self.sandbox)
+            .field("workspace", &self.workspace)
+            .field("environment", &self.environment)
+            .field("memory", &self.memory)
+            .field("plugins", &self.plugins)
+            .field("frontend", &self.frontend)
+            .field("telegram", &self.telegram)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -547,6 +573,19 @@ plugins:
 
         assert_eq!(config.provider.as_deref(), Some("ollama"));
         assert_eq!(config.model, "qwen");
+    }
+
+    #[test]
+    fn debug_redacts_literal_provider_api_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = executable_file(&dir);
+        let mut config: Config = serde_yaml::from_str(&yaml(&dir, &binary)).unwrap();
+        config.provider_api_key = Some("sk-secret-value".into());
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("sk-secret-value"));
     }
 
     #[test]

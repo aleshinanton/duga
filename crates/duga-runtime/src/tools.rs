@@ -4,23 +4,29 @@
 //! WASM plugins into a single `ToolDispatcher`.
 
 use anyhow::{Context, Result};
-use duga_config::Config;
+use duga_config::{Config, SandboxMode as ConfigSandboxMode};
 use duga_plugin_host::load_plugins;
 use duga_sandbox::binary_registry::BinaryRegistry;
-use duga_sandbox::Workspace;
+use duga_sandbox::executor::SandboxMode;
+use duga_sandbox::{SandboxExecutor, Workspace};
 use duga_tools::{ErasedTool, ToolDispatcher};
 use std::sync::Arc;
 
 /// Build a fully-populated `ToolDispatcher` with built-in tools and plugins.
-pub fn build_dispatcher(
-    config: &Config,
-    workspace: Arc<Workspace>,
-) -> Result<Arc<ToolDispatcher>> {
+pub fn build_dispatcher(config: &Config, workspace: Arc<Workspace>) -> Result<Arc<ToolDispatcher>> {
     let registry = Arc::new(
         BinaryRegistry::from_paths(&config.sandbox.allowed_binaries)
             .context("building binary registry")?,
     );
     let dispatcher = Arc::new(ToolDispatcher::new());
+    let executor = Arc::new(
+        SandboxExecutor::from_config(
+            &sandbox_mode_from_config(&config.sandbox.mode),
+            config.sandbox.container.as_deref(),
+            config.sandbox.workspace_mount.as_deref(),
+        )
+        .context("building sandbox executor")?,
+    );
 
     duga_tools_builtin::register_builtin_tools(
         &dispatcher,
@@ -29,6 +35,7 @@ pub fn build_dispatcher(
         config.agent.output.clone(),
         config.sandbox.timeout,
         config.agent.think.clone(),
+        executor,
     )
     .context("registering built-in tools")?;
 
@@ -48,4 +55,12 @@ pub fn build_dispatcher(
     }
 
     Ok(dispatcher)
+}
+
+fn sandbox_mode_from_config(mode: &ConfigSandboxMode) -> SandboxMode {
+    match mode {
+        ConfigSandboxMode::Host => SandboxMode::Host,
+        ConfigSandboxMode::Capability => SandboxMode::Capability,
+        ConfigSandboxMode::Docker => SandboxMode::Docker,
+    }
 }

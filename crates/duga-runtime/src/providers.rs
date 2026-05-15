@@ -143,6 +143,39 @@ mod tests {
         WorkspaceConfig,
     };
     use duga_types::config::AgentConfig;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            let lock = ENV_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let saved = keys
+                .iter()
+                .map(|&key| (key, std::env::var(key).ok()))
+                .collect();
+            Self { _lock: lock, saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
 
     fn test_config(model: &str) -> Config {
         Config {
@@ -232,6 +265,7 @@ mod tests {
 
     #[test]
     fn resolve_api_key_uses_literal_first() {
+        let _env = EnvGuard::new(&["CUSTOM_KEY", "OPENAI_API_KEY"]);
         let mut config = test_config("test");
         config.provider_api_key = Some("sk-literal".into());
         std::env::set_var("CUSTOM_KEY", "sk-from-env");
@@ -246,6 +280,7 @@ mod tests {
 
     #[test]
     fn resolve_api_key_falls_back_to_env_var_name() {
+        let _env = EnvGuard::new(&["CUSTOM_KEY", "OPENAI_API_KEY"]);
         let mut config = test_config("test");
         config.provider_api_key = None;
         std::env::set_var("CUSTOM_KEY", "sk-from-env");
@@ -260,6 +295,7 @@ mod tests {
 
     #[test]
     fn resolve_api_key_falls_back_to_default_env() {
+        let _env = EnvGuard::new(&["OPENAI_API_KEY"]);
         let config = test_config("test");
         std::env::set_var("OPENAI_API_KEY", "sk-default");
         let result = resolve_api_key(&config, "OPENAI_API_KEY");
@@ -269,6 +305,7 @@ mod tests {
 
     #[test]
     fn resolve_base_url_uses_literal_first() {
+        let _env = EnvGuard::new(&["CUSTOM_URL", "BASE_URL"]);
         let mut config = test_config("test");
         config.provider_base_url = Some("http://literal:8080/v1".into());
         std::env::set_var("CUSTOM_URL", "http://from-env:8080/v1");
@@ -282,6 +319,7 @@ mod tests {
 
     #[test]
     fn resolve_base_url_falls_back_to_env_var_name() {
+        let _env = EnvGuard::new(&["CUSTOM_URL", "BASE_URL"]);
         let mut config = test_config("test");
         config.provider_base_url = None;
         std::env::set_var("CUSTOM_URL", "http://from-env:8080/v1");
@@ -295,6 +333,7 @@ mod tests {
 
     #[test]
     fn resolve_base_url_falls_back_to_default_env() {
+        let _env = EnvGuard::new(&["BASE_URL"]);
         let config = test_config("test");
         std::env::set_var("BASE_URL", "http://default:8080/v1");
         let result = resolve_base_url(&config);
@@ -304,6 +343,7 @@ mod tests {
 
     #[test]
     fn resolve_base_url_none_when_nothing_set() {
+        let _env = EnvGuard::new(&["BASE_URL"]);
         let config = test_config("test");
         std::env::remove_var("BASE_URL");
         let result = resolve_base_url(&config);

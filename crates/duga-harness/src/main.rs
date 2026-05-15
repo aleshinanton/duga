@@ -7,10 +7,11 @@ use cli::Cli;
 use duga_config::Config;
 use duga_core::{AgentLoop, Memory, Summarizer, SummaryFuture};
 use duga_events::{JsonlSink, MultiSink, NullSink};
-use duga_plugin_host::load_plugins;
-use duga_runtime::providers::{build_llm, resolve_provider};
-use duga_sandbox::{binary_registry::BinaryRegistry, CancellationToken, Workspace};
-use duga_tools::{ErasedTool, ToolDispatcher};
+use duga_runtime::{
+    build_dispatcher,
+    providers::{build_llm, resolve_provider},
+};
+use duga_sandbox::{CancellationToken, Workspace};
 use duga_types::llm::SummaryMessage;
 use duga_types::message::Message;
 use std::sync::Arc;
@@ -57,34 +58,7 @@ async fn main() -> Result<()> {
     );
 
     let workspace = Arc::new(Workspace::open(&config.workspace.root).context("opening workspace")?);
-    let registry = Arc::new(
-        BinaryRegistry::from_paths(&config.sandbox.allowed_binaries)
-            .context("building binary registry")?,
-    );
-    let dispatcher = Arc::new(ToolDispatcher::new());
-    duga_tools_builtin::register_builtin_tools(
-        &dispatcher,
-        registry,
-        workspace.clone(),
-        config.agent.output.clone(),
-        config.sandbox.timeout,
-        config.agent.think.clone(),
-    )
-    .context("registering built-in tools")?;
-
-    let plugin_registry = load_plugins(
-        &config.plugins.dir,
-        &config.plugins.modules,
-        &workspace,
-        config.agent.output.clone(),
-        config.sandbox.timeout,
-    )
-    .context("loading plugins")?;
-    for plugin in plugin_registry.into_plugins() {
-        dispatcher
-            .register_erased(ErasedTool::erase(plugin))
-            .context("registering plugin")?;
-    }
+    let dispatcher = build_dispatcher(&config, workspace.clone())?;
 
     let event_sink = build_sinks(&cli, &config)?;
     let llm = build_llm(&selection.provider, &selection.model, &config)?;

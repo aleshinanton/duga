@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::exec::{self, CancellationToken, format_output, truncation_notice};
+use crate::exec::{self, format_output, truncation_notice, CancellationToken};
 use crate::workspace::Workspace;
 
 /// Sandbox execution mode — mirrors duga_config::SandboxMode to avoid
@@ -54,6 +54,22 @@ pub struct CommandSpec {
     pub cwd: PathBuf,
     /// Environment variables.
     pub env: std::collections::HashMap<String, String>,
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn shell_command(container_cwd: &Path, program: &str, args: &[String]) -> String {
+    let mut command_parts = vec![shell_quote(program)];
+    for arg in args {
+        command_parts.push(shell_quote(arg));
+    }
+    format!(
+        "cd {} && {}",
+        shell_quote(&container_cwd.display().to_string()),
+        command_parts.join(" ")
+    )
 }
 
 /// Trait object-safe executor interface.
@@ -176,8 +192,7 @@ impl DockerExecutor {
             match status {
                 Ok(output) if output.status.success() => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    if !stdout.trim().contains("true") && !stdout.trim().contains("'true'")
-                    {
+                    if !stdout.trim().contains("true") && !stdout.trim().contains("'true'") {
                         return Err(ToolError::Denied(format!(
                             "Docker container '{}' is not running",
                             container
@@ -241,13 +256,27 @@ impl CommandExecutor for DockerExecutor {
     async fn run(
         &self,
         spec: &CommandSpec,
-        _workspace: &Workspace,
+        workspace: &Workspace,
         limits: &OutputLimits,
         timeout: std::time::Duration,
         cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError> {
-        // Convert host-relative cwd to container-absolute path.
-        let container_cwd = self.translate_to_container(&spec.cwd);
+        if let Some(key) = spec
+            .env
+            .keys()
+            .find(|key| crate::env::is_protected_var(key))
+        {
+            return Err(ToolError::Denied(format!(
+                "protected environment variable cannot be set: {}",
+                key
+            )));
+        }
+
+        // Convert workspace-relative cwd to container-absolute path.
+        let resolved_cwd = workspace
+            .resolve(&spec.cwd)
+            .map_err(|e| ToolError::Denied(e.to_string()))?;
+        let container_cwd = self.translate_to_container(&resolved_cwd);
 
         // Build the docker exec command args.
         // docker exec [options] container command
@@ -270,13 +299,7 @@ impl CommandExecutor for DockerExecutor {
         args.push("sh".into());
         args.push("-c".into());
 
-        // Build the command string: cd to cwd && <program> <args>
-        let mut cmd_parts = vec![format!("cd '{}'", container_cwd.display())];
-        cmd_parts.push(format!("'{}'", spec.program));
-        for arg in &spec.args {
-            cmd_parts.push(format!("'{}'", arg.replace('\'', "'\\''")));
-        }
-        let cmd_string = cmd_parts.join(" && ");
+        let cmd_string = shell_command(&container_cwd, &spec.program, &spec.args);
         args.push(cmd_string);
 
         // Locate the docker binary on the host.
@@ -336,6 +359,15 @@ impl CommandExecutor for DockerExecutor {
             Ok((total, buf, truncated))
         }
 
+        let stdout_task = tokio::spawn(read_limited(
+            tokio::io::BufReader::new(stdout_fd),
+            limits.max_stdout_bytes,
+        ));
+        let stderr_task = tokio::spawn(read_limited(
+            tokio::io::BufReader::new(stderr_fd),
+            limits.max_stderr_bytes,
+        ));
+
         let mut cancel_rx = cancel.subscribe();
 
         let exit_status = tokio::select! {
@@ -344,9 +376,15 @@ impl CommandExecutor for DockerExecutor {
             result = tokio::time::timeout(timeout, child.wait()) => {
                 match result {
                     Ok(Ok(status)) => status,
-                    Ok(Err(e)) => return Err(ToolError::Io(e.to_string())),
+                    Ok(Err(e)) => {
+                        stdout_task.abort();
+                        stderr_task.abort();
+                        return Err(ToolError::Io(e.to_string()));
+                    }
                     Err(_) => {
                         let _ = child.kill().await;
+                        stdout_task.abort();
+                        stderr_task.abort();
                         return Err(ToolError::Timeout);
                     }
                 }
@@ -354,20 +392,18 @@ impl CommandExecutor for DockerExecutor {
 
             _ = cancel_rx.changed() => {
                 let _ = child.kill().await;
+                stdout_task.abort();
+                stderr_task.abort();
                 return Err(ToolError::Cancelled);
             }
         };
 
-        let (stdout_bytes, mut stdout_buf, stdout_trunc) = read_limited(
-            tokio::io::BufReader::new(stdout_fd),
-            limits.max_stdout_bytes,
-        )
-        .await?;
-        let (stderr_bytes, mut stderr_buf, stderr_trunc) = read_limited(
-            tokio::io::BufReader::new(stderr_fd),
-            limits.max_stderr_bytes,
-        )
-        .await?;
+        let (stdout_bytes, mut stdout_buf, stdout_trunc) = stdout_task
+            .await
+            .map_err(|e| ToolError::Io(format!("stdout reader failed: {}", e)))??;
+        let (stderr_bytes, mut stderr_buf, stderr_trunc) = stderr_task
+            .await
+            .map_err(|e| ToolError::Io(format!("stderr reader failed: {}", e)))??;
 
         // Combined limit check
         let combined_bytes = stdout_bytes.saturating_add(stderr_bytes);
@@ -393,11 +429,17 @@ impl CommandExecutor for DockerExecutor {
             let mut o = output;
             if stdout_trunc {
                 o.push_str("\n[TRUNCATED] ");
-                o.push_str(&truncation_notice("stdout", limits.max_stdout_bytes as usize));
+                o.push_str(&truncation_notice(
+                    "stdout",
+                    limits.max_stdout_bytes as usize,
+                ));
             }
             if stderr_trunc {
                 o.push_str("\n[TRUNCATED] ");
-                o.push_str(&truncation_notice("stderr", limits.max_stderr_bytes as usize));
+                o.push_str(&truncation_notice(
+                    "stderr",
+                    limits.max_stderr_bytes as usize,
+                ));
             }
             if combined_trunc {
                 o.push_str("\n[TRUNCATED] ");
@@ -445,11 +487,18 @@ impl SandboxExecutor {
     }
 
     pub fn docker(container: &str, workspace_mount: &Path) -> Result<Self, ToolError> {
-        Ok(Self::Docker(DockerExecutor::new(container, workspace_mount)?))
+        Ok(Self::Docker(DockerExecutor::new(
+            container,
+            workspace_mount,
+        )?))
     }
 
     /// Build from config values, returning the appropriate executor variant.
-    pub fn from_config(mode: &SandboxMode, container: Option<&str>, workspace_mount: Option<&str>) -> Result<Self, ToolError> {
+    pub fn from_config(
+        mode: &SandboxMode,
+        container: Option<&str>,
+        workspace_mount: Option<&str>,
+    ) -> Result<Self, ToolError> {
         match mode {
             SandboxMode::Capability | SandboxMode::Host => Ok(Self::capability()),
             SandboxMode::Docker => {
@@ -484,16 +533,22 @@ impl CommandExecutor for SandboxExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::Workspace;
+    use super::*;
     use std::time::Duration;
 
     #[test]
     fn test_sandbox_mode_from_config_str() {
-        assert_eq!(SandboxMode::from_config_str("capability"), SandboxMode::Capability);
+        assert_eq!(
+            SandboxMode::from_config_str("capability"),
+            SandboxMode::Capability
+        );
         assert_eq!(SandboxMode::from_config_str("host"), SandboxMode::Host);
         assert_eq!(SandboxMode::from_config_str("docker"), SandboxMode::Docker);
-        assert_eq!(SandboxMode::from_config_str("unknown"), SandboxMode::Capability);
+        assert_eq!(
+            SandboxMode::from_config_str("unknown"),
+            SandboxMode::Capability
+        );
     }
 
     #[test]
@@ -526,6 +581,20 @@ mod tests {
     }
 
     #[test]
+    fn test_docker_shell_command_quotes_args_without_chaining_each_arg() {
+        let command = shell_command(
+            Path::new("/workspace/src dir"),
+            "/bin/echo",
+            &["hello world".into(), "it's ok".into()],
+        );
+
+        assert_eq!(
+            command,
+            "cd '/workspace/src dir' && '/bin/echo' 'hello world' 'it'\\''s ok'"
+        );
+    }
+
+    #[test]
     fn test_docker_executor_rejects_empty_mount() {
         let result = DockerExecutor::new("test", Path::new(""));
         assert!(result.is_err());
@@ -548,10 +617,16 @@ mod tests {
             max_stderr_bytes: 4 * 1024 * 1024,
             max_combined_bytes: 8 * 1024 * 1024,
         };
-        let result = exec.run(&spec, &ws, &limits, Duration::from_secs(10), cancel).await;
+        let result = exec
+            .run(&spec, &ws, &limits, Duration::from_secs(10), cancel)
+            .await;
         assert!(result.is_ok(), "echo should succeed: {:?}", result);
         let r = result.unwrap();
-        assert!(r.output.contains("hello"), "output should contain 'hello': {}", r.output);
+        assert!(
+            r.output.contains("hello"),
+            "output should contain 'hello': {}",
+            r.output
+        );
     }
 
     #[tokio::test]
@@ -571,7 +646,9 @@ mod tests {
             max_stderr_bytes: 4 * 1024 * 1024,
             max_combined_bytes: 8 * 1024 * 1024,
         };
-        let result = exec.run(&spec, &ws, &limits, Duration::from_millis(50), cancel).await;
+        let result = exec
+            .run(&spec, &ws, &limits, Duration::from_millis(50), cancel)
+            .await;
         assert!(matches!(result, Err(ToolError::Timeout)));
     }
 
@@ -599,7 +676,9 @@ mod tests {
             cancel_clone.cancel();
         });
 
-        let result = exec.run(&spec, &ws, &limits, Duration::from_secs(10), cancel).await;
+        let result = exec
+            .run(&spec, &ws, &limits, Duration::from_secs(10), cancel)
+            .await;
         assert!(matches!(result, Err(ToolError::Cancelled)));
     }
 
