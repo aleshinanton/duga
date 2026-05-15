@@ -30,7 +30,9 @@
 | EPIC-17 | Terminal UI Frontend | 9 | §5, §24, §26, §32 | 40 |
 | EPIC-18 | Frontend Shared Runtime | 6 | §5, §13–17, §21–26, §31–32 | 30 |
 | EPIC-19 | Provider Compatibility Follow-up | 4 | §6a, §32 | 14 |
-| **Total** | | **138** | | **587** |
+| EPIC-20 | Provider API Key and Base URL Config | 4 | §32 | 14 |
+| EPIC-21 | Binary Allowlist Patterns | 4 | §16, §17 | 11 |
+| **Total** | | **146** | | **612** |
 
 ---
 
@@ -244,6 +246,14 @@ graph TD
     T8.6 --> T19.2
     T19.1 --> T19.3[19.3 Provider config migration notes]
     T19.2 --> T19.4[19.4 Native Ollama decision gate]
+
+    %% Binary allowlist patterns
+    T18.6 --> T21.1[21.1 allow_all_binaries config flag]
+    T2.3 --> T21.2[21.2 glob/wildcard pattern support]
+    T21.1 --> T21.2
+    T21.1 --> T21.3[21.3 bare command names in Docker allow-all]
+    T21.1 --> T21.4[21.4 documentation]
+    T21.2 --> T21.4
 ```
 
 ---
@@ -403,6 +413,7 @@ Tasks blocked until their GAP is resolved:
 | G19 (confirmation middleware) | T16.7, T17.7, T18.5 | Pause tool call for confirm/deny, or fail and ask user to retry? -> **Resolved: shared middleware pauses only the pending tool call; Telegram/TUI provide UI-specific approval.** |
 | G20 (TUI event loop model) | T17.3, T17.6 | Single async loop, actor model, or channels between UI/runtime tasks? -> **Resolved: channels between UI/runtime tasks using the EPIC-18 frontend event bridge.** |
 | G21 (Docker filesystem scope) | T18.6 | Do all tools execute in Docker, or only process execution? -> **Resolved: Docker mode applies to `bash`/process execution; read/write/search remain host capability tools over the bind-mounted workspace.** |
+| G22 (allowlist bypass in Docker) | T21.1, T21.3 | Should Docker mode support `allow_all_binaries` to bypass the host binary allowlist, since the container provides OS-level isolation? -> **Resolved: yes; added as EPIC-21 with an explicit opt-in flag and config warning for non-container modes.** |
 
 ---
 
@@ -462,3 +473,5 @@ status/ready (unblocked, can be picked up)
 | `epic-17-terminal-ui.md` | EPIC-17: Terminal UI Frontend (9 tasks) |
 | `epic-18-frontend-shared-runtime.md` | EPIC-18: Frontend Shared Runtime (6 tasks) |
 | `epic-19-provider-compatibility.md` | EPIC-19: Provider Compatibility Follow-up (4 tasks) |
+| `epic-20-provider-config.md` | EPIC-20: Provider API Key and Base URL Config (4 tasks) |
+| `epic-21-binary-allowlist-patterns.md` | EPIC-21: Binary Allowlist Patterns (4 tasks) |
