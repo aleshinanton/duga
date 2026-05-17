@@ -301,7 +301,7 @@ impl CommandExecutor for DockerExecutor {
         }
 
         // Working directory inside the container.
-        args.push("--workdir".into());
+        args.push("-w".into());
         args.push(container_cwd.display().to_string());
 
         // Container name/image.
