@@ -313,45 +313,47 @@ impl Config {
             ));
         }
 
-        // Validate binary allowlist entries.
+        // Validate binary allowlist entries (skipped when allow_all_binaries is set).
         // Glob patterns are expanded later; we only warn for obvious issues here.
-        for entry in &self.sandbox.allowed_binaries {
-            let pattern = match BinaryPattern::parse(entry) {
-                Ok(p) => p,
-                Err(e) => {
-                    errors.push(format!("invalid binary entry '{}': {}", entry, e));
-                    continue;
-                }
-            };
-            match pattern {
-                BinaryPattern::Exact(ref s) => {
-                    // If it contains '/', treat as absolute path and validate.
-                    if s.contains('/') {
-                        let path = Path::new(s);
-                        if !path.is_absolute() {
-                            errors.push(format!(
-                                "binary path must be absolute: {}",
-                                path.display()
-                            ));
-                            continue;
-                        }
-                        if !path.exists() {
-                            errors.push(format!("binary not found: {}", path.display()));
-                            continue;
-                        }
-                        if !path.is_file() {
-                            errors.push(format!("binary is not a file: {}", path.display()));
-                            continue;
-                        }
-                        if !is_executable(path) {
-                            errors.push(format!("binary is not executable: {}", path.display()));
-                        }
+        if !self.sandbox.allow_all_binaries {
+            for entry in &self.sandbox.allowed_binaries {
+                let pattern = match BinaryPattern::parse(entry) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        errors.push(format!("invalid binary entry '{}': {}", entry, e));
+                        continue;
                     }
-                    // Bare names (no '/') are resolved via `which` at runtime — skip validation.
-                }
-                BinaryPattern::Glob(_) => {
-                    // Glob patterns are expanded at startup by BinaryRegistry.
-                    // We only check for path traversal here.
+                };
+                match pattern {
+                    BinaryPattern::Exact(ref s) => {
+                        // If it contains '/', treat as absolute path and validate.
+                        if s.contains('/') {
+                            let path = Path::new(s);
+                            if !path.is_absolute() {
+                                errors.push(format!(
+                                    "binary path must be absolute: {}",
+                                    path.display()
+                                ));
+                                continue;
+                            }
+                            if !path.exists() {
+                                errors.push(format!("binary not found: {}", path.display()));
+                                continue;
+                            }
+                            if !path.is_file() {
+                                errors.push(format!("binary is not a file: {}", path.display()));
+                                continue;
+                            }
+                            if !is_executable(path) {
+                                errors.push(format!("binary is not executable: {}", path.display()));
+                            }
+                        }
+                        // Bare names (no '/') are resolved via `which` at runtime — skip validation.
+                    }
+                    BinaryPattern::Glob(_) => {
+                        // Glob patterns are expanded at startup by BinaryRegistry.
+                        // We only check for path traversal here.
+                    }
                 }
             }
         }
