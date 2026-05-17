@@ -601,7 +601,17 @@ struct Sandbox {
 
 # 16. Binary Resolution
 
-Allowed binaries are resolved at startup:
+The binary registry supports three modes of operation:
+
+1. **Exact paths** (default): each entry is an absolute path or bare name
+   resolved at startup via `which`. The resolved absolute path is cached.
+2. **Glob patterns**: entries containing `*`, `?`, or `[` are expanded at
+   startup by walking matching directories and registering each discovered
+   executable.
+3. **Allow-all**: a sentinel mode that skips all registry checks. The bare
+   command name from the LLM is passed directly to the executor.
+
+### 16.1 Exact Mode
 
 ```rust
 cargo   -> /usr/bin/cargo
@@ -618,7 +628,51 @@ The runtime executes ONLY absolute resolved paths. This prevents:
 - local executable shadowing,
 - workspace poisoning of `./cargo` or similar.
 
-## 16.1 Scope of the allowlist
+### 16.2 Glob Mode
+
+```yaml
+sandbox:
+  allowed_binaries:
+    - /usr/bin/*           # all executables in /usr/bin
+    - /usr/local/bin/g*    # git, gcc, go, etc.
+    - /usr/bin/cat         # exact paths still work alongside globs
+```
+
+Glob patterns are expanded eagerly at startup. Each discovered executable
+is registered in the allowlist. Patterns that match zero files emit a
+startup warning. Path traversal (`..`) and relative paths (`./`) are
+rejected in all pattern types.
+
+Glob mode is the recommended middle ground between listing every binary
+individually and allowing all.
+
+### 16.3 Allow-All Mode
+
+```yaml
+sandbox:
+  mode: "docker"
+  container: "duga-sandbox"
+  allow_all_binaries: true
+  # allowed_binaries may be omitted or empty
+```
+
+When `allow_all_binaries: true`, the binary registry check is skipped
+entirely. This mode is intended **only** for container/VM sandbox modes
+(`docker`) where OS-level isolation provides the primary security boundary.
+
+**Behavior by executor:**
+- **Docker executor**: the bare command name is passed to `docker exec`.
+  The container's own `PATH` resolves the binary. This allows binaries
+  that exist only inside the container image (e.g. `apt-get` in a Debian
+  container).
+- **Capability/host executor**: the binary is still resolved via host
+  `which` for safety. The host has no container `PATH`.
+
+**Security warning**: allow-all mode removes the defense-in-depth layer.
+A startup warning is emitted if `allow_all_binaries: true` is combined
+with `mode: capability` or `mode: host`.
+
+### 16.4 Scope of the allowlist
 
 The allowlist controls **which programs may be launched**. It does NOT
 constrain what those programs do once running. `cargo build` will execute
@@ -1142,12 +1196,24 @@ agent:
     max_tokens: 4096
 
 sandbox:
+  mode: "capability"   # capability | host | docker
   timeout: 120s
 
+  # Binary allowlist — supports exact paths and glob patterns.
+  # Omit or leave empty when allow_all_binaries is true.
   allowed_binaries:
     - /usr/bin/cargo
     - /usr/bin/git
     - /usr/bin/python3
+    # - /usr/bin/*       # glob: all executables in /usr/bin
+
+  # Docker-specific (only used when mode: docker):
+  # container: "duga-sandbox"
+  # workspace_mount: "/workspace"
+
+  # Allow-all mode — skips binary registry checks.
+  # WARNING: only use with container/VM isolation.
+  # allow_all_binaries: true
 
 workspace:
   root: "~/projects/demo"

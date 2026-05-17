@@ -194,6 +194,7 @@ mod tests {
                 workspace_mount: None,
                 timeout: std::time::Duration::from_secs(1),
                 allowed_binaries: vec![],
+                allow_all_binaries: false,
             },
             workspace: WorkspaceConfig { root: ".".into() },
             environment: EnvironmentConfig {

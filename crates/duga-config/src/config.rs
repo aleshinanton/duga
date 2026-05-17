@@ -1,5 +1,6 @@
 use crate::ConfigError;
 pub use duga_plugin_abi::{PluginModuleConfig, WasiCapabilities};
+use duga_sandbox::binary_registry::BinaryPattern;
 use duga_sandbox::env::is_secret_pattern;
 use duga_types::config::AgentConfig;
 use serde::{Deserialize, Serialize};
@@ -244,7 +245,18 @@ pub struct SandboxConfig {
     pub workspace_mount: Option<String>,
     #[serde(with = "duration_format")]
     pub timeout: Duration,
-    pub allowed_binaries: Vec<PathBuf>,
+    /// List of allowed binaries. Each entry may be a bare name (e.g. `echo`),
+    /// an absolute path (e.g. `/usr/bin/cat`), or a glob pattern
+    /// (e.g. `/usr/bin/*`, `/usr/local/bin/g*`). Glob patterns are expanded
+    /// at startup by walking matching directories.
+    #[serde(default)]
+    pub allowed_binaries: Vec<String>,
+    /// When `true`, skip the binary allowlist check entirely. The bare command
+    /// name from the LLM is passed directly to the executor. This is intended
+    /// for Docker/container modes where OS-level isolation provides the primary
+    /// security boundary.
+    #[serde(default)]
+    pub allow_all_binaries: bool,
 }
 
 fn default_workspace_mount() -> Option<String> {
@@ -301,25 +313,56 @@ impl Config {
             ));
         }
 
-        for binary in &self.sandbox.allowed_binaries {
-            if !binary.is_absolute() {
-                errors.push(format!(
-                    "binary path must be absolute: {}",
-                    binary.display()
-                ));
-                continue;
+        // Validate binary allowlist entries.
+        // Glob patterns are expanded later; we only warn for obvious issues here.
+        for entry in &self.sandbox.allowed_binaries {
+            let pattern = match BinaryPattern::parse(entry) {
+                Ok(p) => p,
+                Err(e) => {
+                    errors.push(format!("invalid binary entry '{}': {}", entry, e));
+                    continue;
+                }
+            };
+            match pattern {
+                BinaryPattern::Exact(ref s) => {
+                    // If it contains '/', treat as absolute path and validate.
+                    if s.contains('/') {
+                        let path = Path::new(s);
+                        if !path.is_absolute() {
+                            errors.push(format!(
+                                "binary path must be absolute: {}",
+                                path.display()
+                            ));
+                            continue;
+                        }
+                        if !path.exists() {
+                            errors.push(format!("binary not found: {}", path.display()));
+                            continue;
+                        }
+                        if !path.is_file() {
+                            errors.push(format!("binary is not a file: {}", path.display()));
+                            continue;
+                        }
+                        if !is_executable(path) {
+                            errors.push(format!("binary is not executable: {}", path.display()));
+                        }
+                    }
+                    // Bare names (no '/') are resolved via `which` at runtime — skip validation.
+                }
+                BinaryPattern::Glob(_) => {
+                    // Glob patterns are expanded at startup by BinaryRegistry.
+                    // We only check for path traversal here.
+                }
             }
-            if !binary.exists() {
-                errors.push(format!("binary not found: {}", binary.display()));
-                continue;
-            }
-            if !binary.is_file() {
-                errors.push(format!("binary is not a file: {}", binary.display()));
-                continue;
-            }
-            if !is_executable(binary) {
-                errors.push(format!("binary is not executable: {}", binary.display()));
-            }
+        }
+
+        // Warn when allow_all_binaries is used with non-container sandbox modes.
+        if self.sandbox.allow_all_binaries && matches!(self.sandbox.mode, SandboxMode::Host | SandboxMode::Capability) {
+            tracing::warn!(
+                "sandbox.allow_all_binaries is true but sandbox.mode is {:?}. \
+                 This removes defense-in-depth; only use allow_all_binaries with Docker/container isolation.",
+                self.sandbox.mode
+            );
         }
 
         if self.agent.limits.max_steps == 0 {

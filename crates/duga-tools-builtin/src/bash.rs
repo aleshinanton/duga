@@ -216,11 +216,23 @@ impl Tool for BashTool {
                 let bin = cmd_parts
                     .first()
                     .ok_or_else(|| ToolError::InvalidArgs("no binary".into()))?;
-                let bpath = self
-                    .registry
-                    .resolve(bin)
-                    .map_err(|e| ToolError::Denied(e.to_string()))?
-                    .to_path_buf();
+
+                // In allow-all mode for container executors, pass the bare command name.
+                // The container's own PATH resolves it. For capability/host executor
+                // in allow-all mode, resolve via registry or host `which`.
+                let bpath = if self.registry.is_allow_all() && self.executor.is_container_executor() {
+                    // Docker container has its own PATH — pass bare name.
+                    PathBuf::from(bin)
+                } else if self.registry.is_allow_all() {
+                    // Capability/host executor — resolve on host via `which`.
+                    which::which(bin)
+                        .map_err(|e| ToolError::Denied(format!("binary '{}' not found on host: {}", bin, e)))?
+                } else {
+                    self.registry
+                        .resolve(bin)
+                        .map_err(|e| ToolError::Denied(e.to_string()))?
+                        .to_path_buf()
+                };
                 let (cwd, env) = if let Some(sid) = args.session {
                     let s = self.sessions.lock().await;
                     s.get(&sid)

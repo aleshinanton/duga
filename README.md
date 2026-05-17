@@ -72,6 +72,32 @@ export TELEGRAM_BOT_TOKEN="your-bot-token"
 
 See [docs/telegram-bot.md](docs/telegram-bot.md) for full configuration, triggers, commands, safety model, and scheduled events.
 
+### Docker + Allow-All Mode
+
+For environments where the agent runs inside a Docker container with full
+OS-level isolation, you can skip the binary allowlist entirely:
+
+```yaml
+sandbox:
+  mode: "docker"
+  container: "duga-sandbox"
+  allow_all_binaries: true
+  timeout: 120s
+```
+
+In allow-all mode, commands are executed inside the container via `docker exec`,
+and the container's own `PATH` resolves binaries. This avoids listing every
+system tool individually. **Only use allow-all with container/VM isolation.**
+
+A middle ground is glob patterns, which expand directories at startup:
+
+```yaml
+sandbox:
+  allowed_binaries:
+    - /usr/bin/*          # all executables in /usr/bin
+    - /usr/local/bin/g*   # git, gcc, go, etc.
+```
+
 ## Philosophy
 
 The runtime is **not**:

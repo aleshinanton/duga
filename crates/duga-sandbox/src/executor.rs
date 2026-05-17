@@ -89,6 +89,14 @@ pub trait CommandExecutor: Send + Sync {
         timeout: std::time::Duration,
         cancel: CancellationToken,
     ) -> Result<ToolResult, ToolError>;
+
+    /// Returns `true` if this executor runs commands inside a container
+    /// that has its own PATH (e.g. Docker). In allow-all mode, the bash
+    /// tool passes bare command names to container executors so the
+    /// container resolves them internally.
+    fn is_container_executor(&self) -> bool {
+        false
+    }
 }
 
 /// Default executor using direct (capability-bounded) process spawning.
@@ -253,6 +261,10 @@ impl DockerExecutor {
 
 #[async_trait::async_trait]
 impl CommandExecutor for DockerExecutor {
+    fn is_container_executor(&self) -> bool {
+        true
+    }
+
     async fn run(
         &self,
         spec: &CommandSpec,
@@ -516,6 +528,13 @@ impl SandboxExecutor {
 
 #[async_trait::async_trait]
 impl CommandExecutor for SandboxExecutor {
+    fn is_container_executor(&self) -> bool {
+        match self {
+            Self::Capability(_) => false,
+            Self::Docker(_) => true,
+        }
+    }
+
     async fn run(
         &self,
         spec: &CommandSpec,
