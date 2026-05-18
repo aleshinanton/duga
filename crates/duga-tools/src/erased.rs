@@ -26,6 +26,9 @@ trait ErasedExecute: Send + Sync {
         cancellation: CancellationToken,
         event_sink: &'a dyn EventSink,
     ) -> ErasedFuture<'a>;
+
+    /// Reset per-run tool state (e.g., think counters).
+    fn reset_limits(&self) {}
 }
 
 struct ErasedExecutor<T> {
@@ -33,6 +36,10 @@ struct ErasedExecutor<T> {
 }
 
 impl<T: crate::tool::Tool + 'static> ErasedExecute for ErasedExecutor<T> {
+    fn reset_limits(&self) {
+        self.tool.reset_limits();
+    }
+
     fn execute<'a>(
         &self,
         call_id: CallId,
@@ -122,6 +129,11 @@ impl ErasedTool {
         self.execute
             .execute(call_id, raw_args, workspace, cancellation, event_sink)
             .await
+    }
+
+    /// Reset per-run limits for this tool (e.g., think call counters).
+    pub fn reset_limits(&self) {
+        self.execute.reset_limits();
     }
 }
 
@@ -287,5 +299,76 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, ToolError::Denied(message) if message.contains("mock")));
+    }
+
+    /// A tool that counts how many times reset_limits was called.
+    struct ResetCountTool {
+        name: String,
+        reset_count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ResetCountTool {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.into(),
+                reset_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
+    struct ResetCountArgs {
+        msg: String,
+    }
+
+    impl Tool for ResetCountTool {
+        type Args = ResetCountArgs;
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "Counts resets"
+        }
+        fn reset_limits(&self) {
+            self.reset_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        async fn execute(&self, _ctx: ToolContext<'_>, args: Self::Args) -> ToolCallResult {
+            Ok(ToolResult {
+                tool_call_id: CallId::new(),
+                success: true,
+                output: format!("reset_count={} msg={}", self.reset_count.load(std::sync::atomic::Ordering::SeqCst), args.msg),
+                metadata: serde_json::Value::Null,
+                duration_ms: 0,
+                stdout_bytes: 0,
+                stderr_bytes: 0,
+                truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn dispatcher_reset_limits_calls_all_tools() {
+        let dispatcher = ToolDispatcher::new();
+        let tool1 = ResetCountTool::new("reset_a");
+        let tool2 = ResetCountTool::new("reset_b");
+        let counter1 = Arc::clone(&tool1.reset_count);
+        let counter2 = Arc::clone(&tool2.reset_count);
+        dispatcher
+            .register_erased(ErasedTool::erase(tool1))
+            .unwrap();
+        dispatcher
+            .register_erased(ErasedTool::erase(tool2))
+            .unwrap();
+
+        // reset_limits on dispatcher should call each tool's reset_limits.
+        dispatcher.reset_limits();
+        assert_eq!(counter1.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(counter2.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Second call increments again.
+        dispatcher.reset_limits();
+        assert_eq!(counter1.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(counter2.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

@@ -69,6 +69,12 @@ impl ToolDispatcher {
         self.tools.read().unwrap().get(name).cloned()
     }
 
+    pub fn reset_limits(&self) {
+        for tool in self.tools.read().unwrap().values() {
+            tool.reset_limits();
+        }
+    }
+
     pub fn names(&self) -> Vec<String> {
         self.tools.read().unwrap().keys().cloned().collect()
     }

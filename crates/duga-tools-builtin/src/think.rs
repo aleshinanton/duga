@@ -69,6 +69,10 @@ impl Tool for ThinkTool {
     fn name(&self) -> &str {
         "think"
     }
+    fn reset_limits(&self) {
+        self.call_count.store(0, Ordering::SeqCst);
+        self.token_count.store(0, Ordering::SeqCst);
+    }
     fn description(&self) -> &str {
         "Think through a problem step by step"
     }
@@ -168,5 +172,101 @@ mod tests {
                 }
             ))
             .is_err());
+    }
+
+    #[test]
+    fn test_think_limit_reset_restores_budget() {
+        // After hitting the call limit and resetting, the tool works again.
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let tool = ThinkTool::new(ThinkLimits {
+            max_calls: 1,
+            max_tokens: 1000,
+        });
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // First call: OK.
+        rt.block_on(tool.execute(
+            make_ctx(&ws),
+            ThinkArgs {
+                label: "First".into(),
+                thought: "first".into(),
+            },
+        ))
+        .unwrap();
+
+        // Second call: fails (limit 1).
+        assert!(rt
+            .block_on(tool.execute(
+                make_ctx(&ws),
+                ThinkArgs {
+                    label: "Second".into(),
+                    thought: "second".into(),
+                },
+            ))
+            .is_err());
+
+        // Reset.
+        tool.reset_limits();
+
+        // After reset: works again.
+        assert!(rt
+            .block_on(tool.execute(
+                make_ctx(&ws),
+                ThinkArgs {
+                    label: "Third after reset".into(),
+                    thought: "third".into(),
+                },
+            ))
+            .is_ok());
+    }
+
+    #[test]
+    fn test_think_token_limit_reset_restores_budget() {
+        // Token limits also reset.
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        // 5 tokens max, heuristic is word_count * 1.3 (ceil).
+        // 3 words → 4 tokens; 4 words → 6 tokens.
+        let tool = ThinkTool::new(ThinkLimits {
+            max_calls: 10,
+            max_tokens: 5,
+        });
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        // First call: 3 words → 4 tokens, fits.
+        rt.block_on(tool.execute(
+            make_ctx(&ws),
+            ThinkArgs {
+                label: "Small thought".into(),
+                thought: "one two three".into(),
+            },
+        ))
+        .unwrap();
+
+        // Second call: 2 more words → 3 tokens, 4+3=7 > 5, fails.
+        assert!(rt
+            .block_on(tool.execute(
+                make_ctx(&ws),
+                ThinkArgs {
+                    label: "Another".into(),
+                    thought: "four five".into(),
+                },
+            ))
+            .is_err());
+
+        // Reset.
+        tool.reset_limits();
+
+        // After reset: works again.
+        assert!(rt
+            .block_on(tool.execute(
+                make_ctx(&ws),
+                ThinkArgs {
+                    label: "After reset".into(),
+                    thought: "fresh start".into(),
+                },
+            ))
+            .is_ok());
     }
 }

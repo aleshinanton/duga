@@ -34,8 +34,15 @@ pub fn build_agent(
     system_prompt: Option<String>,
 ) -> Result<AgentLoop> {
     let system_text = system_prompt.unwrap_or_else(|| {
-        "You are duga, a safe coding agent. Use tools to accomplish the user's task."
-            .to_string()
+        concat!(
+            "You are duga, a safe coding agent. Use tools to accomplish the user's task.",
+            "\n\nWhen facing a complex or multi-step problem, use the `think` tool first to \
+             plan your approach before acting. This saves steps and produces better results.",
+            "\nPrefer `think` over running many small `bash` commands to explore the environment.",
+            "\nYou have a limited think budget per conversation — use it strategically for the \
+             hardest parts of the task.",
+        )
+        .to_string()
     });
 
     let memory = Memory::new(

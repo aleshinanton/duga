@@ -67,6 +67,7 @@ impl AgentLoop {
         let mut tool_calls = 0;
 
         tracing::info!(task = %task, "Agent run started");
+        self.tools.reset_limits();
         self.emit(Event::AgentStarted { task: task.clone() })
             .await?;
         self.memory.push_user(task);

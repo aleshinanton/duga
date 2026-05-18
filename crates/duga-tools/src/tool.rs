@@ -46,4 +46,8 @@ pub trait Tool: Send + Sync {
     fn tool_schema(&self) -> ToolSchema {
         ToolSchema::new(self.name(), self.description(), self.json_schema())
     }
+
+    /// Reset per-run limits/state. Called by the agent loop before each run.
+    /// Tools with usage counters (e.g. `think`) should reset them here.
+    fn reset_limits(&self) {}
 }
