@@ -293,8 +293,7 @@ struct OpenAiResponseToolCall {
 
 impl OpenAiResponseToolCall {
     fn into_duga(self) -> Result<ToolCall, LlmError> {
-        let raw_args = serde_json::from_str(&self.function.arguments)
-            .map_err(|e| LlmError::Provider(format!("invalid OpenAI tool arguments: {e}")))?;
+        let raw_args = parse_tool_args(&self.function.name, &self.function.arguments)?;
         Ok(ToolCall::new(self.function.name, raw_args))
     }
 }
@@ -311,6 +310,166 @@ struct OpenAiUsage {
     prompt_tokens: u32,
     #[serde(default)]
     completion_tokens: u32,
+}
+
+/// Parse tool arguments from the LLM's JSON string, with repair for common
+/// LLM-generated JSON errors. Never crashes — returns empty object as last resort
+/// (the tool's own schema validation will catch missing required fields).
+fn parse_tool_args(_tool_name: &str, json_str: &str) -> Result<serde_json::Value, LlmError> {
+    // Fast path: valid JSON.
+    if let Ok(v) = serde_json::from_str(json_str) {
+        return Ok(v);
+    }
+
+    // Try repair: fix unescaped control chars, truncated JSON, etc.
+    let repaired = repair_json(json_str);
+    if let Ok(v) = serde_json::from_str(&repaired) {
+        return Ok(v);
+    }
+
+    // Last resort: return empty object so the run doesn't die.
+    // The tool's schema validation will report missing required fields
+    // to the LLM, which can then retry with corrected arguments.
+    Ok(serde_json::json!({}))
+}
+
+/// Repair common LLM-generated JSON errors (modeled after pi-mom's repairJson).
+///
+/// Handles:
+/// - Unescaped control characters inside strings (newlines, tabs, etc.)
+/// - Invalid escape sequences (backslash before non-escape char)
+/// - Truncated JSON (missing closing braces/brackets/quotes)
+fn repair_json(json_str: &str) -> String {
+    let mut out = String::with_capacity(json_str.len() + 16);
+    let mut in_string = false;
+    let chars: Vec<char> = json_str.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let ch = chars[i];
+
+        if !in_string {
+            out.push(ch);
+            if ch == '"' {
+                in_string = true;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Inside a string.
+        if ch == '"' {
+            out.push(ch);
+            in_string = false;
+            i += 1;
+            continue;
+        }
+
+        if ch == '\\' {
+            let next = chars.get(i + 1).copied();
+            match next {
+                // Valid JSON escapes: pass through.
+                Some('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't') => {
+                    out.push('\\');
+                    out.push(next.unwrap());
+                    i += 2;
+                    continue;
+                }
+                // Unicode escape \uXXXX.
+                Some('u') => {
+                    let hex: String = chars[i + 2..].iter().take(4).copied().collect();
+                    if hex.len() == 4 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                        out.push_str(&format!("\\u{}", hex));
+                        i += 6;
+                        continue;
+                    }
+                    // Invalid unicode escape — double the backslash.
+                    out.push_str("\\\\");
+                    i += 1;
+                    continue;
+                }
+                // End of input after backslash — double it.
+                None => {
+                    out.push_str("\\\\");
+                    i += 1;
+                    continue;
+                }
+                // Invalid escape: double the backslash.
+                _ => {
+                    out.push_str("\\\\");
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
+        // Control character inside string — escape it.
+        if ch.is_control() && ch != '\n' && ch != '\r' && ch != '\t' {
+            // These are already valid in JSON strings.
+            out.push(ch);
+        } else if ch == '\n' {
+            out.push_str("\\n");
+        } else if ch == '\r' {
+            out.push_str("\\r");
+        } else if ch == '\t' {
+            out.push_str("\\t");
+        } else {
+            out.push(ch);
+        }
+        i += 1;
+    }
+
+    // If still inside a string at EOF, close the quote.
+    if in_string {
+        out.push('"');
+    }
+
+    // Balance braces/brackets for truncated JSON.
+    out = balance_json(&out);
+
+    out
+}
+
+/// Add missing closing braces/brackets for truncated JSON.
+fn balance_json(json_str: &str) -> String {
+    let mut depth_brace: i32 = 0;
+    let mut depth_bracket: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for ch in json_str.chars() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if ch == '"' && !escape {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match ch {
+            '{' => depth_brace += 1,
+            '}' => depth_brace -= 1,
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket -= 1,
+            _ => {}
+        }
+    }
+
+    let mut out = json_str.to_string();
+    for _ in 0..depth_bracket.max(0) {
+        out.push(']');
+    }
+    for _ in 0..depth_brace.max(0) {
+        out.push('}');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -360,5 +519,162 @@ mod tests {
         assert_eq!(mapped.message.tool_calls[0].tool, "read");
         assert_eq!(mapped.message.tool_calls[0].raw_args["path"], "Cargo.toml");
         assert_eq!(mapped.usage.total(), 15);
+    }
+
+    // ── JSON repair tests ──
+
+    #[test]
+    fn parse_tool_args_valid_json() {
+        let v = parse_tool_args("bash", r#"{"cmd": "ls"}"#).unwrap();
+        assert_eq!(v["cmd"], "ls");
+    }
+
+    #[test]
+    fn parse_tool_args_empty_string() {
+        // Empty string → repaired to valid empty object.
+        let v = parse_tool_args("bash", "").unwrap();
+        assert!(v.is_object());
+        assert!(v.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_tool_args_truncated_json() {
+        // Truncated: missing closing brace.
+        let v = parse_tool_args("bash", r#"{"command": ["ls""#).unwrap();
+        // Should be repaired by adding closing brace.
+        assert!(v.is_object());
+        assert_eq!(v["command"][0], "ls");
+    }
+
+    #[test]
+    fn parse_tool_args_truncated_nested() {
+        // Truncated: missing closing brace and bracket.
+        let v = parse_tool_args("bash", r#"{"command": ["ls", "-la""#).unwrap();
+        assert!(v.is_object());
+        assert_eq!(v["command"][1], "-la");
+    }
+
+    #[test]
+    fn parse_tool_args_garbage_json() {
+        // Completely invalid JSON → fallback to empty object.
+        let v = parse_tool_args("bash", "not json at all!!!").unwrap();
+        assert!(v.is_object());
+        assert!(v.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_tool_args_never_crashes() {
+        // All kinds of bad input should return Ok, not Err.
+        for input in &["", "{", "[}", "xxx", "{\"a\": "] {
+            let result = parse_tool_args("test", input);
+            assert!(result.is_ok(), "should not crash on: {input:?}");
+        }
+    }
+
+    #[test]
+    fn repair_json_unescaped_newlines_in_string() {
+        // LLM sometimes puts literal newlines inside JSON strings.
+        let bad = "{\"thought\": \"line1\nline2\"}";
+        let repaired = repair_json(bad);
+        let v: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(v["thought"], "line1\nline2");
+    }
+
+    #[test]
+    fn repair_json_invalid_escape_sequence() {
+        // LLM sometimes uses backslash before non-escape chars like \x, \p, etc.
+        // \U is not a valid JSON escape — it should be doubled to \\U.
+        let bad = r#"{"path": "C:\Users\stuff"}"#;
+        let repaired = repair_json(bad);
+        let v: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        // \U was doubled to \\U, \s was doubled to \\s.
+        assert_eq!(v["path"], "C:\\Users\\stuff");
+    }
+
+    #[test]
+    fn balance_json_truncated_object() {
+        assert_eq!(balance_json(r#"{"a": 1"#), r#"{"a": 1}"#);
+        assert_eq!(balance_json(r#"{"a": {"b": 2}"#), r#"{"a": {"b": 2}}"#);
+    }
+
+    #[test]
+    fn balance_json_truncated_array() {
+        assert_eq!(balance_json(r#"["a", "b""#), r#"["a", "b"]"#);
+        assert_eq!(balance_json(r#"{"cmd": ["ls""#), r#"{"cmd": ["ls"]}"#);
+    }
+
+    #[test]
+    fn balance_json_complete_is_unchanged() {
+        let valid = r#"{"a": 1, "b": [2, 3]}"#;
+        assert_eq!(balance_json(valid), valid);
+    }
+
+    #[test]
+    fn response_maps_tool_calls_with_bad_json() {
+        // Tool call arguments have unescaped newlines (common LLM mistake).
+        let raw = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "think", "arguments": "{\"thought\": \"line one\nline two\"}"}
+                    }]
+                }
+            }]
+        });
+
+        let response: OpenAiResponse = serde_json::from_value(raw).unwrap();
+        let mapped = response.into_duga().unwrap();
+        // Should have repaired the newlines and parsed successfully.
+        assert_eq!(mapped.message.tool_calls[0].tool, "think");
+        assert_eq!(mapped.message.tool_calls[0].raw_args["thought"], "line one\nline two");
+    }
+
+    #[test]
+    fn response_maps_tool_calls_truncated_json() {
+        // Truncated tool arguments → repaired, not fatal.
+        let raw = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": "{\"command\": [\"ls\""}
+                    }]
+                }
+            }]
+        });
+
+        let response: OpenAiResponse = serde_json::from_value(raw).unwrap();
+        let mapped = response.into_duga().unwrap();
+        // Should have added missing ]} and parsed.
+        assert_eq!(mapped.message.tool_calls[0].tool, "bash");
+        assert_eq!(mapped.message.tool_calls[0].raw_args["command"][0], "ls");
+    }
+
+    #[test]
+    fn response_maps_tool_calls_garbage_json() {
+        // Completely invalid tool arguments → empty object, not fatal.
+        let raw = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": "I am not JSON"}
+                    }]
+                }
+            }]
+        });
+
+        let response: OpenAiResponse = serde_json::from_value(raw).unwrap();
+        let mapped = response.into_duga().unwrap();
+        // Should fall back to empty object — run not killed.
+        assert_eq!(mapped.message.tool_calls[0].tool, "bash");
+        assert!(mapped.message.tool_calls[0].raw_args.as_object().unwrap().is_empty());
     }
 }

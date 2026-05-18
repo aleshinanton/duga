@@ -18,6 +18,7 @@ This project has not published versioned releases yet. Entries below summarize t
 
 ### Fixed
 
+- **Malformed LLM JSON no longer kills the agent run.** Added `repair_json()` and `balance_json()` to fix common LLM-generated JSON errors (unescaped newlines, invalid escape sequences, truncated braces/brackets). As a last resort, falls back to an empty object `{}` so the tool's schema validation can catch missing fields and the LLM can retry — exactly like pi-mom's `parseStreamingJson()`.
 - **Think limits reset per agent run.** Added `reset_limits()` to the `Tool` trait (default no-op), propagated through `ErasedExecute` → `ErasedTool` → `ToolDispatcher`. The agent loop calls it at the start of every run. Fixes the bug where think call/token counters accumulated across all chats in a long-running bot process, eventually denying think to all users.
 - Added a project-wide changelog.
 - Added shared tool confirmation middleware in `duga-tools` and re-exported it through `duga-runtime`.
