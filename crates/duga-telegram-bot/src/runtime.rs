@@ -12,8 +12,8 @@ use duga_config::{Config, TelegramConfig};
 use duga_events::{JsonlSink, RedactingSink};
 use duga_runtime::events::FrontendEventBridge;
 use duga_runtime::{
-    build_agent, build_dispatcher, build_llm, resolve_provider, ConfirmationMiddleware,
-    ConfirmationPolicy,
+    build_agent, build_dispatcher, build_llm, resolve_provider, sandbox_environment_context,
+    tool_guidance, ConfirmationMiddleware, ConfirmationPolicy,
 };
 use duga_sandbox::{CancellationToken, Workspace};
 use std::sync::Arc;
@@ -93,14 +93,16 @@ impl TelegramRuntime {
         let replay_sink = Arc::new(RedactingSink::new(jsonl_sink));
 
         // Build frontend context for system prompt.
+        let env_ctx = sandbox_environment_context(&self.config);
+        let tool_guide = tool_guidance();
         let system_prompt = format!(
             "You are duga, a safe coding agent operating through Telegram.\n\
-             Chat ID: {chat_id}\n\
-             Use tools to accomplish the user's task.\n\
+             Chat ID: {chat_id}\n\n\
+             {env_ctx}\n\n\
+             {tool_guide}\n\n\
              When facing a complex or multi-step problem, use the `think` tool first to \
              plan your approach before acting. This saves steps and produces better results.\n\
              Prefer `think` over running many small `bash` commands to explore the environment.\n\
-             When using the bash tool, commands run in a sandboxed environment.\n\
              Be concise — Telegram messages have length limits."
         );
 

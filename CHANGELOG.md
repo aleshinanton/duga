@@ -13,6 +13,8 @@ This project has not published versioned releases yet. Entries below summarize t
 ### Changed
 
 - **System prompt now guides LLM to use `think`.** Added explicit instructions to use the `think` tool for complex multi-step problems and to prefer it over exploratory `bash` commands. Applied to default prompt (`agent.rs`), Telegram bot runtime prompt, and CLI harness prompt.
+- **Added environment context to system prompt.** The LLM is now told what execution environment it's in (Docker container vs direct host access) and what package managers to try. Added `sandbox_environment_context()` and `tool_guidance()` helpers in `duga-runtime`, used by all three frontends.
+- **Added explicit tool guidance to system prompt.** Lists available tools with when-to-use hints (e.g., "use `think` FIRST for multi-step tasks", "use `bash` for package installation"), reducing reliance on JSON Schema alone.
 
 ### Fixed
 

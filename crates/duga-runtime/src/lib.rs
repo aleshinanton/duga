@@ -12,7 +12,7 @@ pub mod providers;
 pub mod skills;
 pub mod tools;
 
-pub use agent::{build_agent, BuiltRuntime};
+pub use agent::{build_agent, sandbox_environment_context, tool_guidance, BuiltRuntime};
 pub use confirmation::{
     ConfirmationDecision, ConfirmationMiddleware, ConfirmationPolicy, ConfirmationProvider,
     ConfirmationRequest, MiddlewareDecision,

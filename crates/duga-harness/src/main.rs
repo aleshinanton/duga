@@ -10,6 +10,7 @@ use duga_events::{JsonlSink, MultiSink, NullSink};
 use duga_runtime::{
     build_dispatcher,
     providers::{build_llm, resolve_provider},
+    sandbox_environment_context, tool_guidance,
 };
 use duga_sandbox::{CancellationToken, Workspace};
 use duga_types::llm::SummaryMessage;
@@ -62,13 +63,18 @@ async fn main() -> Result<()> {
 
     let event_sink = build_sinks(&cli, &config)?;
     let llm = build_llm(&selection.provider, &selection.model, &config)?;
+    let env_ctx = sandbox_environment_context(&config);
+    let tool_guide = tool_guidance();
+    let system_prompt = format!(
+        "You are duga, a safe coding agent.\n\n\
+         {env_ctx}\n\n\
+         {tool_guide}\n\n\
+         When facing a complex or multi-step problem, use the `think` tool first to \
+         plan your approach before acting. Prefer `think` over running many small \
+         `bash` commands to explore the environment.",
+    );
     let memory = Memory::new(
-        vec![Message::system(
-            "You are duga, a safe coding agent.\n\
-             When facing a complex or multi-step problem, use the `think` tool first to \
-             plan your approach before acting. Prefer `think` over running many small \
-             `bash` commands to explore the environment.",
-        )],
+        vec![Message::system(system_prompt)],
         config.memory.max_tokens,
         config.memory.compress_at_ratio,
     );
