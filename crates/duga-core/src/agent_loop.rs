@@ -256,6 +256,7 @@ impl AgentLoop {
                     self.emit(Event::ToolCallFinished {
                         result: result.clone(),
                         attempt,
+                        tool_name: call.tool.clone(),
                     })
                     .await?;
                     return Ok(result);
@@ -267,7 +268,11 @@ impl AgentLoop {
                         tool_success = false,
                         "Tool retry scheduled"
                     );
-                    self.emit(Event::ToolCallFinished { result, attempt })
+                    self.emit(Event::ToolCallFinished {
+                        result,
+                        attempt,
+                        tool_name: call.tool.clone(),
+                    })
                         .await?;
                     last_error = Some(error);
                 }
@@ -281,6 +286,7 @@ impl AgentLoop {
                     self.emit(Event::ToolCallFinished {
                         result: result.clone(),
                         attempt,
+                        tool_name: call.tool.clone(),
                     })
                     .await?;
                     return Ok(result);
@@ -296,6 +302,7 @@ impl AgentLoop {
         self.emit(Event::ToolCallFinished {
             result: result.clone(),
             attempt: max_attempts,
+            tool_name: call.tool.clone(),
         })
         .await?;
         Ok(result)

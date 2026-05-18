@@ -13,6 +13,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ReadArgs {
+    #[serde(default)]
+    #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
+    pub label: String,
     pub path: String,
     #[serde(default)]
     pub offset: Option<u64>,
@@ -133,6 +136,7 @@ mod tests {
             .block_on(ReadTool::new().execute(
                 make_ctx(&ws),
                 ReadArgs {
+                    label: "Reading test.txt".into(),
                     path: "test.txt".into(),
                     offset: None,
                     limit: None,
@@ -150,6 +154,7 @@ mod tests {
         let r = rt.block_on(ReadTool::new().execute(
             make_ctx(&ws),
             ReadArgs {
+                label: "Reading no.txt".into(),
                 path: "no.txt".into(),
                 offset: None,
                 limit: None,
@@ -172,6 +177,7 @@ mod tests {
             .block_on(ReadTool::new().execute(
                 make_ctx(&ws),
                 ReadArgs {
+                    label: "Reading b.bin".into(),
                     path: "b.bin".into(),
                     offset: None,
                     limit: None,

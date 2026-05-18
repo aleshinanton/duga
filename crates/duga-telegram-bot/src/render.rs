@@ -4,11 +4,13 @@
 //! progress messages in Telegram. Telegram API calls happen entirely
 //! in this worker task — never in the agent loop.
 
-use crate::formatting::{chunk_message, escape_telegram_plain_text, format_final_message};
+use crate::formatting::{
+    chunk_message, escape_html, escape_telegram_plain_text, format_final_message,
+};
 use duga_runtime::events::FrontendEvent;
 use std::collections::HashMap;
 use teloxide::prelude::*;
-use teloxide::types::ChatId;
+use teloxide::types::{ChatId, ParseMode};
 use tokio::sync::mpsc;
 
 /// Renders agent progress as live Telegram messages.
@@ -21,8 +23,8 @@ pub struct TelegramEventRenderer {
     delta_buffer: String,
     /// Buffer for tool action labels.
     action_labels: Vec<String>,
-    /// Map from tool_call_id to tool_name (ToolCallFinished lacks name).
-    tool_names: HashMap<String, String>,
+    /// Map from tool_call_id to (tool_name, description).
+    tool_info: HashMap<String, (String, String)>,
     /// Whether the run has completed.
     finished: bool,
 }
@@ -35,7 +37,7 @@ impl TelegramEventRenderer {
             process_message_id: None,
             delta_buffer: String::new(),
             action_labels: Vec::new(),
-            tool_names: HashMap::new(),
+            tool_info: HashMap::new(),
             finished: false,
         }
     }
@@ -60,32 +62,33 @@ impl TelegramEventRenderer {
                     tool_name,
                     tool_call_id,
                     attempt,
+                    description,
                 } => {
-                    self.tool_names
-                        .insert(tool_call_id.clone(), tool_name.clone());
-                    let label = if attempt > 1 {
-                        format!("🔧 {tool_name} (attempt {attempt})")
-                    } else {
-                        format!("🔧 {tool_name}")
-                    };
+                    self.tool_info.insert(
+                        tool_call_id.clone(),
+                        (tool_name.clone(), description.clone()),
+                    );
+                    let label = format_step_label(&tool_name, &description, attempt);
                     self.action_labels.push(label);
                     let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::ToolCallFinished {
                     tool_call_id,
                     success,
+                    description,
                     ..
                 } => {
-                    let tool_name = self
-                        .tool_names
+                    let (tool_name, stored_description) = self
+                        .tool_info
                         .get(&tool_call_id)
-                        .map(|n| n.as_str())
-                        .unwrap_or("tool");
-                    let label = if success {
-                        format!("✅ {tool_name}")
+                        .map(|(n, d)| (n.as_str(), d.as_str()))
+                        .unwrap_or(("tool", description.as_str()));
+                    let display_desc = if stored_description.is_empty() {
+                        &description
                     } else {
-                        format!("❌ {tool_name}")
+                        stored_description
                     };
+                    let label = format_finish_label(tool_name, display_desc, success);
                     self.action_labels.push(label);
                     let _ = self.edit_process_message().await;
                 }
@@ -181,32 +184,161 @@ impl TelegramEventRenderer {
         // Edit the process message into a final step-history summary.
         if let Some(msg_id) = self.process_message_id {
             let step_count = self.action_labels.len();
-            let mut text = format!("✅ Completed in {step_count} step(s)\n");
+            let header = format!("✅ Completed in {step_count} step(s)\n");
 
-            // Show all action labels (not just last 5) for the history.
-            for label in &self.action_labels {
-                text.push_str(label);
-                text.push('\n');
-            }
+            let labels_text = self.action_labels.join("\n");
 
-            let chunks = chunk_message(&text);
+            let use_collapse = self.action_labels.len() > 5;
+            let body = if use_collapse {
+                // Chunk raw labels first, then wrap each chunk in blockquote.
+                let label_chunks = chunk_message(&labels_text);
+                label_chunks
+                    .iter()
+                    .map(|c| format!("<blockquote expandable>{}</blockquote>", escape_html(c)))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                escape_html(&labels_text)
+            };
+
+            let full_text = format!("{header}{body}");
+            let chunks = chunk_message(&full_text);
             if let Some(first) = chunks.first() {
                 let _ = self
                     .bot
-                    .edit_message_text(self.chat_id, msg_id, first)
+                    .edit_message_text(self.chat_id, msg_id, first.clone())
+                    .parse_mode(ParseMode::Html)
                     .await;
             }
         }
 
         // Send the final answer as a clean new message.
         if let Some(text) = final_text {
-            let formatted = format_final_message(&text);
-            let chunks = chunk_message(&formatted);
-            for chunk in chunks {
-                let _ = self.bot.send_message(self.chat_id, chunk).await;
-                // Small delay between chunks to avoid rate limiting.
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let use_collapse = text.len() > 300;
+            if use_collapse {
+                // Chunk raw text first, then wrap each chunk in blockquote.
+                let text_chunks = chunk_message(&text);
+                for chunk in text_chunks {
+                    let collapsed = format!(
+                        "<blockquote expandable>{}</blockquote>",
+                        escape_html(&chunk)
+                    );
+                    let _ = self
+                        .bot
+                        .send_message(self.chat_id, collapsed)
+                        .parse_mode(ParseMode::Html)
+                        .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            } else {
+                let formatted = format_final_message(&text);
+                let chunks = chunk_message(&formatted);
+                for chunk in chunks {
+                    let _ = self.bot.send_message(self.chat_id, chunk).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
             }
         }
+    }
+}
+
+/// Build a step label, showing `description` only when it adds value
+/// (i.e., it's non-empty and differs from the tool name).
+fn format_step_label(tool_name: &str, description: &str, attempt: u32) -> String {
+    let icon = "🔧";
+    let base = if description.is_empty() || description == tool_name {
+        format!("{icon} {tool_name}")
+    } else {
+        format!("{icon} {tool_name}: {description}")
+    };
+    if attempt > 1 {
+        format!("{base} (attempt {attempt})")
+    } else {
+        base
+    }
+}
+
+/// Build a finish label (success or failure).
+fn format_finish_label(tool_name: &str, description: &str, success: bool) -> String {
+    let icon = if success { "✅" } else { "❌" };
+    if description.is_empty() || description == tool_name {
+        format!("{icon} {tool_name}")
+    } else {
+        format!("{icon} {tool_name}: {description}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_label_format_with_description() {
+        // Meaningful description different from tool_name → shown.
+        assert_eq!(
+            format_step_label("bash", "ls -la", 1),
+            "🔧 bash: ls -la"
+        );
+        assert_eq!(
+            format_finish_label("read", "Reading config", true),
+            "✅ read: Reading config"
+        );
+        assert_eq!(
+            format_finish_label("search", "Searching for error", false),
+            "❌ search: Searching for error"
+        );
+    }
+
+    #[test]
+    fn test_label_format_fallback_when_description_equals_tool_name() {
+        // When the LLM doesn't provide a label, description == tool_name.
+        // Renderer collapses to just the tool name (no "bash: bash" noise).
+        assert_eq!(format_step_label("bash", "bash", 1), "🔧 bash");
+        assert_eq!(format_finish_label("bash", "bash", true), "✅ bash");
+        assert_eq!(format_finish_label("bash", "bash", false), "❌ bash");
+    }
+
+    #[test]
+    fn test_label_format_with_empty_description() {
+        // Empty description: just the tool name.
+        assert_eq!(format_step_label("bash", "", 1), "🔧 bash");
+        assert_eq!(format_finish_label("tool", "", true), "✅ tool");
+        assert_eq!(format_finish_label("tool", "", false), "❌ tool");
+    }
+
+    #[test]
+    fn test_label_format_with_retry() {
+        assert_eq!(
+            format_step_label("write", "Writing file", 3),
+            "🔧 write: Writing file (attempt 3)"
+        );
+        // Retry with no label falls back to tool name only.
+        assert_eq!(
+            format_step_label("write", "write", 3),
+            "🔧 write (attempt 3)"
+        );
+    }
+
+    #[test]
+    fn test_label_format_success() {
+        assert_eq!(
+            format_finish_label("read", "Reading config", true),
+            "✅ read: Reading config"
+        );
+    }
+
+    #[test]
+    fn test_label_format_failure() {
+        assert_eq!(
+            format_finish_label("search", "Searching for error", false),
+            "❌ search: Searching for error"
+        );
+    }
+
+    #[test]
+    fn test_label_format_backward_compat_no_description() {
+        // Old tools without label → show just tool name (matches original behavior).
+        assert_eq!(format_finish_label("tool", "", true), "✅ tool");
+        assert_eq!(format_finish_label("tool", "", false), "❌ tool");
     }
 }

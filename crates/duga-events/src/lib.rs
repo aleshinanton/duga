@@ -63,6 +63,7 @@ pub enum Event {
     ToolCallFinished {
         result: ToolResult,
         attempt: u32,
+        tool_name: String,
     },
     MemoryCompressed {
         before_tokens: usize,

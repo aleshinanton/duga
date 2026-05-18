@@ -8,6 +8,7 @@ This project has not published versioned releases yet. Entries below summarize t
 
 ### Added
 
+- **EPIC-22: Step descriptions in frontend events.** Every built-in tool now has a `label` arg that the LLM fills with a human-readable description (e.g. `"ls -la"`, `"Reading config"`). This is threaded through `FrontendEvent::ToolCallStarted.description` to frontends. The Telegram renderer shows `🔧 bash: ls -la` instead of bare `🔧 bash`, collapsing duplicate `tool_name: tool_name` to just the tool name. Long step histories (>5 labels) and long final answers (>300 chars) are wrapped in Telegram `<blockquote expandable>` for a clean summary with a "Show more" toggle. The `tool_name` field on `Event::ToolCallFinished` is now populated (was always empty before), making `FrontendEvent::ToolCallFinished` self-contained.
 - Added a project-wide changelog.
 - Added shared tool confirmation middleware in `duga-tools` and re-exported it through `duga-runtime`.
 - Added Docker sandbox executor with `CommandExecutor` trait, `CapabilityExecutor` (wraps `run_captured`), `DockerExecutor` (routes via `docker exec`), and `SandboxExecutor` enum.

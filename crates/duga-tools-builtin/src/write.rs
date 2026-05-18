@@ -16,6 +16,9 @@ use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct WriteArgs {
+    #[serde(default)]
+    #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
+    pub label: String,
     pub path: String,
     pub content: String,
 }
@@ -168,6 +171,7 @@ mod tests {
             .block_on(WriteTool::new().execute(
                 make_ctx(&ws),
                 WriteArgs {
+                    label: "Writing t.txt".into(),
                     path: "t.txt".into(),
                     content: "hello".into(),
                 },
@@ -188,6 +192,7 @@ mod tests {
         let r = rt.block_on(WriteTool::new().execute(
             make_ctx(&ws),
             WriteArgs {
+                label: "Writing ../x.txt".into(),
                 path: "../x.txt".into(),
                 content: "x".into(),
             },
@@ -207,6 +212,7 @@ mod tests {
         let r = rt.block_on(WriteTool::new().execute(
             make_ctx(&ws),
             WriteArgs {
+                label: "Writing link/pwn.txt".into(),
                 path: "link/pwn.txt".into(),
                 content: "x".into(),
             },

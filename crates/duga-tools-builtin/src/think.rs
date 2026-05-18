@@ -13,6 +13,9 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ThinkArgs {
+    #[serde(default)]
+    #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
+    pub label: String,
     pub thought: String,
 }
 
@@ -130,6 +133,7 @@ mod tests {
             .block_on(tool.execute(
                 make_ctx(&ws),
                 ThinkArgs {
+                    label: "Thinking about hello".into(),
                     thought: "hello".into(),
                 },
             ))
@@ -150,6 +154,7 @@ mod tests {
             .block_on(tool.execute(
                 make_ctx(&ws),
                 ThinkArgs {
+                    label: "Thinking about a".into(),
                     thought: "a".into()
                 }
             ))
@@ -158,6 +163,7 @@ mod tests {
             .block_on(tool.execute(
                 make_ctx(&ws),
                 ThinkArgs {
+                    label: "Thinking about b".into(),
                     thought: "b".into()
                 }
             ))

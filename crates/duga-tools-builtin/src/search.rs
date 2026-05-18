@@ -13,6 +13,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SearchArgs {
+    #[serde(default)]
+    #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
+    pub label: String,
     pub query: String,
     pub path: Option<String>,
     pub literal: Option<bool>,
@@ -147,6 +150,7 @@ mod tests {
             .block_on(SearchTool::new().execute(
                 make_ctx(&ws),
                 SearchArgs {
+                    label: "Searching for hello".into(),
                     query: "hello".into(),
                     path: None,
                     literal: None,
@@ -165,6 +169,7 @@ mod tests {
         let r = rt.block_on(SearchTool::new().execute(
             make_ctx(&ws),
             SearchArgs {
+                label: "Searching for [bad".into(),
                 query: "[bad".into(),
                 path: None,
                 literal: None,
@@ -192,6 +197,7 @@ mod tests {
             .block_on(SearchTool::new().execute(
                 make_ctx(&ws),
                 SearchArgs {
+                    label: "Searching for needle".into(),
                     query: "needle".into(),
                     path: None,
                     literal: None,

@@ -21,6 +21,9 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct BashArgs {
+    #[serde(default)]
+    #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
+    pub label: String,
     pub command: Vec<String>,
     pub session: Option<Uuid>,
 }
@@ -286,6 +289,7 @@ mod tests {
             .block_on(tool.execute(
                 make_ctx(&ws),
                 BashArgs {
+                    label: "echo hello".into(),
                     command: vec!["echo".into(), "hello".into()],
                     session: None,
                 },
@@ -310,6 +314,7 @@ mod tests {
         let result = rt.block_on(tool.execute(
             make_ctx(&ws),
             BashArgs {
+                label: "empty".into(),
                 command: vec![],
                 session: None,
             },
@@ -342,6 +347,7 @@ mod tests {
         let result = rt.block_on(tool.execute(
             ctx,
             BashArgs {
+                label: "sleep 1".into(),
                 command: vec!["sleep".into(), "1".into()],
                 session: None,
             },
