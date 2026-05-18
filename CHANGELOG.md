@@ -12,7 +12,7 @@ This project has not published versioned releases yet. Entries below summarize t
 
 ### Changed
 
-- **System prompt now guides LLM to use `think`.** Added explicit instructions to use the `think` tool for complex multi-step problems and to prefer it over exploratory `bash` commands.
+- **System prompt now guides LLM to use `think`.** Added explicit instructions to use the `think` tool for complex multi-step problems and to prefer it over exploratory `bash` commands. Applied to default prompt (`agent.rs`), Telegram bot runtime prompt, and CLI harness prompt.
 
 ### Fixed
 

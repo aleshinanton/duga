@@ -63,7 +63,12 @@ async fn main() -> Result<()> {
     let event_sink = build_sinks(&cli, &config)?;
     let llm = build_llm(&selection.provider, &selection.model, &config)?;
     let memory = Memory::new(
-        vec![Message::system("You are duga, a safe coding agent.")],
+        vec![Message::system(
+            "You are duga, a safe coding agent.\n\
+             When facing a complex or multi-step problem, use the `think` tool first to \
+             plan your approach before acting. Prefer `think` over running many small \
+             `bash` commands to explore the environment.",
+        )],
         config.memory.max_tokens,
         config.memory.compress_at_ratio,
     );
