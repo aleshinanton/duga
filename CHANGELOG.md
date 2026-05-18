@@ -14,6 +14,11 @@ This project has not published versioned releases yet. Entries below summarize t
 - Added provider credential config fields (`provider_api_key`, `provider_api_key_env`, `provider_base_url`, `provider_base_url_env`) with cascading resolution (literal → env var name → provider default).
 - Added OpenAI-compatible endpoint conformance tests in `crates/duga-llm/tests/openai_compat.rs` covering chat completions, tool calls, error responses, streaming SSE fixtures, Ollama-style edge cases, and auth behavior.
 - Refactored `duga-harness` CLI to use shared `duga-runtime` provider resolution instead of duplicated `build_provider`/`resolve_provider`.
+- Added `allow_all_binaries` config flag. When set, the binary registry check is skipped entirely and bare command names are passed directly to the executor (Docker's container PATH or capability mode's `/usr/bin:/bin` resolves them). A startup warning is emitted if used with `mode: capability` or `mode: host`.
+- Added glob/wildcard pattern support to `allowed_binaries`. Entries containing `*`, `?`, or `[` are expanded at startup by walking matching directories and registering each discovered executable. Path traversal (`..`, `./`) is rejected. Zero-match globs emit a startup warning.
+- Added `BinaryPattern` enum (`Exact` / `Glob`), `BinaryRegistry::allow_all()` sentinel, `from_patterns()` constructor, and `is_allow_all()` / `resolve_to_pathbuf()` methods.
+- Added `CommandExecutor::is_container_executor()` to distinguish Docker from capability executors at runtime.
+- Extended `docs/architecture.md` §16 with three binary resolution modes (Exact, Glob, Allow-All) and §32 config example. Added Docker + allow-all and glob pattern quick-start to README.
 
 ### Fixed
 
@@ -23,6 +28,9 @@ This project has not published versioned releases yet. Entries below summarize t
 - Moved Telegram slash-command handling behind authorization checks.
 - Wired Docker sandbox mode into bash execution, fixed Docker command argument handling, and drained Docker stdout/stderr concurrently.
 - Redacted literal `provider_api_key` values from `Config` debug output.
+- Switched Docker executor from `--workdir` to `-w` for broader Docker/Podman compatibility.
+- Skipped binary validation at config load when `allow_all_binaries` is true, so stale or host-only entries in `allowed_binaries` don't block startup.
+- Removed unnecessary `which::which()` pre-resolution in allow-all mode — bare names now flow straight to the executor in all sandbox modes.
 
 ## [0.1.0] - Initial development
 
