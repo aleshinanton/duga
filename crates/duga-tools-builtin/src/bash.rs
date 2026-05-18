@@ -217,16 +217,11 @@ impl Tool for BashTool {
                     .first()
                     .ok_or_else(|| ToolError::InvalidArgs("no binary".into()))?;
 
-                // In allow-all mode for container executors, pass the bare command name.
-                // The container's own PATH resolves it. For capability/host executor
-                // in allow-all mode, resolve via registry or host `which`.
-                let bpath = if self.registry.is_allow_all() && self.executor.is_container_executor() {
-                    // Docker container has its own PATH — pass bare name.
+                // In allow-all mode, pass the bare command name directly to the executor.
+                // The executor resolves it: Docker via container PATH, capability via
+                // the child process's PATH (/usr/bin:/bin). No pre-resolution is done.
+                let bpath = if self.registry.is_allow_all() {
                     PathBuf::from(bin)
-                } else if self.registry.is_allow_all() {
-                    // Capability/host executor — resolve on host via `which`.
-                    which::which(bin)
-                        .map_err(|e| ToolError::Denied(format!("binary '{}' not found on host: {}", bin, e)))?
                 } else {
                     self.registry
                         .resolve(bin)
