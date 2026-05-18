@@ -31,6 +31,8 @@ This project has not published versioned releases yet. Entries below summarize t
 - Switched Docker executor from `--workdir` to `-w` for broader Docker/Podman compatibility.
 - Skipped binary validation at config load when `allow_all_binaries` is true, so stale or host-only entries in `allowed_binaries` don't block startup.
 - Removed unnecessary `which::which()` pre-resolution in allow-all mode — bare names now flow straight to the executor in all sandbox modes.
+- Fixed missing `exec` subcommand in Docker executor args (`docker exec ...` instead of `docker ...`).
+- Skip Telegram bash confirmations when `allow_all_binaries` is enabled — other tools (write) still require approval.
 
 ## [0.1.0] - Initial development
 

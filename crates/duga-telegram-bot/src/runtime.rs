@@ -53,9 +53,21 @@ impl TelegramRuntime {
             Arc::new(Workspace::open(&self.config.workspace.root).context("opening workspace")?);
 
         let dispatcher = build_dispatcher(&self.config, workspace.clone())?;
-        if !telegram_config.require_confirmation_for.is_empty() {
+        // When allow_all_binaries is enabled, bash confirmations are redundant —
+        // the operator has already accepted the risk of arbitrary command execution.
+        let require_confirmation: Vec<String> = if self.config.sandbox.allow_all_binaries {
+            telegram_config
+                .require_confirmation_for
+                .iter()
+                .filter(|t| t.as_str() != "bash")
+                .cloned()
+                .collect()
+        } else {
+            telegram_config.require_confirmation_for.clone()
+        };
+        if !require_confirmation.is_empty() {
             let policy = ConfirmationPolicy::new(
-                telegram_config.require_confirmation_for.clone(),
+                require_confirmation,
                 self.config.frontend.confirmation_timeout,
             );
             let provider = Arc::new(TelegramConfirmationProvider::new(
