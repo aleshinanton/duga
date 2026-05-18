@@ -84,6 +84,11 @@ impl Memory {
             .push_back(Message::tool(result.tool_call_id.as_uuid(), result.output));
     }
 
+    /// Push an arbitrary message into memory (for restoring conversation history).
+    pub fn push_msg(&mut self, msg: Message) {
+        self.recent_messages.push_back(msg);
+    }
+
     pub fn messages(&self) -> Vec<Message> {
         let mut messages = Vec::with_capacity(
             self.system_messages.len()

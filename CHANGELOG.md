@@ -45,6 +45,7 @@ This project has not published versioned releases yet. Entries below summarize t
 - Removed unnecessary `which::which()` pre-resolution in allow-all mode — bare names now flow straight to the executor in all sandbox modes.
 - Fixed missing `exec` subcommand in Docker executor args (`docker exec ...` instead of `docker ...`).
 - Skip Telegram bash confirmations when `allow_all_binaries` is enabled — other tools (write) still require approval.
+- **Bot amnesia: conversation context now persists across messages.** Previously each message created a fresh agent with empty memory. Now `load_conversation_history()` reads the last `LlmRequest` from the chat's `session.jsonl` and restores all previous messages into the agent's memory via `AgentLoop::restore_history()`.
 
 ## [0.1.0] - Initial development
 

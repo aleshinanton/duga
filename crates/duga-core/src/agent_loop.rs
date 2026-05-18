@@ -9,7 +9,7 @@ use duga_tools::ToolDispatcher;
 use duga_types::config::AgentConfig;
 use duga_types::error::{AgentError, ToolError};
 use duga_types::llm::LlmCallOptions;
-use duga_types::message::AssistantMessage;
+use duga_types::message::{AssistantMessage, Message};
 use duga_types::tool_call::ToolCall;
 use duga_types::tool_result::ToolResult;
 use std::sync::Arc;
@@ -55,6 +55,13 @@ impl AgentLoop {
 
     pub fn memory(&self) -> &Memory {
         &self.memory
+    }
+
+    /// Restore conversation history into memory (for persistent chat context).
+    pub fn restore_history(&mut self, messages: Vec<Message>) {
+        for msg in messages {
+            self.memory.push_msg(msg);
+        }
     }
 
     pub async fn run(

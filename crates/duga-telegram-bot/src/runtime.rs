@@ -9,13 +9,15 @@ use crate::safety::TelegramConfirmationProvider;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use duga_config::{Config, TelegramConfig};
-use duga_events::{JsonlSink, RedactingSink};
+use duga_events::{Event, JsonlSink, RedactingSink, StoredEvent};
 use duga_runtime::events::FrontendEventBridge;
 use duga_runtime::{
     build_agent, build_dispatcher, build_llm, resolve_provider, sandbox_environment_context,
     tool_guidance, ConfirmationMiddleware, ConfirmationPolicy,
 };
 use duga_sandbox::{CancellationToken, Workspace};
+use duga_types::message::Message;
+use std::path::PathBuf;
 use std::sync::Arc;
 use teloxide::prelude::*;
 
@@ -92,6 +94,9 @@ impl TelegramRuntime {
         let jsonl_sink = Arc::new(JsonlSink::new(&jsonl_path)?);
         let replay_sink = Arc::new(RedactingSink::new(jsonl_sink));
 
+        // Load previous conversation context so the agent remembers the chat.
+        let conversation_history = load_conversation_history(&jsonl_path);
+
         // Build frontend context for system prompt.
         let env_ctx = sandbox_environment_context(&self.config);
         let tool_guide = tool_guidance();
@@ -122,6 +127,11 @@ impl TelegramRuntime {
         let mut renderer = TelegramEventRenderer::new(bot.clone(), ChatId(chat_id));
         let renderer_handle = tokio::spawn(async move { renderer.run(&mut renderer_rx).await });
 
+        // Restore conversation history into the agent's memory.
+        if let Some(history) = conversation_history {
+            agent.restore_history(history);
+        }
+
         let result = agent.run(task.clone(), cancellation).await;
         drop(agent);
 
@@ -138,5 +148,48 @@ impl TelegramRuntime {
                 Err(anyhow::anyhow!("Agent run failed: {e}"))
             }
         }
+    }
+}
+
+/// Load previous conversation messages from a JSONL session file.
+fn load_conversation_history(path: &PathBuf) -> Option<Vec<Message>> {
+    use std::io::{BufRead, BufReader};
+
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut last_messages: Option<Vec<Message>> = None;
+    for line in reader.lines() {
+        let line = line.ok()?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Ok(event) = serde_json::from_str::<StoredEvent>(trimmed) {
+            if let Event::LlmRequest { messages, .. } = event.event {
+                last_messages = Some(messages);
+            }
+        }
+    }
+
+    let messages = last_messages?;
+    if messages.is_empty() {
+        return None;
+    }
+
+    // Filter out system messages (we provide a fresh system prompt).
+    let history: Vec<Message> = messages
+        .into_iter()
+        .filter(|m| !matches!(m.role, duga_types::message::Role::System))
+        .collect();
+
+    if history.is_empty() {
+        None
+    } else {
+        tracing::info!(
+            "Loaded {} previous messages from session history",
+            history.len()
+        );
+        Some(history)
     }
 }
