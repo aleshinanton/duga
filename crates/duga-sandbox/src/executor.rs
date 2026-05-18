@@ -292,7 +292,7 @@ impl CommandExecutor for DockerExecutor {
 
         // Build the docker exec command args.
         // docker exec [options] container command
-        let mut args: Vec<String> = Vec::new();
+        let mut args: Vec<String> = vec!["exec".into()];
 
         // Environment variables passed via -e flags.
         for (key, value) in &spec.env {
