@@ -183,6 +183,11 @@ fn load_conversation_history(path: &PathBuf) -> Option<Vec<Message>> {
         .filter(|m| !matches!(m.role, duga_types::message::Role::System))
         .collect();
 
+    // Normalize: drop orphaned tool messages that lack a preceding
+    // assistant with tool_calls (can happen after buggy compression in
+    // previous runs).
+    let history = normalize_tool_message_sequence(history);
+
     if history.is_empty() {
         None
     } else {
@@ -191,5 +196,135 @@ fn load_conversation_history(path: &PathBuf) -> Option<Vec<Message>> {
             history.len()
         );
         Some(history)
+    }
+}
+
+/// Remove orphaned tool messages from a message sequence.
+///
+/// OpenAI / DeepSeek require every tool-role message to follow an
+/// assistant message that contains tool_calls.  A buggy compression
+/// split in an earlier run can leave orphaned tool messages at the
+/// start of the restored history; this function drops them.
+fn normalize_tool_message_sequence(messages: Vec<Message>) -> Vec<Message> {
+    use duga_types::message::{ContentBlock, Role};
+
+    let mut out = Vec::with_capacity(messages.len());
+    // Track the last assistant that had tool_calls so consecutive
+    // tool results all remain valid.
+    let mut last_assistant_had_tool_calls = false;
+    for msg in messages {
+        if msg.role == Role::Tool {
+            if last_assistant_had_tool_calls {
+                out.push(msg);
+            }
+            // else: orphaned — drop it silently.
+            // Do NOT reset last_assistant_had_tool_calls here;
+            // multiple tool results can follow one assistant.
+        } else {
+            let has_tool_calls = msg.role == Role::Assistant
+                && msg
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolCall(_)));
+            last_assistant_had_tool_calls = has_tool_calls;
+            out.push(msg);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duga_types::message::{ContentBlock, Message, Role};
+    use duga_types::tool_call::ToolCall;
+
+    fn assistant_with_tool_calls(tool_names: &[&str]) -> Message {
+        let calls: Vec<_> = tool_names
+            .iter()
+            .map(|name| ContentBlock::ToolCall(ToolCall::new(*name, serde_json::json!({}))))
+            .collect();
+        Message {
+            role: Role::Assistant,
+            content: calls,
+            name: None,
+            pinned: false,
+            reasoning_content: None,
+        }
+    }
+
+    fn assistant_text(text: &str) -> Message {
+        Message::assistant(Some(text.into()), vec![], None)
+    }
+
+    fn tool_msg(output: &str) -> Message {
+        use duga_types::tool_call::CallId;
+        Message::tool(CallId::new().as_uuid(), output.to_string())
+    }
+
+    fn user_msg(text: &str) -> Message {
+        Message::user(text)
+    }
+
+    #[test]
+    fn normalize_preserves_valid_tool_sequence() {
+        let messages = vec![
+            user_msg("run command"),
+            assistant_with_tool_calls(&["bash"]),
+            tool_msg("output"),
+            assistant_text("done"),
+        ];
+        let result = normalize_tool_message_sequence(messages);
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0].role, Role::User);
+        assert_eq!(result[1].role, Role::Assistant);
+        assert_eq!(result[2].role, Role::Tool);
+        assert_eq!(result[3].role, Role::Assistant);
+    }
+
+    #[test]
+    fn normalize_drops_orphaned_tool_at_start() {
+        // Simulates a compression split that left a tool message
+        // at the start of recent_messages with no preceding assistant.
+        let messages = vec![
+            tool_msg("orphaned output"),
+            user_msg("continue"),
+            assistant_text("ok"),
+        ];
+        let result = normalize_tool_message_sequence(messages);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].role, Role::User);
+        assert_eq!(result[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn normalize_drops_orphaned_tool_after_text_assistant() {
+        // A tool message after an assistant without tool_calls is orphaned.
+        let messages = vec![
+            user_msg("hello"),
+            assistant_text("how can I help?"),
+            tool_msg("orphaned"),
+            user_msg("next"),
+        ];
+        let result = normalize_tool_message_sequence(messages);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].role, Role::User);
+        assert_eq!(result[1].role, Role::Assistant);
+        assert_eq!(result[2].role, Role::User);
+    }
+
+    #[test]
+    fn normalize_preserves_multiple_tool_results() {
+        let messages = vec![
+            user_msg("do two things"),
+            assistant_with_tool_calls(&["bash", "read"]),
+            tool_msg("bash output"),
+            tool_msg("read output"),
+            assistant_text("both done"),
+        ];
+        let result = normalize_tool_message_sequence(messages);
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[2].role, Role::Tool);
+        assert_eq!(result[3].role, Role::Tool);
     }
 }
