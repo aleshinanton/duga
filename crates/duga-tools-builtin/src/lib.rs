@@ -1,12 +1,13 @@
-//! Built-in tools for duga: read, write, bash, search, think.
+//! Built-in tools for duga: read, write, edit, shell, search, think.
 //!
-//! This crate implements all five built-in tools specified in §11 of the architecture.
+//! This crate implements the default built-in tools specified in §11 of the architecture.
 //! Each tool implements the `Tool` trait and uses the security primitives from
 //! `duga-sandbox` (Workspace, BinaryRegistry, ShellSession, run_captured).
 
-pub mod bash;
+pub mod edit;
 pub mod read;
 pub mod search;
+pub mod shell;
 pub mod think;
 pub mod write;
 
@@ -27,6 +28,7 @@ pub fn register_builtin_tools(
 ) -> Result<(), ToolDispatcherError> {
     dispatcher.register_erased(ErasedTool::erase(read::ReadTool::new()))?;
     dispatcher.register_erased(ErasedTool::erase(write::WriteTool::new()))?;
+    dispatcher.register_erased(ErasedTool::erase(edit::EditTool::new()))?;
     dispatcher.register_erased(ErasedTool::erase(search::SearchTool::new()))?;
     dispatcher.register_erased(ErasedTool::erase(think::ThinkTool::new(
         think::ThinkLimits {
@@ -34,7 +36,7 @@ pub fn register_builtin_tools(
             max_tokens: think_limits.max_tokens as usize,
         },
     )))?;
-    dispatcher.register_erased(ErasedTool::erase(bash::BashTool::with_sandbox(
+    dispatcher.register_erased(ErasedTool::erase(shell::ShellTool::with_sandbox(
         registry,
         workspace,
         output_limits,

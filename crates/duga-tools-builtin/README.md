@@ -2,7 +2,7 @@
 
 ## Description
 
-Built-in tools for `duga`. This crate implements the default `read`, `write`, `bash`, `search`, and `think` tools used by the harness and frontends.
+Built-in tools for `duga`. This crate implements the default `read`, `write`, `edit`, `shell`, `search`, and `think` tools used by the harness and frontends.
 
 ## Dependencies
 
@@ -13,4 +13,3 @@ Built-in tools for `duga`. This crate implements the default `read`, `write`, `b
 ## License
 
 Declared as `MIT OR Apache-2.0` in `Cargo.toml`. The repository currently includes the MIT license text at [`../../LICENSE`](../../LICENSE).
-

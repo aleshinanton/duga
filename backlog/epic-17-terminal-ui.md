@@ -226,7 +226,7 @@ This epic relies on shared infrastructure from EPIC-18. The following features a
   4. Return deny/timeout as explicit tool errors via the shared hook.
 - **Definition of Done:** Users can inspect and approve/deny risky local actions from the TUI.
 - **Acceptance criteria:**
-  - Bash/write actions can require confirmation.
+  - Shell/edit/write actions can require confirmation.
   - Denied actions are visible in the transcript.
   - Long outputs are truncated with a way to inspect details.
 - **Test plan:** UI state tests for tool lifecycle and confirmation decisions.

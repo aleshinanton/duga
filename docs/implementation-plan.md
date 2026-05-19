@@ -48,7 +48,7 @@ duga/
       duga-llm-ollama/              # Ollama /api/chat
     duga-sandbox/                   # Workspace, Dir wrapper, exec, env scrub, BinaryRegistry
     duga-tools/                     # Tool trait + Dispatcher + schema pipeline
-      duga-tools-builtin/           # bash, read, write, search, think
+      duga-tools-builtin/           # shell, read, write, search, think
     duga-plugin-abi/                # WIT file + wit-bindgen output (host & guest)
     duga-plugin-host/               # wasmtime loader, WASI cap binder, Tool adapter
     duga-core/                      # AgentLoop, Memory, Summarizer trait, AgentError
@@ -117,7 +117,7 @@ duga/
 LlmClient impl                       ToolDispatcher (duga-tools)
 (in duga-llm-*)                            | owns Vec<Box<dyn Tool>>
                                            |
-                                           +--> BashTool, ReadTool, WriteTool, SearchTool, ThinkTool
+                                           +--> ShellTool, ReadTool, WriteTool, SearchTool, ThinkTool
                                            +--> WasmPluginAdapter (one per plugin)
                                                      | owns wasmtime::Component (Arc, shared)
                                                      | creates a fresh Store per call
@@ -152,7 +152,7 @@ Plugins:
 | `Arc<dyn Summarizer>` | AgentLoop | same reason as EventSink; must outlive async boundaries. | -- |
 | `Arc<Workspace>` | AgentLoop | needed by both `ToolDispatcher` (stores it) and Memory (for path normalization). | Rc is !Send; Box prevents sharing. |
 | `Arc<wasmtime::Engine>` | PluginRegistry | Engine is expensive to create; shared across all invocations. Must be `Send + Sync` for concurrent use (G1). | Creating an Engine per-call is 200ms+ overhead. |
-| `Mutex<HashMap<Uuid, ShellSession>>` | BashTool | Sessions are mutated by `cd`/`export`/`unset` across concurrent tool calls (if G1 -> parallel). | `RwLock` adds no value since mutations dominate. |
+| `Mutex<HashMap<Uuid, ShellSession>>` | ShellTool | Sessions are mutated by `cd`/`export`/`unset` across concurrent tool calls (if G1 -> parallel). | `RwLock` adds no value since mutations dominate. |
 
 **No `Arc<Mutex<Memory>>`**: Memory is owned exclusively by `AgentLoop::run`, never shared. No `Arc<Mutex<Event>>` either -- events flow through bounded channels, never shared state.
 
@@ -165,7 +165,7 @@ Plugins:
 | AgentLoop::run | None | CancellationToken |
 | LlmClient::chat | DNS/TLS/HTTP (reqwest = async) | select! with cancel |
 | ToolDispatcher::dispatch | | |
-| BashTool::execute | waitpid (tokio::process) | ToolContext.cancellation |
+| ShellTool::execute | waitpid (tokio::process) | ToolContext.cancellation |
 | ReadTool::execute | cap_std read (spawn_blocking) | same |
 | WriteTool::execute | cap_std write (spawn_blocking) | same |
 | SearchTool::execute | recursive walk (spawn_blocking) | same |
@@ -280,12 +280,12 @@ Each provides a ProviderFactory. Deps: duga-llm, reqwest, tokio, serde_json, tra
 
 ### 5.8 `duga-tools-builtin` -- `crates/duga-tools-builtin/`
 
-**Purpose:** bash, read, write, search, think -- the five required tools.
+**Purpose:** shell, read, write, search, think -- the five required tools.
 
-**Public structs:** BashTool, ReadTool, WriteTool, SearchTool, ThinkTool.
+**Public structs:** ShellTool, ReadTool, WriteTool, SearchTool, ThinkTool.
 
 **Key details:**
-- BashTool: uses Sandbox::run_captured + ShellSession::classify for session-state commands
+- ShellTool: uses Sandbox::run_captured + ShellSession::classify for session-state commands
 - ReadTool: cap_std read, NUL-byte sniffing (first 8 KiB), spawn_blocking
 - WriteTool: atomic write via tempfile + rename, per-path mutex
 - SearchTool: walkdir + regex in spawn_blocking (GAP G5)
@@ -536,8 +536,8 @@ Each test builds a minimal AgentLoop with fixtures, uses deterministic fake cloc
 4. read(Cargo.toml)
 5. LlmRequest -> LlmResponse([write])
 6. write(Cargo.toml, content = "...")
-7. LlmRequest -> LlmResponse([bash])
-8. bash(["cargo", "test"]) -> success, "test result: ok"
+7. LlmRequest -> LlmResponse([shell])
+8. shell(["cargo", "test"]) -> success, "test result: ok"
 9. LlmRequest -> LlmResponse(text = "Done!")
 
 Test uses MockLlm + MockToolDispatcher pre-loaded with this exact script.
@@ -552,7 +552,7 @@ Test uses MockLlm + MockToolDispatcher pre-loaded with this exact script.
 | P2 Config + sandbox | 2 | SECT 13-16, 18, 20, 32 | duga-config, duga-sandbox | Config::load working; Workspace::open; BinaryRegistry; run_captured |
 | P3 ShellSession + env | 1 | SECT 17, 19-20 | (extends duga-sandbox) | ShellSession classify + apply; SanitizedEnv |
 | P4 Tool trait + dispatcher | 2 | SECT 7-8, 10 | duga-tools | ToolDispatcher validates schema pipeline |
-| P5 Built-in tools | 3 | SECT 11-12, 16-17 | duga-tools-builtin | bash, read, write, search, think compile and test |
+| P5 Built-in tools | 3 | SECT 11-12, 16-17 | duga-tools-builtin | shell, read, write, search, think compile and test |
 | P6 Memory | 2 | SECT 21-23 | (extends duga-core) | Memory push, over_budget, compress, overflow rules |
 | P7 LLM trait + providers | 2 | SECT 6a, 32 | duga-llm, duga-llm-openai, -anthropic, -ollama | LlmClient trait; ProviderRegistry; one provider tested |
 | P8 Stream + redaction | 1 | SECT 5.2, 24.1 | (extends duga-events) | JsonlSink writes valid JSONL; Redactor passes |
@@ -634,7 +634,7 @@ steps:
 
 ```jsonl
 {"seq":1,"ts":"2026-05-10T18:30:00.000Z","event":"LoopIteration","step":1}
-{"seq":2,"ts":"2026-05-10T18:30:00.001Z","event":"LlmRequest","messages":[{"role":"system","content":[{"text":"You are a coding assistant..."}]},{"role":"user","content":[{"text":"Write a Rust function fibonacci..."}]}],"tools":[{"name":"read","description":"Read a file","args_schema":{...}},{"name":"write","description":"Write a file","args_schema":{...}},{"name":"bash","description":"Execute a command","args_schema":{...}}],"opts":{"streaming":true}}
+{"seq":2,"ts":"2026-05-10T18:30:00.001Z","event":"LlmRequest","messages":[{"role":"system","content":[{"text":"You are a coding assistant..."}]},{"role":"user","content":[{"text":"Write a Rust function fibonacci..."}]}],"tools":[{"name":"read","description":"Read a file","args_schema":{...}},{"name":"write","description":"Write a file","args_schema":{...}},{"name":"shell","description":"Execute a command","args_schema":{...}}],"opts":{"streaming":true}}
 {"seq":3,"ts":"2026-05-10T18:30:01.000Z","event":"LlmTokenDelta","text":"I'll write the fibonacci function..."}
 {"seq":5,"ts":"2026-05-10T18:30:02.000Z","event":"LlmResponse","message":{"text":"I'll write the fibonacci function...","tool_calls":[{"id":"550e8400-e29b-41d4-a716-446655440000","tool":"write","raw_args":{"path":"src/fib.rs","content":"fn fibonacci(n: u64) -> u64 { ... }"}}]},"usage":{"prompt":120,"completion":85}}
 {"seq":6,"ts":"2026-05-10T18:30:02.000Z","event":"ToolCallStarted","id":"550e8400-...","tool":"write","args":{"path":"src/fib.rs","content":"<REDACTED>"}}
@@ -857,10 +857,10 @@ Phase P5: Built-in tools
   Depends on: [P3, P4]
   Signal: .phase/P5
   What passes:
-    - BashTool executes "echo hello" and returns output
-    - BashTool with session tracks cwd via "cd"
-    - BashTool with session tracks env via "export"
-    - BashTool with nonexistent binary => ToolError::Denied
+    - ShellTool executes "echo hello" and returns output
+    - ShellTool with session tracks cwd via "cd"
+    - ShellTool with session tracks env via "export"
+    - ShellTool with nonexistent binary => ToolError::Denied
     - ReadTool reads a text file
     - ReadTool with offset skips bytes correctly
     - ReadTool with limit stops at limit bytes

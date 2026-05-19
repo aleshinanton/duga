@@ -132,14 +132,14 @@ Mock implementations for deterministic testing: MockTool, MockLlm, CapturingEven
 
 - **§SPEC:** §5, §11, §25 (E2E smoke test)
 - **Labels:** `layer/testing`, `priority/critical`
-- **Description:** Implement the fibonacci E2E smoke test: Agent receives *"Write a Rust function fibonacci(n: u64) -> u64 with unit tests. Ensure cargo test passes."* The test uses MockLlm with scripted responses that produce the 9-event sequence from PLAN.md §15: write src/fib.rs → read Cargo.toml → write Cargo.toml → bash cargo test → text answer. Verify the final answer and event sequence.
+- **Description:** Implement the fibonacci E2E smoke test: Agent receives *"Write a Rust function fibonacci(n: u64) -> u64 with unit tests. Ensure cargo test passes."* The test uses MockLlm with scripted responses that produce the 9-event sequence from PLAN.md §15: write src/fib.rs → read Cargo.toml → write Cargo.toml → shell cargo test → text answer. Verify the final answer and event sequence.
 - **Files affected:**
   - `tests/e2e/fibonacci.rs` (new)
 - **Types involved:** `MockLlm`, `MockTool`, `CapturingEventSink`
 - **Dependencies:** TASK-14.4
 - **Implementation steps:**
   1. Script MockLlm with 5 responses matching the fibonacci scenario
-  2. Script MockTools (write, read, bash) with expected responses
+  2. Script MockTools (write, read, shell) with expected responses
   3. Run agent
   4. Assert final answer contains "test result: ok"
   5. Assert event sequence: LoopIteration → LlmRequest → LlmResponse → ToolCallStarted(write) → ToolCallFinished → ... → FinalResponse

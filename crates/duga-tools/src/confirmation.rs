@@ -12,7 +12,7 @@ use std::time::Duration;
 pub struct ConfirmationRequest {
     /// Unique ID matching a specific tool call instance.
     pub confirmation_id: String,
-    /// Tool name being invoked (e.g. "bash", "write").
+    /// Tool name being invoked (e.g. "shell", "write").
     pub tool_name: String,
     /// Human-readable label describing the pending action.
     pub label: String,
@@ -41,7 +41,7 @@ pub struct ConfirmationPolicy {
 impl Default for ConfirmationPolicy {
     fn default() -> Self {
         Self {
-            require_for: HashSet::from(["bash".into(), "write".into()]),
+            require_for: HashSet::from(["shell".into(), "edit".into(), "write".into()]),
             timeout: Duration::from_secs(60),
         }
     }
@@ -54,14 +54,27 @@ impl ConfirmationPolicy {
         timeout: Duration,
     ) -> Self {
         Self {
-            require_for: require_for.into_iter().map(|s| s.into()).collect(),
+            require_for: require_for
+                .into_iter()
+                .map(|s| {
+                    let name = s.into();
+                    normalize_tool_name(&name).to_string()
+                })
+                .collect(),
             timeout,
         }
     }
 
     /// Check whether a tool call requires confirmation.
     pub fn requires_confirmation(&self, tool_name: &str) -> bool {
-        self.require_for.contains(tool_name)
+        self.require_for.contains(normalize_tool_name(tool_name))
+    }
+}
+
+fn normalize_tool_name(tool_name: &str) -> &str {
+    match tool_name {
+        "bash" => "shell",
+        other => other,
     }
 }
 
@@ -168,7 +181,8 @@ mod tests {
     #[test]
     fn policy_requires_confirmation() {
         let policy = ConfirmationPolicy::default();
-        assert!(policy.requires_confirmation("bash"));
+        assert!(policy.requires_confirmation("shell"));
+        assert!(policy.requires_confirmation("edit"));
         assert!(policy.requires_confirmation("write"));
         assert!(!policy.requires_confirmation("read"));
         assert!(!policy.requires_confirmation("search"));
@@ -177,10 +191,10 @@ mod tests {
     #[test]
     fn evaluate_confirm_when_required() {
         let policy = ConfirmationPolicy::default();
-        let decision = evaluate_confirmation("bash", &policy, "abc-123", "Run: ls", None);
+        let decision = evaluate_confirmation("shell", &policy, "abc-123", "Run: ls", None);
         match decision {
             MiddlewareDecision::Confirm(req) => {
-                assert_eq!(req.tool_name, "bash");
+                assert_eq!(req.tool_name, "shell");
                 assert_eq!(req.confirmation_id, "abc-123");
             }
             other => panic!("expected Confirm, got {other:?}"),
@@ -201,7 +215,14 @@ mod tests {
     fn custom_policy() {
         let policy = ConfirmationPolicy::new(["delete", "rm"], Duration::from_secs(30));
         assert!(policy.requires_confirmation("delete"));
-        assert!(!policy.requires_confirmation("bash"));
+        assert!(!policy.requires_confirmation("shell"));
         assert_eq!(policy.timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn legacy_bash_policy_maps_to_shell() {
+        let policy = ConfirmationPolicy::new(["bash"], Duration::from_secs(30));
+        assert!(policy.requires_confirmation("shell"));
+        assert!(policy.requires_confirmation("bash"));
     }
 }

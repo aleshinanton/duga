@@ -57,9 +57,9 @@ mod tests {
 
     #[test]
     fn test_tool_call_new_generates_id() {
-        let tc = ToolCall::new("bash", json!({"cmd": "ls"}));
+        let tc = ToolCall::new("shell", json!({"cmd": "ls"}));
         assert_ne!(tc.id.as_uuid().to_string().len(), 0);
-        assert_eq!(tc.tool, "bash");
+        assert_eq!(tc.tool, "shell");
     }
 
     #[test]

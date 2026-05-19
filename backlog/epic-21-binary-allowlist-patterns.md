@@ -16,13 +16,13 @@ Currently `sandbox.allowed_binaries` requires listing every binary by absolute p
 
 - **SPEC:** §16 (Binary Resolution), §17 (Sandbox)
 - **Labels:** `layer/config`, `layer/sandbox`, `priority/high`
-- **Description:** Add a `sandbox.allow_all_binaries` boolean flag to `SandboxConfig`. When `true`, the `BashTool` skips the `BinaryRegistry` check entirely for spawn commands. This flag only makes sense with `sandbox.mode: "docker"` (or future container/VM modes) — emit a config warning if set with capability/host mode.
+- **Description:** Add a `sandbox.allow_all_binaries` boolean flag to `SandboxConfig`. When `true`, the `ShellTool` skips the `BinaryRegistry` check entirely for spawn commands. This flag only makes sense with `sandbox.mode: "docker"` (or future container/VM modes) — emit a config warning if set with capability/host mode.
 - **Files affected:**
   - `crates/duga-config/src/config.rs`
   - `crates/duga-sandbox/src/binary_registry.rs`
-  - `crates/duga-tools-builtin/src/bash.rs`
+  - `crates/duga-tools-builtin/src/shell.rs`
   - `crates/duga-runtime/src/tools.rs`
-- **Types involved:** `SandboxConfig` (new field), `BinaryRegistry` (new `allow_all()` constructor), `BashTool` (conditional check)
+- **Types involved:** `SandboxConfig` (new field), `BinaryRegistry` (new `allow_all()` constructor), `ShellTool` (conditional check)
 - **YAML example:**
   ```yaml
   sandbox:
@@ -37,7 +37,7 @@ Currently `sandbox.allowed_binaries` requires listing every binary by absolute p
   2. Add `Config::validate()` warning when `allow_all_binaries: true` but `sandbox.mode` is `capability` or `host`.
   3. Add `BinaryRegistry::allow_all()` static constructor returning a sentinel value.
   4. Add `BinaryRegistry::is_allow_all(&self) -> bool` method.
-  5. In `BashTool::execute()`, skip `registry.resolve()` when the registry is in allow-all mode; pass the bare binary name directly to the executor as the program.
+  5. In `ShellTool::execute()`, skip `registry.resolve()` when the registry is in allow-all mode; pass the bare binary name directly to the executor as the program.
   6. In `build_dispatcher()`, use `BinaryRegistry::allow_all()` when the config flag is set.
 - **Definition of Done:** Setting `allow_all_binaries: true` in Docker mode bypasses the binary allowlist; capability/host mode produces a config warning.
 - **Acceptance criteria:**
@@ -45,7 +45,7 @@ Currently `sandbox.allowed_binaries` requires listing every binary by absolute p
   - `allow_all_binaries: true` + `mode: capability` → config loads but warns at startup.
   - `allow_all_binaries: false` (default) → existing behavior unchanged.
   - An empty or missing `allowed_binaries` list is valid when `allow_all_binaries: true`.
-- **Test plan:** config parse tests for new field; bash tool tests with allow-all registry; Docker integration test.
+- **Test plan:** config parse tests for new field; shell tool tests with allow-all registry; Docker integration test.
 - **Estimated effort:** 3 hours
 
 ---
@@ -94,12 +94,12 @@ Currently `sandbox.allowed_binaries` requires listing every binary by absolute p
 - **Labels:** `layer/sandbox`, `layer/tools`, `priority/normal`
 - **Description:** When `allow_all_binaries: true`, pass the LLM-provided command name directly to the Docker executor without resolving it against the host. The Docker container's own `PATH` will resolve the binary. This avoids false "not found" errors when binaries exist in the container but not on the host.
 - **Files affected:**
-  - `crates/duga-tools-builtin/src/bash.rs`
+  - `crates/duga-tools-builtin/src/shell.rs`
   - `crates/duga-sandbox/src/executor.rs`
-- **Types involved:** `BashTool`, `CommandSpec`, `DockerExecutor`
+- **Types involved:** `ShellTool`, `CommandSpec`, `DockerExecutor`
 - **Dependencies:** TASK-21.1 (allow_all flag), TASK-18.6 (Docker executor)
 - **Implementation steps:**
-  1. In `BashTool::execute()`, when the registry is in allow-all mode and executor is Docker, set `spec.program` to the bare command name rather than a resolved host path.
+  1. In `ShellTool::execute()`, when the registry is in allow-all mode and executor is Docker, set `spec.program` to the bare command name rather than a resolved host path.
   2. In `DockerExecutor::run()`, pass the bare program name to `docker exec` so the container resolves it.
   3. For `CapabilityExecutor`, keep resolving through host `which` even in allow-all mode (host has no container PATH).
   4. Document that `PATH` inside the container must include all desired tool locations.

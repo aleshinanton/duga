@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn map_event_tool_call() {
-        let call = ToolCall::new("bash", serde_json::json!({"cmd": "ls", "label": "ls -la"}));
+        let call = ToolCall::new("shell", serde_json::json!({"cmd": "ls", "label": "ls -la"}));
         let event = Event::ToolCallStarted {
             tool_call: call,
             attempt: 1,
@@ -207,7 +207,7 @@ mod tests {
                 description,
                 ..
             }) => {
-                assert_eq!(tool_name, "bash");
+                assert_eq!(tool_name, "shell");
                 assert_eq!(attempt, 1);
                 assert_eq!(description, "ls -la");
             }
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn map_event_tool_call_no_label() {
         // When the LLM doesn't supply a label, description falls back to tool_name.
-        let call = ToolCall::new("bash", serde_json::json!({"cmd": "ls"}));
+        let call = ToolCall::new("shell", serde_json::json!({"cmd": "ls"}));
         let event = Event::ToolCallStarted {
             tool_call: call,
             attempt: 1,
@@ -229,8 +229,8 @@ mod tests {
                 description,
                 ..
             }) => {
-                assert_eq!(tool_name, "bash");
-                assert_eq!(description, "bash");
+                assert_eq!(tool_name, "shell");
+                assert_eq!(description, "shell");
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -271,7 +271,7 @@ mod tests {
         let event = Event::ToolCallFinished {
             result,
             attempt: 1,
-            tool_name: "bash".into(),
+            tool_name: "shell".into(),
         };
         match map_event(event) {
             Some(FrontendEvent::ToolCallFinished {
@@ -280,7 +280,7 @@ mod tests {
                 attempt,
                 ..
             }) => {
-                assert_eq!(tool_name, "bash");
+                assert_eq!(tool_name, "shell");
                 assert!(success);
                 assert_eq!(attempt, 1);
             }
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn map_event_tool_call_started_label_is_empty_string() {
         // When label is present but empty, description should be empty string.
-        let call = ToolCall::new("bash", serde_json::json!({"label": ""}));
+        let call = ToolCall::new("shell", serde_json::json!({"label": ""}));
         let event = Event::ToolCallStarted {
             tool_call: call,
             attempt: 1,
@@ -302,7 +302,7 @@ mod tests {
                 description,
                 ..
             }) => {
-                assert_eq!(tool_name, "bash");
+                assert_eq!(tool_name, "shell");
                 assert_eq!(description, "");
             }
             other => panic!("unexpected: {other:?}"),
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn map_event_tool_call_started_label_is_non_string() {
         // When label is not a string (e.g., JSON number), fall back to tool_name.
-        let call = ToolCall::new("bash", serde_json::json!({"label": 42}));
+        let call = ToolCall::new("shell", serde_json::json!({"label": 42}));
         let event = Event::ToolCallStarted {
             tool_call: call,
             attempt: 1,
@@ -323,8 +323,8 @@ mod tests {
                 description,
                 ..
             }) => {
-                assert_eq!(tool_name, "bash");
-                assert_eq!(description, "bash");
+                assert_eq!(tool_name, "shell");
+                assert_eq!(description, "shell");
             }
             other => panic!("unexpected: {other:?}"),
         }

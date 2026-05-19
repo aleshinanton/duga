@@ -1,4 +1,4 @@
-//! BashTool — dispatch to run_captured or ShellSession with timeout enforcement.
+//! ShellTool — dispatch to run_captured or ShellSession with timeout enforcement.
 
 use duga_sandbox::binary_registry::BinaryRegistry;
 use duga_sandbox::shell_session::{SessionCommand, ShellSession};
@@ -20,14 +20,16 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct BashArgs {
-    #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
+pub struct ShellArgs {
+    #[schemars(
+        description = "Brief human-readable description of what this step does (shown to user)"
+    )]
     pub label: String,
     pub command: Vec<String>,
     pub session: Option<Uuid>,
 }
 
-pub struct BashTool {
+pub struct ShellTool {
     sessions: Arc<Mutex<HashMap<Uuid, ShellSession>>>,
     pub registry: Arc<BinaryRegistry>,
     pub workspace: Arc<Workspace>,
@@ -36,15 +38,15 @@ pub struct BashTool {
     executor: Arc<dyn CommandExecutor>,
 }
 
-impl std::fmt::Debug for BashTool {
+impl std::fmt::Debug for ShellTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BashTool")
+        f.debug_struct("ShellTool")
             .field("timeout", &self.timeout)
             .finish()
     }
 }
 
-impl Clone for BashTool {
+impl Clone for ShellTool {
     fn clone(&self) -> Self {
         Self {
             sessions: self.sessions.clone(),
@@ -57,7 +59,7 @@ impl Clone for BashTool {
     }
 }
 
-impl BashTool {
+impl ShellTool {
     pub fn with_sandbox(
         registry: Arc<BinaryRegistry>,
         workspace: Arc<Workspace>,
@@ -91,7 +93,7 @@ impl BashTool {
     }
 }
 
-impl Default for BashTool {
+impl Default for ShellTool {
     fn default() -> Self {
         Self::with_sandbox(
             Arc::new(BinaryRegistry::default()),
@@ -103,10 +105,10 @@ impl Default for BashTool {
     }
 }
 
-impl Tool for BashTool {
-    type Args = BashArgs;
+impl Tool for ShellTool {
+    type Args = ShellArgs;
     fn name(&self) -> &str {
-        "bash"
+        "shell"
     }
     fn description(&self) -> &str {
         "Execute a command in the sandbox"
@@ -272,11 +274,11 @@ mod tests {
     }
 
     #[test]
-    fn test_bash_echo() {
+    fn test_shell_echo() {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let r = Arc::new(BinaryRegistry::new(&["echo".into()]).unwrap());
-        let tool = BashTool::with_sandbox(
+        let tool = ShellTool::with_sandbox(
             r,
             Arc::new(ws.clone()),
             OutputLimits::default(),
@@ -287,7 +289,7 @@ mod tests {
         let result = rt
             .block_on(tool.execute(
                 make_ctx(&ws),
-                BashArgs {
+                ShellArgs {
                     label: "echo hello".into(),
                     command: vec!["echo".into(), "hello".into()],
                     session: None,
@@ -298,11 +300,11 @@ mod tests {
     }
 
     #[test]
-    fn test_bash_empty() {
+    fn test_shell_empty() {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let r = Arc::new(BinaryRegistry::new(&["echo".into()]).unwrap());
-        let tool = BashTool::with_sandbox(
+        let tool = ShellTool::with_sandbox(
             r,
             Arc::new(ws.clone()),
             OutputLimits::default(),
@@ -312,7 +314,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(
             make_ctx(&ws),
-            BashArgs {
+            ShellArgs {
                 label: "empty".into(),
                 command: vec![],
                 session: None,
@@ -323,11 +325,11 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn test_bash_respects_cancelled_context() {
+    fn test_shell_respects_cancelled_context() {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let r = Arc::new(BinaryRegistry::new(&["sleep".into()]).unwrap());
-        let tool = BashTool::with_sandbox(
+        let tool = ShellTool::with_sandbox(
             r,
             Arc::new(ws.clone()),
             OutputLimits::default(),
@@ -345,7 +347,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(
             ctx,
-            BashArgs {
+            ShellArgs {
                 label: "sleep 1".into(),
                 command: vec!["sleep".into(), "1".into()],
                 session: None,

@@ -27,17 +27,15 @@ pub struct BuiltRuntime {
 /// choose appropriate commands and package managers.
 pub fn sandbox_environment_context(config: &Config) -> String {
     match config.sandbox.mode {
-        SandboxMode::Docker => {
-            "You are running in a sandboxed container environment.\n\
+        SandboxMode::Docker => "You are running in a sandboxed container environment.\n\
              System tools may be minimal — install what you need using the \
              available package manager (try `apk`, `apt`, or `yum`).\n\
              Check available commands with `which` or `command -v` before \
              assuming they exist. File system changes persist across sessions."
-                .to_string()
-        }
+            .to_string(),
         SandboxMode::Capability | SandboxMode::Host => {
             "You are running with direct system access. Standard Unix tools \
-             should be available. Use `bash` for exploration and execution."
+             should be available. Use `shell` for exploration and execution."
                 .to_string()
         }
     }
@@ -53,9 +51,11 @@ pub fn tool_guidance() -> &'static str {
         "- `think` — Reason through complex problems before acting. \
          Use this FIRST for multi-step tasks, analysis, or planning. \
          Saves steps and produces better results.\n",
-        "- `bash` — Run shell commands. Use for file operations, \
+        "- `shell` — Run shell commands. Use for file operations, \
          package installation, git, and system exploration.\n",
         "- `read` — Read file contents. Supports offset/limit for large files.\n",
+        "- `edit` — Perform targeted text replacements in existing files. \
+         Prefer this over `write` for small changes.\n",
         "- `write` — Create or overwrite files atomically.\n",
         "- `search` — Search workspace files with regex patterns.\n",
     )
@@ -82,7 +82,7 @@ pub fn build_agent(
              {tools}\n\n\
              When facing a complex or multi-step problem, use the `think` tool first to \
              plan your approach before acting. This saves steps and produces better results.\n\
-             Prefer `think` over running many small `bash` commands to explore the environment.\n\
+             Prefer `think` over running many small `shell` commands to explore the environment.\n\
              You have a limited think budget per conversation — use it strategically for the \
              hardest parts of the task."
         )

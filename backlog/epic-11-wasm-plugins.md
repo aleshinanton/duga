@@ -285,13 +285,13 @@ Implement the WASM Component Model plugin system: WIT definition, wit-bindgen ho
 
 - **§SPEC:** §30 (Loading flow step 5 — name collision)
 - **Labels:** `layer/wasm`, `priority/high`
-- **Description:** In `load_plugins()`, after calling `info()` and getting the plugin's name, check against the set of built-in tool names (`["read", "write", "bash", "search", "think"]`). If collision → emit `tracing::warn!` and skip the plugin (do not register). The built-in tool always takes precedence.
+- **Description:** In `load_plugins()`, after calling `info()` and getting the plugin's name, check against the set of built-in tool names (`["read", "write", "shell", "search", "think"]`). If collision → emit `tracing::warn!` and skip the plugin (do not register). The built-in tool always takes precedence.
 - **Files affected:**
   - `crates/duga-plugin-host/src/loader.rs` (add collision check)
 - **Types involved:** `PluginError::NameCollision`
 - **Dependencies:** TASK-11.5
 - **Implementation steps:**
-  1. Define `BUILTIN_NAMES: &[&str] = &["read", "write", "bash", "search", "think"]`
+  1. Define `BUILTIN_NAMES: &[&str] = &["read", "write", "shell", "search", "think"]`
   2. After `info()`: check `tool_info.name` against built-in list
   3. If collision → warn + continue (skip)
   4. Also check against already-loaded plugin names → warn + skip

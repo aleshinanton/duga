@@ -29,7 +29,8 @@ Shared provider resolution, tool registration, MEMORY.md loading, SKILL.md loadi
     send_tool_events: true
     send_final_only: false
     require_confirmation_for:
-      - bash
+      - shell
+      - edit
       - write
     events_dir: "./events"
     skills_dir: "./skills"
@@ -240,9 +241,9 @@ Shared provider resolution, tool registration, MEMORY.md loading, SKILL.md loadi
   3. Store pending confirmation with timeout.
   4. Resolve confirm/deny from button callbacks.
   5. Timeout as denied and edit the prompt.
-- **Definition of Done:** Remote shell/write operations cannot run without same-chat confirmation when policy requires it.
+- **Definition of Done:** Remote shell/edit/write operations cannot run without same-chat confirmation when policy requires it.
 - **Acceptance criteria:**
-  - `bash` tool call shows inline keyboard prompt.
+  - `shell` tool call shows inline keyboard prompt.
   - Deny returns `ToolError::Denied` to the agent.
   - Timeout denies safely.
   - Approve executes the tool normally.

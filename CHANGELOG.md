@@ -8,13 +8,15 @@ This project has not published versioned releases yet. Entries below summarize t
 
 ### Added
 
-- **EPIC-22: Step descriptions in frontend events.** Every built-in tool now has a `label` arg that the LLM fills with a human-readable description (e.g. `"ls -la"`, `"Reading config"`). This is threaded through `FrontendEvent::ToolCallStarted.description` to frontends. The Telegram renderer shows `🔧 bash: ls -la` instead of bare `🔧 bash`, collapsing duplicate `tool_name: tool_name` to just the tool name. Long step histories (>5 labels) and long final answers (>300 chars) are wrapped in Telegram `<blockquote expandable>` for a clean summary with a "Show more" toggle. The `tool_name` field on `Event::ToolCallFinished` is now populated (was always empty before), making `FrontendEvent::ToolCallFinished` self-contained.
+- Added an `edit` built-in tool for targeted text replacement in existing files.
+- **EPIC-22: Step descriptions in frontend events.** Every built-in tool now has a `label` arg that the LLM fills with a human-readable description (e.g. `"ls -la"`, `"Reading config"`). This is threaded through `FrontendEvent::ToolCallStarted.description` to frontends. The Telegram renderer shows `🔧 shell: ls -la` instead of bare `🔧 shell`, collapsing duplicate `tool_name: tool_name` to just the tool name. Long step histories (>5 labels) and long final answers (>300 chars) are wrapped in Telegram `<blockquote expandable>` for a clean summary with a "Show more" toggle. The `tool_name` field on `Event::ToolCallFinished` is now populated (was always empty before), making `FrontendEvent::ToolCallFinished` self-contained.
 
 ### Changed
 
-- **System prompt now guides LLM to use `think`.** Added explicit instructions to use the `think` tool for complex multi-step problems and to prefer it over exploratory `bash` commands. Applied to default prompt (`agent.rs`), Telegram bot runtime prompt, and CLI harness prompt.
+- Renamed the built-in command execution tool from `bash` to platform-neutral `shell`; legacy confirmation config entries named `bash` are normalized to `shell`.
+- **System prompt now guides LLM to use `think`.** Added explicit instructions to use the `think` tool for complex multi-step problems and to prefer it over exploratory `shell` commands. Applied to default prompt (`agent.rs`), Telegram bot runtime prompt, and CLI harness prompt.
 - **Added environment context to system prompt.** The LLM is now told what execution environment it's in (Docker container vs direct host access) and what package managers to try. Added `sandbox_environment_context()` and `tool_guidance()` helpers in `duga-runtime`, used by all three frontends.
-- **Added explicit tool guidance to system prompt.** Lists available tools with when-to-use hints (e.g., "use `think` FIRST for multi-step tasks", "use `bash` for package installation"), reducing reliance on JSON Schema alone.
+- **Added explicit tool guidance to system prompt.** Lists available tools with when-to-use hints (e.g., "use `think` FIRST for multi-step tasks", "use `shell` for package installation"), reducing reliance on JSON Schema alone.
 
 ### Fixed
 
@@ -38,13 +40,13 @@ This project has not published versioned releases yet. Entries below summarize t
 - Wired Telegram `/stop` to the active agent cancellation token so long-running LLM/tool work is interrupted.
 - Ensured failed Telegram agent runs unblock the renderer and clear active session state.
 - Moved Telegram slash-command handling behind authorization checks.
-- Wired Docker sandbox mode into bash execution, fixed Docker command argument handling, and drained Docker stdout/stderr concurrently.
+- Wired Docker sandbox mode into shell execution, fixed Docker command argument handling, and drained Docker stdout/stderr concurrently.
 - Redacted literal `provider_api_key` values from `Config` debug output.
 - Switched Docker executor from `--workdir` to `-w` for broader Docker/Podman compatibility.
 - Skipped binary validation at config load when `allow_all_binaries` is true, so stale or host-only entries in `allowed_binaries` don't block startup.
 - Removed unnecessary `which::which()` pre-resolution in allow-all mode — bare names now flow straight to the executor in all sandbox modes.
 - Fixed missing `exec` subcommand in Docker executor args (`docker exec ...` instead of `docker ...`).
-- Skip Telegram bash confirmations when `allow_all_binaries` is enabled — other tools (write) still require approval.
+- Skip Telegram shell confirmations when `allow_all_binaries` is enabled — other file-modifying tools (`edit`, `write`) still require approval.
 - **Bot amnesia: conversation context now persists across messages.** Previously each message created a fresh agent with empty memory. Now `load_conversation_history()` reads the last `LlmRequest` from the chat's `session.jsonl` and restores all previous messages into the agent's memory via `AgentLoop::restore_history()`.
 
 ## [0.1.0] - Initial development
@@ -55,7 +57,7 @@ This project has not published versioned releases yet. Entries below summarize t
 - Added foundational typed primitives for messages, assistant responses, tool calls, tool schemas, tool results, token usage, summaries, and runtime errors.
 - Added capability-bounded workspace access, binary allowlisting, sanitized subprocess environments, shell-session state, process execution, timeout handling, cancellation, and output truncation.
 - Added the tool trait system with `ToolContext`, type-erased tools, dispatcher lookup, schema generation, JSON validation, and typed argument deserialization.
-- Added built-in `read`, `write`, `bash`, `search`, and `think` tools with sandbox-aware execution and integration coverage.
+- Added built-in `read`, `write`, `edit`, `shell`, `search`, and `think` tools with sandbox-aware execution and integration coverage.
 - Added memory management with ordered message history, token-budget checks, summarization, compression, and overflow handling.
 - Added the event system with event sinks, JSONL replay logging, fan-out, sequence allocation, redaction, and replay validation.
 - Added the async LLM layer with provider registry support and real OpenAI and Anthropic clients.

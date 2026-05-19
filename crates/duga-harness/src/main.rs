@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
          {tool_guide}\n\n\
          When facing a complex or multi-step problem, use the `think` tool first to \
          plan your approach before acting. Prefer `think` over running many small \
-         `bash` commands to explore the environment.",
+         `shell` commands to explore the environment.",
     );
     let memory = Memory::new(
         vec![Message::system(system_prompt)],

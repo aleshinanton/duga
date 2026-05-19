@@ -76,10 +76,10 @@ graph TD
     T3.1 --> T4.3[4.3 WriteTool - atomic write via tempfile + rename]
     T2.1 --> T4.3
     T3.1 --> T4.4[4.4 WriteTool - per-path mutex serialization]
-    T3.1 --> T4.5[4.5 BashTool - dispatch to run_captured or ShellSession]
+    T3.1 --> T4.5[4.5 ShellTool - dispatch to run_captured or ShellSession]
     T2.4 --> T4.5
     T2.7 --> T4.5
-    T3.1 --> T4.6[4.6 BashTool - Sandbox + timeout enforcement]
+    T3.1 --> T4.6[4.6 ShellTool - Sandbox + timeout enforcement]
     T3.1 --> T4.7[4.7 SearchTool - walkdir + regex in spawn_blocking]
     T3.1 --> T4.8[4.8 SearchTool - literal mode + max_results cap]
     T3.1 --> T4.9[4.9 ThinkTool - echo thought + think limit enforcement]
@@ -262,7 +262,7 @@ graph TD
 
 The minimum task sequence to reach a runnable agent that completes:
 
-> *"Write fibonacci(n: u64) -> u64 in Rust with tests; make cargo test pass — using only read, write, bash tools."*
+> *"Write fibonacci(n: u64) -> u64 in Rust with tests; make cargo test pass — using only read, edit, write, shell tools."*
 
 ```
 T1.1 → T1.2 → T1.3 → T1.4 → T1.5 → T1.7
@@ -412,7 +412,7 @@ Tasks blocked until their GAP is resolved:
 | G18 (Telegram session policy) | T16.4, T16.6 | One active run per chat, queue, or parallel runs? -> **Resolved: one run per chat with ChannelQueue serialization; different chats may run in parallel.** |
 | G19 (confirmation middleware) | T16.7, T17.7, T18.5 | Pause tool call for confirm/deny, or fail and ask user to retry? -> **Resolved: shared middleware pauses only the pending tool call; Telegram/TUI provide UI-specific approval.** |
 | G20 (TUI event loop model) | T17.3, T17.6 | Single async loop, actor model, or channels between UI/runtime tasks? -> **Resolved: channels between UI/runtime tasks using the EPIC-18 frontend event bridge.** |
-| G21 (Docker filesystem scope) | T18.6 | Do all tools execute in Docker, or only process execution? -> **Resolved: Docker mode applies to `bash`/process execution; read/write/search remain host capability tools over the bind-mounted workspace.** |
+| G21 (Docker filesystem scope) | T18.6 | Do all tools execute in Docker, or only process execution? -> **Resolved: Docker mode applies to `shell`/process execution; read/write/search remain host capability tools over the bind-mounted workspace.** |
 | G22 (allowlist bypass in Docker) | T21.1, T21.3 | Should Docker mode support `allow_all_binaries` to bypass the host binary allowlist, since the container provides OS-level isolation? -> **Resolved: yes; added as EPIC-21 with an explicit opt-in flag and config warning for non-container modes.** |
 
 ---

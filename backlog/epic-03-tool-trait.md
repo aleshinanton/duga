@@ -150,7 +150,7 @@ Define the `Tool` trait, `ToolContext`, `ToolDispatcher`, and the schema registr
   - `cargo test` passes
   - `cargo clippy` clean
 - **Acceptance criteria:**
-  - `dispatch(ToolCall { tool: "nonexistent", .. }, ctx)` → `Err(ToolError::InvalidArgs("Unknown tool 'nonexistent'. Available: read, write, bash"))`
+  - `dispatch(ToolCall { tool: "nonexistent", .. }, ctx)` → `Err(ToolError::InvalidArgs("Unknown tool 'nonexistent'. Available: read, write, shell"))`
   - Error message includes list of available tool names
 - **Test plan:**
   - unit: Test with empty dispatcher → error includes "Available: ", test with populated dispatcher → error lists names

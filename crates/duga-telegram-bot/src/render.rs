@@ -316,8 +316,8 @@ mod tests {
     fn test_label_format_with_description() {
         // Meaningful description different from tool_name → shown.
         assert_eq!(
-            format_step_label("bash", "ls -la", 1),
-            "🔧 bash: ls -la"
+            format_step_label("shell", "ls -la", 1),
+            "🔧 shell: ls -la"
         );
         assert_eq!(
             format_finish_label("read", "Reading config", true),
@@ -332,16 +332,16 @@ mod tests {
     #[test]
     fn test_label_format_fallback_when_description_equals_tool_name() {
         // When the LLM doesn't provide a label, description == tool_name.
-        // Renderer collapses to just the tool name (no "bash: bash" noise).
-        assert_eq!(format_step_label("bash", "bash", 1), "🔧 bash");
-        assert_eq!(format_finish_label("bash", "bash", true), "✅ bash");
-        assert_eq!(format_finish_label("bash", "bash", false), "❌ bash");
+        // Renderer collapses to just the tool name (no "shell: shell" noise).
+        assert_eq!(format_step_label("shell", "shell", 1), "🔧 shell");
+        assert_eq!(format_finish_label("shell", "shell", true), "✅ shell");
+        assert_eq!(format_finish_label("shell", "shell", false), "❌ shell");
     }
 
     #[test]
     fn test_label_format_with_empty_description() {
         // Empty description: just the tool name.
-        assert_eq!(format_step_label("bash", "", 1), "🔧 bash");
+        assert_eq!(format_step_label("shell", "", 1), "🔧 shell");
         assert_eq!(format_finish_label("tool", "", true), "✅ tool");
         assert_eq!(format_finish_label("tool", "", false), "❌ tool");
     }
@@ -392,13 +392,13 @@ mod tests {
         // Tool 1: start → replaced by finish.
         let id1 = "call_1";
         index_map.insert(id1.to_string(), labels.len());
-        labels.push(format_step_label("bash", "ls", 1));
-        assert_eq!(labels[0], "🔧 bash: ls");
+        labels.push(format_step_label("shell", "ls", 1));
+        assert_eq!(labels[0], "🔧 shell: ls");
 
         if let Some(&idx) = index_map.get(id1) {
-            labels[idx] = format_finish_label("bash", "ls", true);
+            labels[idx] = format_finish_label("shell", "ls", true);
         }
-        assert_eq!(labels[0], "✅ bash: ls");
+        assert_eq!(labels[0], "✅ shell: ls");
         assert_eq!(labels.len(), 1, "still one line, not two");
 
         // Tool 2: start → replaced by finish (failure).

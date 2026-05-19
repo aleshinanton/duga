@@ -1,6 +1,6 @@
 //! Tool dispatcher construction shared by all frontends.
 //!
-//! Registers built-in tools (bash, read, write, search, think) and loads
+//! Registers built-in tools (shell, read, write, search, think) and loads
 //! WASM plugins into a single `ToolDispatcher`.
 
 use anyhow::{Context, Result};

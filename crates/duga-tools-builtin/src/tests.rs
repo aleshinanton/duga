@@ -1,4 +1,4 @@
-//! Integration tests for all five built-in tools (TASK-4.10).
+//! Integration tests for the built-in tools (TASK-4.10).
 
 use duga_sandbox::binary_registry::BinaryRegistry;
 use duga_sandbox::exec::CancellationToken;
@@ -13,25 +13,26 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
-use crate::bash::BashTool;
+use crate::edit::EditTool;
 use crate::read::ReadTool;
 use crate::search::SearchTool;
+use crate::shell::ShellTool;
 use crate::think::{ThinkLimits, ThinkTool};
 use crate::write::WriteTool;
 
 fn setup() -> (TempDir, Arc<Workspace>, ToolDispatcher) {
     let d = TempDir::new().unwrap();
     let ws = Arc::new(Workspace::open(d.path()).unwrap());
-    let r = Arc::new(
-        BinaryRegistry::new(&["echo".into(), "cat".into(), "bash".into(), "sh".into()]).unwrap(),
-    );
+    let r = Arc::new(BinaryRegistry::new(&["echo".into(), "cat".into(), "sh".into()]).unwrap());
     let l = OutputLimits::default();
     let dp = ToolDispatcher::new();
     dp.register_erased(ErasedTool::erase(ReadTool::new()))
         .unwrap();
     dp.register_erased(ErasedTool::erase(WriteTool::new()))
         .unwrap();
-    dp.register_erased(ErasedTool::erase(BashTool::with_sandbox(
+    dp.register_erased(ErasedTool::erase(EditTool::new()))
+        .unwrap();
+    dp.register_erased(ErasedTool::erase(ShellTool::with_sandbox(
         r.clone(),
         ws.clone(),
         l.clone(),
@@ -131,7 +132,7 @@ async fn test_think_works() {
 }
 
 #[tokio::test]
-async fn test_bash_cat() {
+async fn test_shell_cat() {
     let (_d, ws, dp) = setup();
     let c = CancellationToken::new();
     let s = NullSink;
@@ -145,7 +146,7 @@ async fn test_bash_cat() {
     .unwrap();
     let r = dp
         .dispatch(
-            &ToolCall::new("bash", json!({"command":["cat","x.txt"]})),
+            &ToolCall::new("shell", json!({"command":["cat","x.txt"]})),
             &ws,
             c.clone(),
             &s,
@@ -153,6 +154,49 @@ async fn test_bash_cat() {
         .await
         .unwrap();
     assert!(r.output.contains("data"));
+}
+
+#[tokio::test]
+async fn test_edit_replaces_written_file() {
+    let (_d, ws, dp) = setup();
+    let c = CancellationToken::new();
+    let s = NullSink;
+    dp.dispatch(
+        &ToolCall::new(
+            "write",
+            json!({"path":"edit.txt","content":"hello old world"}),
+        ),
+        &ws,
+        c.clone(),
+        &s,
+    )
+    .await
+    .unwrap();
+
+    let r = dp
+        .dispatch(
+            &ToolCall::new(
+                "edit",
+                json!({"path":"edit.txt","oldText":"old","newText":"new"}),
+            ),
+            &ws,
+            c.clone(),
+            &s,
+        )
+        .await
+        .unwrap();
+
+    assert!(r.output.contains("Edited edit.txt"));
+    let content = dp
+        .dispatch(
+            &ToolCall::new("read", json!({"path":"edit.txt"})),
+            &ws,
+            c,
+            &s,
+        )
+        .await
+        .unwrap();
+    assert_eq!(content.output, "hello new world");
 }
 
 #[tokio::test]

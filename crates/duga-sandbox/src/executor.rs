@@ -91,7 +91,7 @@ pub trait CommandExecutor: Send + Sync {
     ) -> Result<ToolResult, ToolError>;
 
     /// Returns `true` if this executor runs commands inside a container
-    /// that has its own PATH (e.g. Docker). In allow-all mode, the bash
+    /// that has its own PATH (e.g. Docker). In allow-all mode, the shell
     /// tool passes bare command names to container executors so the
     /// container resolves them internally.
     fn is_container_executor(&self) -> bool {

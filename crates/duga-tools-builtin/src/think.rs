@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ThinkArgs {
-    #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
+    #[schemars(
+        description = "Brief human-readable description of what this step does (shown to user)"
+    )]
     pub label: String,
     pub thought: String,
 }

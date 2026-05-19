@@ -423,11 +423,11 @@ This prevents capability explosion.
 
 # 11. Built-in Tools
 
-## bash
+## shell
 
 ```rust
 #[derive(Deserialize, JsonSchema)]
-struct BashArgs {
+struct ShellArgs {
     /// Argv vector. The first element is resolved against the binary allowlist
     /// (§16). No shell interpretation is performed.
     command: Vec<String>,
@@ -446,8 +446,9 @@ Example:
 }
 ```
 
-No shell strings allowed. The tool name `bash` is historical; no `bash`
-binary is invoked.
+No command-line shell string is interpreted by default. The tool name `shell`
+is platform-neutral; it executes argv through the configured command executor
+and only invokes a shell binary when the command explicitly names one.
 
 -----
 
@@ -484,6 +485,25 @@ struct WriteArgs {
 Writes are atomic: content is staged to a temp file in the same workspace
 directory and renamed over the target. Concurrent writes to the same path
 within one runtime are serialized through a per-path mutex.
+
+-----
+
+## edit
+
+```rust
+#[derive(Deserialize, JsonSchema)]
+struct EditArgs {
+    path: String,
+    oldText: String,
+    newText: String,
+}
+```
+
+`edit` performs one targeted replacement in an existing UTF-8 file. `oldText`
+must be non-empty and match exactly once; if it is missing or appears multiple
+times, the tool fails and leaves the file unchanged. It uses the same workspace
+path validation, symlink rejection, atomic replace, and per-path locking model
+as `write`.
 
 -----
 
@@ -543,7 +563,7 @@ start of each run, preventing counter accumulation across chats in long-running 
 **Frontend descriptions:** Each built-in tool args carries a `label: String` field
 populated by the LLM (e.g. `"ls -la"`). This is threaded through
 `FrontendEvent::ToolCallStarted.description` to the Telegram renderer, which shows
-`✅ bash: ls -la` and collapses `tool_name: tool_name` duplicates to `✅ bash`.
+`✅ shell: ls -la` and collapses `tool_name: tool_name` duplicates to `✅ shell`.
 
 -----
 
@@ -579,7 +599,7 @@ rejects absolute paths and `..` traversal at the syscall layer (using
 Symlinks within the workspace are followed only with `O_NOFOLLOW` semantics:
 any symlink encountered during a path resolution that points outside the
 workspace causes the open to fail. By default, even in-workspace symlinks
-are not followed by `read`/`write`; tools that opt in must use
+are not followed by `read`/`edit`/`write`; tools that opt in must use
 `OpenOptions::follow(true)` and accept the residual race surface.
 
 This prevents:
@@ -717,7 +737,7 @@ This eliminates:
 - command chaining (`;`, `&&`, `|`),
 - subshell abuse.
 
-There is no long-lived `bash -i` subprocess anywhere in the runtime. State
+There is no long-lived interactive shell subprocess anywhere in the runtime. State
 that would normally live in a shell (cwd, env vars, activated venv) is held
 by the runtime itself — see §19.
 
@@ -767,7 +787,7 @@ struct ShellSession {
 ## 19.1 Implementation
 
 There is **no persistent shell process**. A `ShellSession` is a runtime-side
-struct. When a `bash` tool call references a session id, the runtime applies
+struct. When a `shell` tool call references a session id, the runtime applies
 the session's `cwd` and `env` to a fresh `Command` for that single invocation.
 
 ## 19.2 Supported state changes
@@ -1047,7 +1067,7 @@ impl ToolError {
 Errors become tool feedback, not loop terminations:
 
 ```text
-Tool 'bash' failed:
+Tool 'shell' failed:
 process timed out after 120s
 ```
 
@@ -1303,7 +1323,7 @@ The runtime does NOT attempt to defend against:
 - malicious local root users,
 - compromised host OS,
 - side-channel attacks,
-- network egress from built-in tools — `bash` may run `curl`, `git fetch`,
+- network egress from built-in tools — `shell` may run `curl`, `git fetch`,
   `cargo build` (downloads crates). Network isolation is delegated to
   OS-level controls (containers, firewall, `unshare -n`). The plugin
   capability matrix (§29) does block plugin network access.

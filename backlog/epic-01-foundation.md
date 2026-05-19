@@ -171,8 +171,8 @@ Establish the `duga-types` crate with every wire and on-the-loop datatype. Zero 
   - Builder all-fields test passes
   - `from_outcome` success and error paths tested
 - **Acceptance criteria:**
-  - `ToolResult::from_outcome(id, "bash", Ok(result), start)` → `ToolResult { success: true, ... }`
-  - `ToolResult::from_outcome(id, "bash", Err(ToolError::Timeout), start)` → `ToolResult { success: false, output: "process timed out", ... }`
+  - `ToolResult::from_outcome(id, "shell", Ok(result), start)` → `ToolResult { success: true, ... }`
+  - `ToolResult::from_outcome(id, "shell", Err(ToolError::Timeout), start)` → `ToolResult { success: false, output: "process timed out", ... }`
   - Builder produces all default field values when not set (defaults: empty strings, 0 duration/bytes, false truncated)
 - **Test plan:**
   - unit: Test builder all-fields, builder defaults, from_outcome Ok, from_outcome Err, Display formatting

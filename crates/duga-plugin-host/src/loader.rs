@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub const BUILTIN_NAMES: &[&str] = &["read", "write", "bash", "search", "think"];
+pub const BUILTIN_NAMES: &[&str] = &["read", "write", "edit", "shell", "search", "think"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum PluginError {

@@ -1,6 +1,6 @@
 //! Telegram confirmation UI for tool execution approval.
 //!
-//! Sends inline keyboard prompts for risky tool calls (bash, write)
+//! Sends inline keyboard prompts for risky tool calls (shell, write)
 //! and resolves approval/denial through callback buttons.
 
 use crate::session::SessionManager;

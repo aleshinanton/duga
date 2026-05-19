@@ -167,7 +167,7 @@ Extract neutral infrastructure used by CLI, Telegram, and TUI frontends. This ep
   5. Reuse the same middleware for TUI modals and Telegram inline buttons.
 - **Definition of Done:** Tool confirmation is shared and frontend-specific code only renders the prompt.
 - **Acceptance criteria:**
-  - Bash/write can require confirmation.
+  - Shell/edit/write can require confirmation.
   - Denial and timeout are explicit tool errors.
   - Frontends can provide different UIs over the same middleware.
 - **Test plan:** middleware tests for approve, deny, timeout, cancellation.
@@ -179,7 +179,7 @@ Extract neutral infrastructure used by CLI, Telegram, and TUI frontends. This ep
 
 - **SPEC:** §15 (Sandbox), §17 (process execution)
 - **Labels:** `layer/sandbox`, `priority/critical`
-- **Description:** Add an executor abstraction before adding Docker. Capability mode remains the default. Docker mode affects process execution (`bash`) through `docker exec`; read/write/search remain capability-bounded host workspace tools operating on the bind-mounted workspace.
+- **Description:** Add an executor abstraction before adding Docker. Capability mode remains the default. Docker mode affects process execution (`shell`) through `docker exec`; read/write/search remain capability-bounded host workspace tools operating on the bind-mounted workspace.
 - **Files affected:**
   - `crates/duga-sandbox/src/executor.rs` (new)
   - `crates/duga-sandbox/src/docker.rs` (new)
@@ -210,7 +210,7 @@ Extract neutral infrastructure used by CLI, Telegram, and TUI frontends. This ep
   6. Add a separate future task if all filesystem tools should execute through container APIs.
 - **Definition of Done:** CLI/TUI/Telegram can opt into Docker process execution via shared config.
 - **Acceptance criteria:**
-  - Docker mode runs `bash` commands inside the configured container.
+  - Docker mode runs `shell` commands inside the configured container.
   - Files created under `/workspace` are visible in host workspace due to bind mount.
   - Read/write/search behavior remains consistent and capability-bounded.
   - Output limits and cancellation still work.

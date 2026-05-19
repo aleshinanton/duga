@@ -532,14 +532,14 @@ mod tests {
 
     #[test]
     fn parse_tool_args_valid_json() {
-        let v = parse_tool_args("bash", r#"{"cmd": "ls"}"#).unwrap();
+        let v = parse_tool_args("shell", r#"{"cmd": "ls"}"#).unwrap();
         assert_eq!(v["cmd"], "ls");
     }
 
     #[test]
     fn parse_tool_args_empty_string() {
         // Empty string → repaired to valid empty object.
-        let v = parse_tool_args("bash", "").unwrap();
+        let v = parse_tool_args("shell", "").unwrap();
         assert!(v.is_object());
         assert!(v.as_object().unwrap().is_empty());
     }
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn parse_tool_args_truncated_json() {
         // Truncated: missing closing brace.
-        let v = parse_tool_args("bash", r#"{"command": ["ls""#).unwrap();
+        let v = parse_tool_args("shell", r#"{"command": ["ls""#).unwrap();
         // Should be repaired by adding closing brace.
         assert!(v.is_object());
         assert_eq!(v["command"][0], "ls");
@@ -556,7 +556,7 @@ mod tests {
     #[test]
     fn parse_tool_args_truncated_nested() {
         // Truncated: missing closing brace and bracket.
-        let v = parse_tool_args("bash", r#"{"command": ["ls", "-la""#).unwrap();
+        let v = parse_tool_args("shell", r#"{"command": ["ls", "-la""#).unwrap();
         assert!(v.is_object());
         assert_eq!(v["command"][1], "-la");
     }
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn parse_tool_args_garbage_json() {
         // Completely invalid JSON → fallback to empty object.
-        let v = parse_tool_args("bash", "not json at all!!!").unwrap();
+        let v = parse_tool_args("shell", "not json at all!!!").unwrap();
         assert!(v.is_object());
         assert!(v.as_object().unwrap().is_empty());
     }
@@ -659,7 +659,7 @@ mod tests {
                     "tool_calls": [{
                         "id": "call_1",
                         "type": "function",
-                        "function": {"name": "bash", "arguments": "{\"command\": [\"ls\""}
+                        "function": {"name": "shell", "arguments": "{\"command\": [\"ls\""}
                     }]
                 }
             }]
@@ -668,7 +668,7 @@ mod tests {
         let response: OpenAiResponse = serde_json::from_value(raw).unwrap();
         let mapped = response.into_duga().unwrap();
         // Should have added missing ]} and parsed.
-        assert_eq!(mapped.message.tool_calls[0].tool, "bash");
+        assert_eq!(mapped.message.tool_calls[0].tool, "shell");
         assert_eq!(mapped.message.tool_calls[0].raw_args["command"][0], "ls");
     }
 
@@ -682,7 +682,7 @@ mod tests {
                     "tool_calls": [{
                         "id": "call_1",
                         "type": "function",
-                        "function": {"name": "bash", "arguments": "I am not JSON"}
+                        "function": {"name": "shell", "arguments": "I am not JSON"}
                     }]
                 }
             }]
@@ -691,7 +691,7 @@ mod tests {
         let response: OpenAiResponse = serde_json::from_value(raw).unwrap();
         let mapped = response.into_duga().unwrap();
         // Should fall back to empty object — run not killed.
-        assert_eq!(mapped.message.tool_calls[0].tool, "bash");
+        assert_eq!(mapped.message.tool_calls[0].tool, "shell");
         assert!(mapped.message.tool_calls[0].raw_args.as_object().unwrap().is_empty());
     }
 }

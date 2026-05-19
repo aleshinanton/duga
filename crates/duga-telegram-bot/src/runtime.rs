@@ -55,13 +55,13 @@ impl TelegramRuntime {
             Arc::new(Workspace::open(&self.config.workspace.root).context("opening workspace")?);
 
         let dispatcher = build_dispatcher(&self.config, workspace.clone())?;
-        // When allow_all_binaries is enabled, bash confirmations are redundant —
+        // When allow_all_binaries is enabled, shell confirmations are redundant —
         // the operator has already accepted the risk of arbitrary command execution.
         let require_confirmation: Vec<String> = if self.config.sandbox.allow_all_binaries {
             telegram_config
                 .require_confirmation_for
                 .iter()
-                .filter(|t| t.as_str() != "bash")
+                .filter(|t| !matches!(t.as_str(), "shell" | "bash"))
                 .cloned()
                 .collect()
         } else {
@@ -107,7 +107,7 @@ impl TelegramRuntime {
              {tool_guide}\n\n\
              When facing a complex or multi-step problem, use the `think` tool first to \
              plan your approach before acting. This saves steps and produces better results.\n\
-             Prefer `think` over running many small `bash` commands to explore the environment.\n\
+             Prefer `think` over running many small `shell` commands to explore the environment.\n\
              Be concise — Telegram messages have length limits."
         );
 

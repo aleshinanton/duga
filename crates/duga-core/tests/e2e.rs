@@ -72,7 +72,7 @@ fn fibonacci_script() -> (MockLlm, Vec<MockTool>) {
         }),
     );
     let test = ToolCall::new(
-        "bash",
+        "shell",
         serde_json::json!({"command": ["cargo", "test"], "session": null}),
     );
 
@@ -107,12 +107,12 @@ fn fibonacci_script() -> (MockLlm, Vec<MockTool>) {
         read_cargo.raw_args,
         Ok(MockTool::success("[package]\nname = \"fib\"\n")),
     );
-    let bash = MockTool::new("bash", "bash").with_response(
+    let shell = MockTool::new("shell", "shell").with_response(
         test.raw_args,
         Ok(MockTool::success("test result: ok. 1 passed")),
     );
 
-    (llm, vec![write, read, bash])
+    (llm, vec![write, read, shell])
 }
 
 #[tokio::test]

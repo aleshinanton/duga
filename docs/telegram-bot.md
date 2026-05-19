@@ -63,7 +63,8 @@ telegram:
   send_tool_events: true
   send_final_only: false
   require_confirmation_for:
-    - bash
+    - shell
+    - edit
     - write
   events_dir: "./events"
   skills_dir: "./skills"
@@ -119,12 +120,13 @@ Only chats listed in `telegram.allowed_chat_ids` can interact with the bot. Set 
 
 ### Tool Confirmation
 
-Risky tools (bash, write) can require inline confirmation via Telegram buttons. Configure with:
+Risky tools (shell, edit, write) can require inline confirmation via Telegram buttons. Configure with:
 
 ```yaml
 telegram:
   require_confirmation_for:
-    - bash
+    - shell
+    - edit
     - write
 ```
 
@@ -201,7 +203,7 @@ Image-to-LLM support depends on a future multimodal content type in `duga-types`
 ## Process Message Rendering
 
 During execution, the bot edits a single live "process message" with:
-- **Step descriptions** — Each tool call shows a human-readable label provided by the LLM (e.g., `✅ bash: ls -la`). If the LLM doesn't provide a label, only the tool name is shown (`✅ bash`).
+- **Step descriptions** — Each tool call shows a human-readable label provided by the LLM (e.g., `✅ shell: ls -la`). If the LLM doesn't provide a label, only the tool name is shown (`✅ shell`).
 - **Single line per tool** — Start labels are replaced in-place by finish labels, so each tool call produces exactly one line (not a start/finish pair).
 - **Collapsible blocks** — When step history exceeds 5 labels or the final answer exceeds 300 characters, content is wrapped in Telegram `<blockquote expandable>` tags with a "Show more" toggle.
 - **Streaming delta** — LLM token output is shown in real-time as a code block, truncated to 200 characters.

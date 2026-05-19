@@ -16,7 +16,9 @@ use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct WriteArgs {
-    #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
+    #[schemars(
+        description = "Brief human-readable description of what this step does (shown to user)"
+    )]
     pub label: String,
     pub path: String,
     pub content: String,
@@ -49,7 +51,10 @@ impl WriteTool {
     }
 }
 
-fn reject_symlink_components(ctx: &ToolContext<'_>, path: &Path) -> Result<(), ToolError> {
+pub(crate) fn reject_symlink_components(
+    ctx: &ToolContext<'_>,
+    path: &Path,
+) -> Result<(), ToolError> {
     let mut current = PathBuf::new();
     for component in path.components() {
         let std::path::Component::Normal(part) = component else {

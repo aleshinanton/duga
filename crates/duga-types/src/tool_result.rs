@@ -221,9 +221,9 @@ mod tests {
         let outcome: Result<ToolResult, ToolError> = Err(ToolError::Timeout);
         let started = Instant::now();
         std::thread::sleep(std::time::Duration::from_millis(1));
-        let result = ToolResult::from_outcome(id, "bash", outcome, started);
+        let result = ToolResult::from_outcome(id, "shell", outcome, started);
         assert!(!result.success);
-        assert!(result.output.contains("bash"));
+        assert!(result.output.contains("shell"));
         assert!(result.output.contains("timed out"));
         assert!(result.duration_ms >= 1);
     }

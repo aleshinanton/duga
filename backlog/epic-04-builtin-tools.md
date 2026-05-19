@@ -5,7 +5,7 @@
 **Crate:** `duga-tools-builtin`
 
 ## Goal
-Implement all five built-in tools: `read`, `write`, `bash`, `search`, `think`. Each implements the `Tool` trait and uses `Workspace`, `BinaryRegistry`, and `ShellSession` from the security layer.
+Implement the built-in tools: `read`, `write`, `edit`, `shell`, `search`, `think`. Each implements the `Tool` trait and uses `Workspace`, `BinaryRegistry`, and `ShellSession` from the security layer.
 
 ---
 
@@ -187,25 +187,25 @@ Implement all five built-in tools: `read`, `write`, `bash`, `search`, `think`. E
 
 ---
 
-### TASK-4.5: BashTool — dispatch to run_captured or ShellSession
+### TASK-4.5: ShellTool — dispatch to run_captured or ShellSession
 
-- **§SPEC:** §11 (bash tool), §19 (Shell Sessions)
+- **§SPEC:** §11 (shell tool), §19 (Shell Sessions)
 - **Labels:** `layer/tools-builtin`, `priority/critical`
-- **Description:** Implement `BashTool` with `Args = BashArgs { command: Vec<String>, session: Option<Uuid> }`. The tool combines binary allowlist checking, ShellSession state management, and process execution. On each call: (1) classify the command via `ShellSession::classify()`, (2) if Cd/Export/Unset/Pwd → apply to session (no process spawned), (3) if Spawn → resolve binary against `BinaryRegistry`, apply session cwd/env, call `run_captured`. Sessions are stored in `BashTool.sessions: Mutex<HashMap<Uuid, ShellSession>>`. GAP G11: sessions are created explicitly when a new UUID is encountered.
+- **Description:** Implement `ShellTool` with `Args = ShellArgs { command: Vec<String>, session: Option<Uuid> }`. The tool combines binary allowlist checking, ShellSession state management, and process execution. On each call: (1) classify the command via `ShellSession::classify()`, (2) if Cd/Export/Unset/Pwd → apply to session (no process spawned), (3) if Spawn → resolve binary against `BinaryRegistry`, apply session cwd/env, call `run_captured`. Sessions are stored in `ShellTool.sessions: Mutex<HashMap<Uuid, ShellSession>>`. GAP G11: sessions are created explicitly when a new UUID is encountered.
 - **Files affected:**
-  - `crates/duga-tools-builtin/src/bash.rs` (new)
+  - `crates/duga-tools-builtin/src/shell.rs` (new)
   - `crates/duga-tools-builtin/src/lib.rs` (add module)
-- **Types involved:** `BashArgs`, `BashTool`, `ShellSession`, `SessionCommand`, `BinaryRegistry`, `Tool`, `ToolResult`, `ToolError`
+- **Types involved:** `ShellArgs`, `ShellTool`, `ShellSession`, `SessionCommand`, `BinaryRegistry`, `Tool`, `ToolResult`, `ToolError`
 - **Functions to implement:**
-  - `BashArgs` struct with `JsonSchema` derive
-  - `BashTool` struct with `sessions: Mutex<HashMap<Uuid, ShellSession>>`
-  - `BashTool::new() -> Self`
-  - `impl Tool for BashTool { ... }`
+  - `ShellArgs` struct with `JsonSchema` derive
+  - `ShellTool` struct with `sessions: Mutex<HashMap<Uuid, ShellSession>>`
+  - `ShellTool::new() -> Self`
+  - `impl Tool for ShellTool { ... }`
   - Inside execute: classify → if state command, apply to session → if Spawn, resolve binary + run_captured
 - **Dependencies:** TASK-2.7 (ShellSession::classify + apply), TASK-2.3 (BinaryRegistry), TASK-2.4 (run_captured), TASK-3.1 (Tool trait)
 - **Implementation steps:**
-  1. Define `BashTool` struct with `sessions` field
-  2. Implement `Tool for BashTool`: `name()` → `"bash"`, `description()` → `"Execute a command in the sandbox"`
+  1. Define `ShellTool` struct with `sessions` field
+  2. Implement `Tool for ShellTool`: `name()` → `"shell"`, `description()` → `"Execute a command in the sandbox"`
   3. `execute()`:
       - Get or create session: if `args.session` is Some, lookup/create in `self.sessions`; if None, use ephemeral session (no persistence)
       - Classify command: `ShellSession::classify(&args.command)`
@@ -225,33 +225,33 @@ Implement all five built-in tools: `read`, `write`, `bash`, `search`, `think`. E
   - `cargo test` passes
   - `cargo clippy` clean
 - **Acceptance criteria:**
-  - `bash { command: ["echo", "hello"] }` → `ToolResult { output: "hello\n", success: true }`
-  - `bash { command: ["pwd"], session: uuid }` → output is cwd
-  - `bash { command: ["cd", "subdir"], session: uuid }` + `bash { command: ["pwd"], session: uuid }` → cwd updated
-  - `bash { command: ["export", "FOO=bar"], session: uuid }` → env set
-  - `bash { command: ["nonexistent_binary"] }` → `Err(ToolError::Denied)`
-  - `bash { command: [] }` → `Err(ToolError::InvalidArgs)`
+  - `shell { command: ["echo", "hello"] }` → `ToolResult { output: "hello\n", success: true }`
+  - `shell { command: ["pwd"], session: uuid }` → output is cwd
+  - `shell { command: ["cd", "subdir"], session: uuid }` + `shell { command: ["pwd"], session: uuid }` → cwd updated
+  - `shell { command: ["export", "FOO=bar"], session: uuid }` → env set
+  - `shell { command: ["nonexistent_binary"] }` → `Err(ToolError::Denied)`
+  - `shell { command: [] }` → `Err(ToolError::InvalidArgs)`
 - **Test plan:**
   - unit: Test with system binaries (echo, true, false); test shell session state tracking with cd/export/pwd/unset; test disallowed binary; test empty command; test session creation on first use
 - **Estimated effort:** 6 hours
 
 ---
 
-### TASK-4.6: BashTool — Sandbox + timeout enforcement
+### TASK-4.6: ShellTool — Sandbox + timeout enforcement
 
 - **§SPEC:** §15 (Sandbox), §4 (AgentLimits.max_runtime for per-process timeout)
 - **Labels:** `layer/tools-builtin`, `priority/critical`
-- **Description:** Add per-process timeout from `Sandbox.timeout` config to BashTool. The timeout is passed to `run_captured()` which applies it via `tokio::time::timeout`. Also implement `BashTool::retryable() -> false` (bash tools are not retried — IO errors from subprocesses are not transient in the tool sense). The sandbox struct from SECT 15 is not a separate Rust struct — it's a logical container combining `Workspace` + `BinaryRegistry` + timeout.
+- **Description:** Add per-process timeout from `Sandbox.timeout` config to ShellTool. The timeout is passed to `run_captured()` which applies it via `tokio::time::timeout`. Also implement `ShellTool::retryable() -> false` (shell tools are not retried — IO errors from subprocesses are not transient in the tool sense). The sandbox struct from SECT 15 is not a separate Rust struct — it's a logical container combining `Workspace` + `BinaryRegistry` + timeout.
 - **Files affected:**
-  - `crates/duga-tools-builtin/src/bash.rs` (modify execute)
-- **Types involved:** `BashTool`, `OutputLimits`
+  - `crates/duga-tools-builtin/src/shell.rs` (modify execute)
+- **Types involved:** `ShellTool`, `OutputLimits`
 - **Functions to implement:**
-  - `BashTool::with_sandbox(registry: Arc<BinaryRegistry>, workspace: Arc<Workspace>, limits: OutputLimits, timeout: Duration) -> Self`
+  - `ShellTool::with_sandbox(registry: Arc<BinaryRegistry>, workspace: Arc<Workspace>, limits: OutputLimits, timeout: Duration) -> Self`
 - **Dependencies:** TASK-4.5, TASK-2.3 (BinaryRegistry), TASK-2.4 (run_captured timeout)
 - **Implementation steps:**
-  1. Add fields to `BashTool`: `registry: Arc<BinaryRegistry>`, `workspace: Arc<Workspace>`, `limits: OutputLimits`, `timeout: Duration`
+  1. Add fields to `ShellTool`: `registry: Arc<BinaryRegistry>`, `workspace: Arc<Workspace>`, `limits: OutputLimits`, `timeout: Duration`
   2. Update `execute()` to pass limits + timeout to `run_captured()`
-  3. Implement `Tool for BashTool`: `retryable()` → `false`
+  3. Implement `Tool for ShellTool`: `retryable()` → `false`
   4. Test timeout with `sleep` command
 - **Edge cases:**
   - Timeout fires mid-process → `run_captured` returns `ToolError::Timeout`
@@ -261,7 +261,7 @@ Implement all five built-in tools: `read`, `write`, `bash`, `search`, `think`. E
   - `cargo test` passes
 - **Acceptance criteria:**
   - Command exec with timeout=1s, command=sleep 999 → returns after ~1s with ToolError::Timeout
-  - `BashTool.retryable()` → `false`
+  - `ShellTool.retryable()` → `false`
 - **Test plan:**
   - unit: Test timeout with sleep command (use short sleep, 100ms timeout)
 - **Estimated effort:** 3 hours
@@ -385,7 +385,7 @@ Implement all five built-in tools: `read`, `write`, `bash`, `search`, `think`. E
   3. Reset on tool creation only — counters persist for entire agent run (ThinkTool is not re-created)
 - **Edge cases:**
   - GAP G12: counting `thought` text tokens means the LLM can't bypass by using short tool-calls. If counting assistant tokens, the LLM could make short think calls but use many tokens thinking. Word heuristic is approximate — acceptable for MVP.
-  - Atomic counters must be thread-safe (BashTool may be called concurrently — GAP G1)
+  - Atomic counters must be thread-safe (ShellTool may be called concurrently — GAP G1)
   - Token estimate overflow → use `usize::saturating_add`
   - `max_calls: 0` → all think calls denied
   - `max_tokens: 0` → all think calls denied
@@ -408,7 +408,7 @@ Implement all five built-in tools: `read`, `write`, `bash`, `search`, `think`. E
 
 - **§SPEC:** §11 (all built-in tools working together)
 - **Labels:** `layer/tools-builtin`, `priority/high`
-- **Description:** Create integration tests that exercise all five built-in tools together in a realistic sequence: (1) write a file, (2) read it back, (3) search for content, (4) execute a command on it, (5) use think to reflect. Also test error handling: write to escaped path, read nonexistent file, bash with disallowed binary, search with bad regex. These tests validate the ToolDispatcher + ToolContext + built-in tool integration.
+- **Description:** Create integration tests that exercise all built-in tools together in a realistic sequence: (1) write a file, (2) edit it, (3) read it back, (4) search for content, (5) execute a command on it, (6) use think to reflect. Also test error handling: write to escaped path, edit with duplicate text, read nonexistent file, shell with disallowed binary, search with bad regex. These tests validate the ToolDispatcher + ToolContext + built-in tool integration.
 - **Files affected:**
   - `crates/duga-tools-builtin/tests/integration.rs` (new)
   - `crates/duga-tools-builtin/Cargo.toml` (add dev-deps)
@@ -417,8 +417,8 @@ Implement all five built-in tools: `read`, `write`, `bash`, `search`, `think`. E
 - **Dependencies:** TASK-4.1 through TASK-4.9
 - **Implementation steps:**
   1. Set up test harness: create temp workspace, populate BinaryRegistry with `echo`, `cat`, `true`, `false`
-  2. Create ToolDispatcher with all five tools registered
-  3. Test sequence: write("test.txt", "hello world\nfoo bar\n") → read("test.txt") → search("foo", literal=true) → bash(["cat", "test.txt"]) → think("all good")
+  2. Create ToolDispatcher with all built-in tools registered
+  3. Test sequence: write("test.txt", "hello world\nfoo bar\n") → read("test.txt") → search("foo", literal=true) → shell(["cat", "test.txt"]) → think("all good")
   4. Test error scenarios per tool
   5. Test ToolContext.is_cancelled() propagation
 - **Edge cases:**
@@ -429,7 +429,7 @@ Implement all five built-in tools: `read`, `write`, `bash`, `search`, `think`. E
   - `cargo test --test integration` succeeds
 - **Acceptance criteria:**
   - Write → Read roundtrip: content matches
-  - Bash on written file: cat returns content
+  - Shell on written file: cat returns content
   - Search finds content in written file
   - All error scenarios return correct error types
 - **Test plan:**

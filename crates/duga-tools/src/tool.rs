@@ -19,7 +19,7 @@ pub trait Tool: Send + Sync {
     /// Arguments type for this tool.
     type Args: DeserializeOwned + JsonSchema + Send + 'static;
 
-    /// Tool name (e.g. "read", "write", "bash").
+    /// Tool name (e.g. "read", "write", "shell").
     fn name(&self) -> &str;
 
     /// Human-readable description for the LLM.

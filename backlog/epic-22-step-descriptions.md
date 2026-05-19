@@ -6,9 +6,9 @@
 
 ## Goal
 
-Add a `label` parameter to every built-in tool's args, filled in by the LLM. Thread that label through the event system so frontends (Telegram, TUI, CLI) can display a short human-readable description of each step — e.g. `→ ls -la` instead of just `🔧 bash`.
+Add a `label` parameter to every built-in tool's args, filled in by the LLM. Thread that label through the event system so frontends (Telegram, TUI, CLI) can display a short human-readable description of each step — e.g. `→ ls -la` instead of just `🔧 shell`.
 
-Currently the Telegram renderer only shows bare tool names (`🔧 bash`, `✅ bash`). The pi agent (pi-mom-telegram) shows descriptions because every tool schema has a `label` field that the LLM populates. This epic adds the same mechanism to duga.
+Currently the Telegram renderer only shows bare tool names (`🔧 shell`, `✅ shell`). The pi agent (pi-mom-telegram) shows descriptions because every tool schema has a `label` field that the LLM populates. This epic adds the same mechanism to duga.
 
 ---
 
@@ -16,14 +16,14 @@ Currently the Telegram renderer only shows bare tool names (`🔧 bash`, `✅ ba
 
 - **SPEC:** §11 (Built-in Tools)
 - **Labels:** `layer/tools`, `priority/critical`
-- **Description:** Add a `label: String` field to each built-in tool's args struct (`BashArgs`, `ReadArgs`, `WriteArgs`, `SearchArgs`, `ThinkArgs`). The field's JSON Schema description tells the LLM to write a brief human-readable label (e.g. "ls -la", "Reading config file", "Searching for handle_error"). The label is shown to the user as the step description but is not used inside the tool's execute logic.
+- **Description:** Add a `label: String` field to each built-in tool's args struct (`ShellArgs`, `ReadArgs`, `WriteArgs`, `SearchArgs`, `ThinkArgs`). The field's JSON Schema description tells the LLM to write a brief human-readable label (e.g. "ls -la", "Reading config file", "Searching for handle_error"). The label is shown to the user as the step description but is not used inside the tool's execute logic.
 - **Files affected:**
-  - `crates/duga-tools-builtin/src/bash.rs`
+  - `crates/duga-tools-builtin/src/shell.rs`
   - `crates/duga-tools-builtin/src/read.rs`
   - `crates/duga-tools-builtin/src/write.rs`
   - `crates/duga-tools-builtin/src/search.rs`
   - `crates/duga-tools-builtin/src/think.rs`
-- **Types involved:** `BashArgs`, `ReadArgs`, `WriteArgs`, `SearchArgs`, `ThinkArgs`
+- **Types involved:** `ShellArgs`, `ReadArgs`, `WriteArgs`, `SearchArgs`, `ThinkArgs`
 - **Dependencies:** none
 - **Implementation steps:**
   1. Add `pub label: String` as the first field of each args struct with a `#[serde(default)]` or no default (required).
@@ -33,8 +33,8 @@ Currently the Telegram renderer only shows bare tool names (`🔧 bash`, `✅ ba
   5. Update all existing unit tests that construct tool args to include `label`.
 - **Definition of Done:** Every built-in tool's JSON schema includes a `label` field that the LLM will populate.
 - **Acceptance criteria:**
-  - `serde_json::to_value(BashArgs { label: "ls".into(), command: vec!["ls".into()], session: None })` serializes with a `label` key.
-  - `schemars::schema_for!(BashArgs)` includes `label` as a required string property.
+  - `serde_json::to_value(ShellArgs { label: "ls".into(), command: vec!["ls".into()], session: None })` serializes with a `label` key.
+  - `schemars::schema_for!(ShellArgs)` includes `label` as a required string property.
   - Existing tool unit tests still pass after adding `label` to arg constructors.
 - **Test plan:** verify JSON schema output for each tool; update existing tool tests.
 - **Estimated effort:** 2 hours
@@ -91,7 +91,7 @@ Currently the Telegram renderer only shows bare tool names (`🔧 bash`, `✅ ba
      - Format label as `✅ {tool_name}: {description}` or `❌ {tool_name}: {description}`.
      - Fall back to `"tool"` / empty description if not found (backward compat).
   4. Keep the label inside Telegram's character limit (already handled by truncating to last 5 labels and capping delta buffer).
-- **Definition of Done:** Telegram process message shows `🔧 bash: ls -la` / `✅ bash: ls -la` instead of `🔧 bash` / `✅ bash`.
+- **Definition of Done:** Telegram process message shows `🔧 shell: ls -la` / `✅ shell: ls -la` instead of `🔧 shell` / `✅ shell`.
 - **Acceptance criteria:**
   - Each tool call shows its LLM-provided label.
   - Tool calls without labels (older or non-builtin tools) show just the tool name as before.

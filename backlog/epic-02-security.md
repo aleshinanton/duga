@@ -245,10 +245,10 @@ Implement capability-based filesystem isolation via `cap_std`, binary allowlist 
   4. Implement accessor methods
   5. Add unit tests
 - **Edge cases:**
-  - Session lifecycle managed by BashTool via `Mutex<HashMap<Uuid, ShellSession>>` — not implemented here, just the struct
+  - Session lifecycle managed by ShellTool via `Mutex<HashMap<Uuid, ShellSession>>` — not implemented here, just the struct
   - `cwd` is workspace-relative (`"."` initially)
   - `env` starts empty — no host env leakage; TASK-2.5 env applies at execution time
-  - GAP G11: resolved as explicit constructor — session created when BashTool receives a new `session` UUID not in its map
+  - GAP G11: resolved as explicit constructor — session created when ShellTool receives a new `session` UUID not in its map
 - **Definition of Done:**
   - Struct and enum compile
   - `cargo clippy` clean
