@@ -76,7 +76,7 @@ impl Memory {
 
     pub fn push_assistant(&mut self, msg: AssistantMessage) {
         self.recent_messages
-            .push_back(Message::assistant(msg.text, msg.tool_calls));
+            .push_back(Message::assistant(msg.text, msg.tool_calls, msg.reasoning_content));
     }
 
     pub fn push_tool_result(&mut self, result: ToolResult) {
@@ -194,7 +194,7 @@ impl Memory {
         }
         content.push_str("Summary:\n");
         content.push_str(&summary.content);
-        Message::assistant(Some(content), vec![])
+        Message::assistant(Some(content), vec![], None)
     }
 }
 
@@ -297,6 +297,7 @@ mod tests {
         memory.push_assistant(AssistantMessage {
             text: Some("hi".into()),
             tool_calls: vec![],
+            reasoning_content: None,
         });
         let result = ToolResultBuilder::new()
             .tool_call_id(CallId::new())
@@ -368,6 +369,7 @@ mod tests {
         memory.push_assistant(AssistantMessage {
             text: Some("new".into()),
             tool_calls: vec![],
+            reasoning_content: None,
         });
         let summarizer = RecordingSummarizer::new();
 
@@ -405,10 +407,12 @@ mod tests {
         memory.push_assistant(AssistantMessage {
             text: Some("drop me first".into()),
             tool_calls: vec![],
+            reasoning_content: None,
         });
         memory.push_assistant(AssistantMessage {
             text: Some("drop me second".into()),
             tool_calls: vec![],
+            reasoning_content: None,
         });
         let summarizer = RecordingSummarizer::new();
 

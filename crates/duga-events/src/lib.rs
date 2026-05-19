@@ -444,6 +444,7 @@ mod tests {
         let msg = AssistantMessage {
             text: Some("hello".into()),
             tool_calls: vec![ToolCall::new("read", serde_json::json!({"path": "a"}))],
+            reasoning_content: None,
         };
         let event = Event::LlmResponse {
             model: "test".into(),

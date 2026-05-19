@@ -22,6 +22,7 @@ impl ReplayMockLlm {
                     message: AssistantMessage {
                         text: text.clone(),
                         tool_calls: tool_calls.clone(),
+                        reasoning_content: None,
                     },
                     usage: TokenUsage {
                         prompt: 0,

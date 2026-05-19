@@ -85,10 +85,12 @@ fn fibonacci_script() -> (MockLlm, Vec<MockTool>) {
                 write_cargo.clone(),
                 test.clone(),
             ],
+            reasoning_content: None,
         })),
         Ok(response(AssistantMessage {
             text: Some("test result: ok".into()),
             tool_calls: vec![],
+            reasoning_content: None,
         })),
     ]);
 

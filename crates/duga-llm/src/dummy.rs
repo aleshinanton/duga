@@ -39,6 +39,7 @@ impl DummyClient {
             message: AssistantMessage {
                 text: Some(text.into()),
                 tool_calls: Vec::new(),
+                reasoning_content: None,
             },
             usage: TokenUsage {
                 prompt: 0,

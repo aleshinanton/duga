@@ -5,7 +5,7 @@
 #   cargo run --release -p duga-telegram-bot -- --config duga-deepseek.yaml
 
 provider: "openai"
-model: "deepseek-chat"
+model: "deepseek-v4-flash"
 
 # DeepSeek V3 chat model (no thinking — avoids reasoning_content roundtrip).
 thinking_level: "medium"
@@ -16,7 +16,7 @@ agent:
     max_steps: 30
     max_tool_calls: 60
     max_runtime: 15m
-    retry_on_error: 2
+    retry_on_error: 3
   features:
     streaming: true
   output:
@@ -28,37 +28,11 @@ agent:
     max_tokens: 8192
 
 sandbox:
-  mode: "capability"
+  mode: "docker"
+  container: "duga-sandbox"
+  workspace_mount: "/workspace"
+  allow_all_binaries: true
   timeout: 60s
-  allowed_binaries:
-    - /usr/bin/cat
-    - /usr/bin/ls
-    - /usr/bin/grep
-    - /usr/bin/find
-    - /usr/bin/head
-    - /usr/bin/tail
-    - /usr/bin/wc
-    - /usr/bin/sort
-    - /usr/bin/uniq
-    - /usr/bin/cut
-    - /usr/bin/tr
-    - /usr/bin/sed
-    - /usr/bin/awk
-    - /usr/bin/xargs
-    - /usr/bin/git
-    - /home/pi/.cargo/bin/cargo
-    - /home/pi/.cargo/bin/rustc
-    - /usr/bin/python3
-    - /run/user/1000/fnm_multishells/644359_1778735661942/bin/node
-    - /run/user/1000/fnm_multishells/644359_1778735661942/bin/npm
-    - /usr/bin/curl
-    - /usr/bin/wget
-    - /usr/bin/jq
-    - /usr/bin/make
-    - /usr/bin/docker
-    - /home/pi/.pi/agent/bin/rg
-    - /home/pi/.pi/agent/bin/fd
-    - /usr/bin/which
 
 workspace:
   root: "~/duga-workspace"
@@ -79,7 +53,7 @@ environment:
 
 memory:
   max_tokens: 32768
-  compress_at_ratio: 0.7
+  compress_at_ratio: 0.8
 
 plugins:
   dir: "./plugins"
@@ -90,19 +64,16 @@ frontend:
   confirmation_timeout: 60s
 
 telegram:
-  token_env: "TELEGRAM_BOT_TOKEN"
+  token_env: "TELEGRAM_BOT_TOKEN_OPENWRT"
   allowed_chat_usernames:
     # Your Telegram @username (without @)
     - antonaleshin
   send_tool_events: true
   send_final_only: false
-  require_confirmation_for:
-    - bash
-    - write
   events_dir: "./events"
   skills_dir: "./skills"
   data_dir: "./data"
   attachments:
     enabled: true
-    max_file_size_mb: 20
+    max_file_size_mb: 50
     download_dir: "attachments"

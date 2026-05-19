@@ -44,6 +44,10 @@ pub struct Message {
     #[serde(default)]
     pub name: Option<String>,
     pub pinned: bool,
+    /// Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning_content).
+    /// Must be passed back to the API when present in assistant messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl Message {
@@ -53,6 +57,7 @@ impl Message {
             content,
             name: None,
             pinned: false,
+            reasoning_content: None,
         }
     }
 
@@ -60,7 +65,11 @@ impl Message {
         Self::new(Role::User, vec![ContentBlock::Text { text: text.into() }])
     }
 
-    pub fn assistant(text: Option<String>, tool_calls: Vec<ToolCall>) -> Self {
+    pub fn assistant(
+        text: Option<String>,
+        tool_calls: Vec<ToolCall>,
+        reasoning_content: Option<String>,
+    ) -> Self {
         let mut content = Vec::new();
         if let Some(t) = text {
             content.push(ContentBlock::Text { text: t });
@@ -68,7 +77,13 @@ impl Message {
         for tc in tool_calls {
             content.push(ContentBlock::ToolCall(tc));
         }
-        Self::new(Role::Assistant, content)
+        Self {
+            role: Role::Assistant,
+            content,
+            name: None,
+            pinned: false,
+            reasoning_content,
+        }
     }
 
     pub fn system(text: impl Into<String>) -> Self {
@@ -91,6 +106,10 @@ impl Message {
 pub struct AssistantMessage {
     pub text: Option<String>,
     pub tool_calls: Vec<ToolCall>,
+    /// Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning_content).
+    /// Must be passed back to the API when present in assistant messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl AssistantMessage {
@@ -114,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_assistant_message_roundtrip() {
-        let msg = Message::assistant(None, vec![]);
+        let msg = Message::assistant(None, vec![], None);
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.role, Role::Assistant);
@@ -122,7 +141,7 @@ mod tests {
 
     #[test]
     fn test_assistant_with_text_roundtrip() {
-        let msg = Message::assistant(Some("hello".into()), vec![]);
+        let msg = Message::assistant(Some("hello".into()), vec![], None);
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: Message = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.role, Role::Assistant);
@@ -159,7 +178,7 @@ mod tests {
     #[test]
     fn test_assistant_with_tool_calls() {
         let tc = ToolCall::new("search", serde_json::json!({"query": "test"}));
-        let msg = Message::assistant(Some("thinking".into()), vec![tc.clone()]);
+        let msg = Message::assistant(Some("thinking".into()), vec![tc.clone()], None);
         assert_eq!(msg.content.len(), 2);
         assert!(matches!(
             msg.content[1],

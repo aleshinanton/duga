@@ -71,6 +71,7 @@ async fn second_compression_receives_previous_summary_as_context() {
         memory.push_assistant(AssistantMessage {
             text: Some(format!("assistant {i}")),
             tool_calls: vec![],
+            reasoning_content: None,
         });
     }
     memory.compress(&summarizer, &MockTokenizer).await.unwrap();

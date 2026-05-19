@@ -500,6 +500,7 @@ mod tests {
             llm_response(AssistantMessage {
                 text: Some("done".into()),
                 tool_calls: vec![],
+                reasoning_content: None,
             }),
         ));
         let sink = Arc::new(RecordingSink::default());
@@ -520,10 +521,12 @@ mod tests {
         llm.push_response(llm_response(AssistantMessage {
             text: None,
             tool_calls: vec![call.clone()],
+            reasoning_content: None,
         }));
         llm.push_response(llm_response(AssistantMessage {
             text: Some("done".into()),
             tool_calls: vec![],
+            reasoning_content: None,
         }));
         let tools = Arc::new(ToolDispatcher::new());
         tools.register_erased(ErasedTool::erase(EchoTool)).unwrap();

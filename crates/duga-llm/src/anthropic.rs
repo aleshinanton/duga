@@ -244,6 +244,7 @@ impl AnthropicResponse {
                     Some(text.join("\n"))
                 },
                 tool_calls,
+                reasoning_content: None,
             },
             usage: TokenUsage {
                 prompt: self.usage.input_tokens,

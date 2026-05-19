@@ -256,6 +256,7 @@ mod tests {
             message: duga_types::message::AssistantMessage {
                 text: Some("done".into()),
                 tool_calls: vec![],
+                reasoning_content: None,
             },
             usage: duga_types::llm::TokenUsage {
                 prompt: 0,

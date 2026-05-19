@@ -137,6 +137,8 @@ struct OpenAiMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
@@ -159,6 +161,7 @@ fn openai_message(message: &Message) -> Result<OpenAiMessage, LlmError> {
         Role::System | Role::User => Ok(OpenAiMessage {
             role: message.role.to_string(),
             content: Some(text),
+            reasoning_content: None,
             name: message.name.clone(),
             tool_call_id: None,
             tool_calls: None,
@@ -166,6 +169,7 @@ fn openai_message(message: &Message) -> Result<OpenAiMessage, LlmError> {
         Role::Assistant => Ok(OpenAiMessage {
             role: "assistant".into(),
             content: if text.is_empty() { None } else { Some(text) },
+            reasoning_content: message.reasoning_content.clone(),
             name: message.name.clone(),
             tool_call_id: None,
             tool_calls: if tool_calls.is_empty() {
@@ -177,6 +181,7 @@ fn openai_message(message: &Message) -> Result<OpenAiMessage, LlmError> {
         Role::Tool => Ok(OpenAiMessage {
             role: "tool".into(),
             content: Some(text),
+            reasoning_content: None,
             name: None,
             tool_call_id: Some(message.name.clone().ok_or_else(|| {
                 LlmError::InvalidRequest("tool message missing tool_call_id".into())
@@ -266,6 +271,7 @@ impl OpenAiResponse {
             message: AssistantMessage {
                 text: choice.message.content,
                 tool_calls,
+                reasoning_content: choice.message.reasoning_content,
             },
             usage: TokenUsage {
                 prompt: usage.prompt_tokens,
@@ -283,6 +289,8 @@ struct OpenAiChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAiResponseMessage {
     content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAiResponseToolCall>>,
 }
 
