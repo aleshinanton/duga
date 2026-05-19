@@ -25,6 +25,8 @@ pub struct TelegramEventRenderer {
     action_labels: Vec<String>,
     /// Map from tool_call_id to (tool_name, description).
     tool_info: HashMap<String, (String, String)>,
+    /// Map from tool_call_id to index in action_labels (for replacing start with finish).
+    tool_label_index: HashMap<String, usize>,
     /// Whether the run has completed.
     finished: bool,
 }
@@ -38,6 +40,7 @@ impl TelegramEventRenderer {
             delta_buffer: String::new(),
             action_labels: Vec::new(),
             tool_info: HashMap::new(),
+            tool_label_index: HashMap::new(),
             finished: false,
         }
     }
@@ -69,6 +72,8 @@ impl TelegramEventRenderer {
                         (tool_name.clone(), description.clone()),
                     );
                     let label = format_step_label(&tool_name, &description, attempt);
+                    let idx = self.action_labels.len();
+                    self.tool_label_index.insert(tool_call_id.clone(), idx);
                     self.action_labels.push(label);
                     let _ = self.edit_process_message().await;
                 }
@@ -89,7 +94,14 @@ impl TelegramEventRenderer {
                         stored_description
                     };
                     let label = format_finish_label(tool_name, display_desc, success);
-                    self.action_labels.push(label);
+                    // Replace the start label instead of pushing a duplicate.
+                    if let Some(&idx) = self.tool_label_index.get(&tool_call_id) {
+                        if idx < self.action_labels.len() {
+                            self.action_labels[idx] = label;
+                        }
+                    } else {
+                        self.action_labels.push(label);
+                    }
                     let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::LlmTokenDelta { delta, .. } => {
@@ -340,5 +352,36 @@ mod tests {
         // Old tools without label → show just tool name (matches original behavior).
         assert_eq!(format_finish_label("tool", "", true), "✅ tool");
         assert_eq!(format_finish_label("tool", "", false), "❌ tool");
+    }
+
+    #[test]
+    fn test_label_replacement_start_to_finish() {
+        // Each tool shows only one line: start label replaced by finish label.
+        // This mirrors the renderer's tool_label_index replacement logic.
+        let mut labels: Vec<String> = Vec::new();
+        let mut index_map: HashMap<String, usize> = HashMap::new();
+
+        // Tool 1: start → replaced by finish.
+        let id1 = "call_1";
+        index_map.insert(id1.to_string(), labels.len());
+        labels.push(format_step_label("bash", "ls", 1));
+        assert_eq!(labels[0], "🔧 bash: ls");
+
+        if let Some(&idx) = index_map.get(id1) {
+            labels[idx] = format_finish_label("bash", "ls", true);
+        }
+        assert_eq!(labels[0], "✅ bash: ls");
+        assert_eq!(labels.len(), 1, "still one line, not two");
+
+        // Tool 2: start → replaced by finish (failure).
+        let id2 = "call_2";
+        index_map.insert(id2.to_string(), labels.len());
+        labels.push(format_step_label("read", "Reading config", 1));
+
+        if let Some(&idx) = index_map.get(id2) {
+            labels[idx] = format_finish_label("read", "Reading config", false);
+        }
+        assert_eq!(labels[1], "❌ read: Reading config");
+        assert_eq!(labels.len(), 2, "two tools, two lines");
     }
 }
