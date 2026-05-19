@@ -405,8 +405,7 @@ fn repair_json(json_str: &str) -> String {
 
         // Control character inside string — escape it.
         if ch.is_control() && ch != '\n' && ch != '\r' && ch != '\t' {
-            // These are already valid in JSON strings.
-            out.push(ch);
+            out.push_str(&format!("\\u{:04x}", ch as u32));
         } else if ch == '\n' {
             out.push_str("\\n");
         } else if ch == '\r' {
@@ -578,6 +577,16 @@ mod tests {
         let repaired = repair_json(bad);
         let v: serde_json::Value = serde_json::from_str(&repaired).unwrap();
         assert_eq!(v["thought"], "line1\nline2");
+    }
+
+    #[test]
+    fn repair_json_escapes_raw_control_characters_in_string() {
+        let bad = "{\"text\": \"before\u{0001}after\"}";
+        let repaired = repair_json(bad);
+
+        assert!(repaired.contains("\\u0001"));
+        let v: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(v["text"], "before\u{0001}after");
     }
 
     #[test]
