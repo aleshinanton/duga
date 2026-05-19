@@ -161,24 +161,25 @@ impl TelegramEventRenderer {
         }
 
         // Show recent action labels, collapsed if there are many.
-        let recent: Vec<_> = self
-            .action_labels
-            .iter()
-            .rev()
-            .take(5)
-            .rev()
-            .cloned()
-            .collect();
-
-        let labels_text = recent.join("\n");
         if total > 5 {
-            // Collapse the labels, show count outside blockquote.
-            text.push_str(&format!(
-                "<blockquote expandable>{}</blockquote>\n",
-                escape_html(&labels_text)
-            ));
-            text.push_str(&format!("... and {} more\n", total - 5));
+            // Show ALL labels inside the collapsible blockquote, chunked.
+            let all_labels = self.action_labels.join("\n");
+            let label_chunks = chunk_message(&all_labels);
+            for chunk in label_chunks {
+                text.push_str(&format!(
+                    "<blockquote expandable>{}</blockquote>\n",
+                    escape_html(&chunk)
+                ));
+            }
         } else {
+            let recent: Vec<_> = self
+                .action_labels
+                .iter()
+                .rev()
+                .take(5)
+                .rev()
+                .cloned()
+                .collect();
             for label in &recent {
                 text.push_str(label);
                 text.push('\n');
