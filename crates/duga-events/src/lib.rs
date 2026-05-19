@@ -278,7 +278,7 @@ impl Redactor {
         let key = key.to_lowercase();
         self.sensitive_keys
             .iter()
-            .any(|sensitive| key.contains(sensitive))
+            .any(|sensitive| key == *sensitive)
     }
 }
 
@@ -410,6 +410,65 @@ mod tests {
             Event::LlmResponse { tool_calls, .. } => {
                 assert_eq!(tool_calls[0].raw_args["api_key"], "[REDACTED]");
                 assert_eq!(tool_calls[0].raw_args["body"]["token"], "[REDACTED]");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn redacting_sink_does_not_redact_token_substring_fields() {
+        // Regression: MemoryCompressed.before_tokens / after_tokens contain
+        // "token" as a substring. Exact key matching must not flag them.
+        let inner = Arc::new(RecordingSink::default());
+        let sink = RedactingSink::new(inner.clone());
+
+        sink.emit(Event::MemoryCompressed {
+            before_tokens: 5000,
+            after_tokens: 3000,
+        })
+        .await
+        .unwrap();
+
+        let events = inner.events();
+        match &events[0] {
+            Event::MemoryCompressed {
+                before_tokens,
+                after_tokens,
+            } => {
+                assert_eq!(*before_tokens, 5000);
+                assert_eq!(*after_tokens, 3000);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn redacting_sink_redacts_exact_sensitive_keys_in_nested_objects() {
+        let inner = Arc::new(RecordingSink::default());
+        let sink = RedactingSink::new(inner.clone());
+        let call = ToolCall::new(
+            "send",
+            serde_json::json!({
+                "Authorization": "Bearer xyz",
+                "nested": {"password": "s3cret"},
+                "safe_field": "keep-me"
+            }),
+        );
+
+        sink.emit(Event::LlmResponse {
+            model: "test".into(),
+            text: None,
+            tool_calls: vec![call],
+        })
+        .await
+        .unwrap();
+
+        let events = inner.events();
+        match &events[0] {
+            Event::LlmResponse { tool_calls, .. } => {
+                assert_eq!(tool_calls[0].raw_args["Authorization"], "[REDACTED]");
+                assert_eq!(tool_calls[0].raw_args["nested"]["password"], "[REDACTED]");
+                assert_eq!(tool_calls[0].raw_args["safe_field"], "keep-me");
             }
             other => panic!("unexpected event: {other:?}"),
         }
