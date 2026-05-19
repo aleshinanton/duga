@@ -4,7 +4,7 @@ use crate::summarizer::Summarizer;
 use duga_llm::LlmClient;
 use duga_types::error::AgentError;
 use duga_types::llm::SummaryMessage;
-use duga_types::message::{AssistantMessage, ContentBlock, Message};
+use duga_types::message::{AssistantMessage, ContentBlock, Message, Role};
 use duga_types::tool_result::ToolResult;
 use std::collections::VecDeque;
 
@@ -121,7 +121,7 @@ impl Memory {
         tokenizer: &dyn LlmClient,
     ) -> Result<(), AgentError> {
         let pinned_facts = self.pinned_facts();
-        let split = self.recent_messages.len() / 2;
+        let split = safe_split_index(&self.recent_messages, self.recent_messages.len() / 2);
         let oldest: Vec<_> = self.recent_messages.iter().take(split).cloned().collect();
 
         if !oldest.is_empty() || self.summary.is_some() {
@@ -158,7 +158,25 @@ impl Memory {
                 .iter()
                 .position(|message| !message.pinned)
             {
-                self.recent_messages.remove(index);
+                // If we're removing an assistant with tool_calls, also remove
+                // its immediately following tool-result messages to prevent
+                // orphaned tool messages in the LLM request.
+                let mut remove_count = 1;
+                if self.recent_messages[index].role == Role::Assistant
+                    && self.recent_messages[index]
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+                {
+                    for next in self.recent_messages.range(index + 1..) {
+                        if next.role == Role::Tool {
+                            remove_count += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.recent_messages.drain(index..index + remove_count);
             } else {
                 return Err(AgentError::ContextOverflow);
             }
@@ -198,6 +216,17 @@ impl Memory {
     }
 }
 
+/// Find a split index that doesn't orphan tool messages from their
+/// preceding assistant tool_calls message.
+fn safe_split_index(messages: &VecDeque<Message>, ideal: usize) -> usize {
+    let mut split = ideal.min(messages.len());
+    // Walk backward until we're not pointing at a tool message.
+    while split > 0 && messages[split].role == Role::Tool {
+        split -= 1;
+    }
+    split
+}
+
 fn format_pinned_facts(facts: &[String]) -> String {
     let mut content = String::from("Key facts:");
     for fact in facts {
@@ -222,7 +251,7 @@ fn message_text(message: &Message) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duga_types::tool_call::CallId;
+    use duga_types::tool_call::{CallId, ToolCall};
     use duga_types::tool_result::ToolResultBuilder;
     use std::sync::Mutex;
 
@@ -438,5 +467,93 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(AgentError::ContextOverflow)));
+    }
+
+    #[tokio::test]
+    async fn compression_does_not_orphan_tool_messages() {
+        // Regression: splitting at len/2 could separate an assistant
+        // tool_calls message from its tool results, violating the
+        // OpenAI requirement that tool messages follow tool_calls.
+        let mut memory = Memory::new(vec![Message::system("sys")], 1000, 0.8);
+        memory.push_user("task".into());
+        memory.push_assistant(AssistantMessage {
+            text: None,
+            tool_calls: vec![ToolCall::new("bash", serde_json::json!({"command": ["ls"]}))],
+            reasoning_content: None,
+        });
+        memory.push_tool_result(
+            ToolResultBuilder::new()
+                .tool_call_id(CallId::new())
+                .success(true)
+                .output("file.txt")
+                .build()
+                .unwrap(),
+        );
+        memory.push_user("next task".into());
+        memory.push_assistant(AssistantMessage {
+            text: Some("done".into()),
+            tool_calls: vec![],
+            reasoning_content: None,
+        });
+
+        let summarizer = RecordingSummarizer::new();
+        memory
+            .compress(&summarizer, &LinearTokenizer { per_message: 1 })
+            .await
+            .unwrap();
+
+        // After compression, the first recent message must not be a
+        // tool message (which would be orphaned).
+        let recent = memory.recent_messages();
+        assert!(
+            recent[0].role != Role::Tool,
+            "first recent message must not be an orphaned tool role"
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_until_budget_removes_tool_results_with_assistant() {
+        // When an assistant with tool_calls is evicted by the budget,
+        // its tool results must also be evicted to avoid orphaned tool
+        // messages.
+        // max_tokens=5: fits system(1) + summary(1) + pinned_user(1) safely,
+        // but the assistant+tool pair is evicted together.
+        let mut memory = Memory::new(vec![Message::system("sys")], 5, 1.0);
+        // First, build up a non-compressible base.
+        memory.push_user("task".into());
+        memory.push_assistant(AssistantMessage {
+            text: None,
+            tool_calls: vec![ToolCall::new("bash", serde_json::json!({"command": ["ls"]}))],
+            reasoning_content: None,
+        });
+        memory.push_tool_result(
+            ToolResultBuilder::new()
+                .tool_call_id(CallId::new())
+                .success(true)
+                .output("file.txt")
+                .build()
+                .unwrap(),
+        );
+        memory.push_user("task2".into());
+        memory.push_assistant(AssistantMessage {
+            text: Some("ok".into()),
+            tool_calls: vec![],
+            reasoning_content: None,
+        });
+
+        let summarizer = RecordingSummarizer::new();
+        memory
+            .compress(&summarizer, &LinearTokenizer { per_message: 1 })
+            .await
+            .unwrap();
+
+        // No message in recent should be an orphaned tool role.
+        for msg in memory.recent_messages().iter() {
+            assert_ne!(
+                msg.role,
+                Role::Tool,
+                "tool messages must not be orphaned"
+            );
+        }
     }
 }
