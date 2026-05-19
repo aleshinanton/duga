@@ -21,61 +21,59 @@ pub async fn run(config: &Config, token: &str) -> Result<()> {
     let bot_logger = Arc::new(BotLogger::new(telegram_config.data_dir.clone()));
     let runtime = Arc::new(TelegramRuntime::new(config.clone()));
 
-    let handler = dptree::entry().branch(
-        Update::filter_message().endpoint({
-            let session_manager = session_manager.clone();
-            let telegram_config = telegram_config.clone();
-            let bot_logger = bot_logger.clone();
-            let runtime = runtime.clone();
-            let bot_username = bot_username.clone();
-
-            move |bot_moved: Bot, msg: Message| {
-                let bot = bot_moved.clone();
+    let schema = dptree::entry()
+        .branch(
+            Update::filter_message().endpoint({
                 let session_manager = session_manager.clone();
                 let telegram_config = telegram_config.clone();
                 let bot_logger = bot_logger.clone();
                 let runtime = runtime.clone();
                 let bot_username = bot_username.clone();
 
-                async move {
-                    handle_message(
-                        bot,
-                        msg,
-                        session_manager,
-                        telegram_config,
-                        bot_logger,
-                        runtime,
-                        bot_username,
-                    )
-                    .await;
-                    Ok::<_, anyhow::Error>(())
+                move |bot_moved: Bot, msg: Message| {
+                    let bot = bot_moved.clone();
+                    let session_manager = session_manager.clone();
+                    let telegram_config = telegram_config.clone();
+                    let bot_logger = bot_logger.clone();
+                    let runtime = runtime.clone();
+                    let bot_username = bot_username.clone();
+
+                    async move {
+                        handle_message(
+                            bot,
+                            msg,
+                            session_manager,
+                            telegram_config,
+                            bot_logger,
+                            runtime,
+                            bot_username,
+                        )
+                        .await;
+                        Ok::<_, anyhow::Error>(())
+                    }
                 }
-            }
-        }),
-    );
-
-    let cb_handler = dptree::entry().branch(
-        Update::filter_callback_query().endpoint({
-            let session_manager = session_manager.clone();
-            let telegram_config = telegram_config.clone();
-            let runtime = runtime.clone();
-
-            move |bot_moved: Bot, cb: CallbackQuery| {
-                let bot = bot_moved.clone();
+            }),
+        )
+        .branch(
+            Update::filter_callback_query().endpoint({
                 let session_manager = session_manager.clone();
                 let telegram_config = telegram_config.clone();
                 let runtime = runtime.clone();
 
-                async move {
-                    handle_callback_query(bot, cb, session_manager, telegram_config, runtime)
-                        .await;
-                    Ok::<_, anyhow::Error>(())
-                }
-            }
-        }),
-    );
+                move |bot_moved: Bot, cb: CallbackQuery| {
+                    let bot = bot_moved.clone();
+                    let session_manager = session_manager.clone();
+                    let telegram_config = telegram_config.clone();
+                    let runtime = runtime.clone();
 
-    let schema = handler.chain(cb_handler);
+                    async move {
+                        handle_callback_query(bot, cb, session_manager, telegram_config, runtime)
+                            .await;
+                        Ok::<_, anyhow::Error>(())
+                    }
+                }
+            }),
+        );
 
     tracing::info!("bot @{bot_username} started, polling for updates…");
     Dispatcher::builder(bot, schema)
