@@ -12,7 +12,7 @@ duga-events = { path = "../duga-events" }
 duga-llm = { path = "../duga-llm" }
 duga-types = { path = "../duga-types" }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
-thiserror = "1"
+thiserror = "2"
 
 [dev-dependencies]
 tempfile = "3"

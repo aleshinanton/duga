@@ -9,7 +9,7 @@ pub fn validate_schema(schema: &Value, instance: &Value) -> Result<(), Vec<Strin
 
     let errors: Vec<String> = compiled
         .iter_errors(instance)
-        .map(|e| format!("{}: {}", e.instance_path, e))
+        .map(|e| format!("{}: {}", e.instance_path(), e))
         .collect();
 
     if errors.is_empty() {

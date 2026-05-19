@@ -29,13 +29,13 @@ pub async fn download_attachments(
         if let Some(largest) = photo_sizes.last() {
             let size_ok = (largest.file.size as u64) <= max_size;
             if size_ok {
-                if let Ok(tg_file) = bot.get_file(&largest.file.id).await {
+                if let Ok(tg_file) = bot.get_file(largest.file.id.clone()).await {
                     let filename = format!("photo_{}.jpg", msg.id.0);
                     let path = save_dir.join(&filename);
                     download_file(bot, &tg_file, &path).await?;
                     files.push(DownloadedFile {
                         kind: "photo".into(),
-                        file_id: largest.file.id.clone(),
+                        file_id: largest.file.id.to_string(),
                         path,
                     });
                 }
@@ -46,7 +46,7 @@ pub async fn download_attachments(
     // Document.
     if let Some(doc) = msg.document() {
         if (doc.file.size as u64) <= max_size {
-            if let Ok(tg_file) = bot.get_file(&doc.file.id).await {
+            if let Ok(tg_file) = bot.get_file(doc.file.id.clone()).await {
                 let name = doc
                     .file_name
                     .as_deref()
@@ -58,7 +58,7 @@ pub async fn download_attachments(
                 download_file(bot, &tg_file, &path).await?;
                 files.push(DownloadedFile {
                     kind: "document".into(),
-                    file_id: doc.file.id.clone(),
+                    file_id: doc.file.id.to_string(),
                     path,
                 });
             }
@@ -68,7 +68,7 @@ pub async fn download_attachments(
     // Audio.
     if let Some(audio) = msg.audio() {
         if (audio.file.size as u64) <= max_size {
-            if let Ok(tg_file) = bot.get_file(&audio.file.id).await {
+            if let Ok(tg_file) = bot.get_file(audio.file.id.clone()).await {
                 let name = audio
                     .file_name
                     .as_deref()
@@ -79,7 +79,7 @@ pub async fn download_attachments(
                 download_file(bot, &tg_file, &path).await?;
                 files.push(DownloadedFile {
                     kind: "audio".into(),
-                    file_id: audio.file.id.clone(),
+                    file_id: audio.file.id.to_string(),
                     path,
                 });
             }
@@ -89,12 +89,12 @@ pub async fn download_attachments(
     // Voice.
     if let Some(voice) = msg.voice() {
         if (voice.file.size as u64) <= max_size {
-            if let Ok(tg_file) = bot.get_file(&voice.file.id).await {
+            if let Ok(tg_file) = bot.get_file(voice.file.id.clone()).await {
                 let path = save_dir.join(format!("voice_{}.ogg", msg.id.0));
                 download_file(bot, &tg_file, &path).await?;
                 files.push(DownloadedFile {
                     kind: "voice".into(),
-                    file_id: voice.file.id.clone(),
+                    file_id: voice.file.id.to_string(),
                     path,
                 });
             }
@@ -104,7 +104,7 @@ pub async fn download_attachments(
     // Video.
     if let Some(video) = msg.video() {
         if (video.file.size as u64) <= max_size {
-            if let Ok(tg_file) = bot.get_file(&video.file.id).await {
+            if let Ok(tg_file) = bot.get_file(video.file.id.clone()).await {
                 let name = video
                     .file_name
                     .as_deref()
@@ -115,7 +115,7 @@ pub async fn download_attachments(
                 download_file(bot, &tg_file, &path).await?;
                 files.push(DownloadedFile {
                     kind: "video".into(),
-                    file_id: video.file.id.clone(),
+                    file_id: video.file.id.to_string(),
                     path,
                 });
             }
