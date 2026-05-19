@@ -195,8 +195,16 @@ Image-to-LLM support depends on a future multimodal content type in `duga-types`
 ## Logging and Replay
 
 - **log.jsonl** — All messages (incoming and outgoing) are logged per chat in `data/<chat_id>/log.jsonl`.
-- **session.jsonl** — Full agent event stream per run, written for replay.
+- **session.jsonl** — Full agent event stream per run, written for replay. Also serves as conversation context persistence — the bot loads previous messages from the last `LlmRequest` event on each new message, so it remembers the full conversation history across messages.
 - **context.jsonl** — User messages synced for LLM context on restart.
+
+## Process Message Rendering
+
+During execution, the bot edits a single live "process message" with:
+- **Step descriptions** — Each tool call shows a human-readable label provided by the LLM (e.g., `✅ bash: ls -la`). If the LLM doesn't provide a label, only the tool name is shown (`✅ bash`).
+- **Single line per tool** — Start labels are replaced in-place by finish labels, so each tool call produces exactly one line (not a start/finish pair).
+- **Collapsible blocks** — When step history exceeds 5 labels or the final answer exceeds 300 characters, content is wrapped in Telegram `<blockquote expandable>` tags with a "Show more" toggle.
+- **Streaming delta** — LLM token output is shown in real-time as a code block, truncated to 200 characters.
 
 ## Architecture
 
@@ -217,14 +225,26 @@ Image-to-LLM support depends on a future multimodal content type in `duga-types`
 │   session.rs                │
 │   - Per-chat DashMap        │
 │   - One run per chat        │
-│   - Cancellation             │
+│   - Cancellation            │
 └──────────┬──────────────────┘
            │
 ┌──────────▼──────────────────┐
 │   runtime.rs                │
+│   - Load history from       │
+│     session.jsonl           │
 │   - Wire AgentLoop          │
 │   - Event bridges           │
 │   - JSONL sinks             │
+│   - System prompt with      │
+│     env context + tools     │
+└──────────┬──────────────────┘
+           │
+┌──────────▼──────────────────┐
+│   render.rs                 │
+│   - Live process message    │
+│   - Step descriptions       │
+│   - Collapsible blocks      │
+│   - Single line per tool    │
 └──────────┬──────────────────┘
            │
 ┌──────────▼──────────────────┐
@@ -241,7 +261,7 @@ Image-to-LLM support depends on a future multimodal content type in `duga-types`
 - **No multimodal image support yet** — Attachments are downloaded but not interpreted by the LLM.
 - **Single run per chat** — A second task is rejected while one is active.
 - **No streaming in group chats** — Live message editing is DM-only.
-- **Docker sandbox mode** — Not yet implemented (EPIC-18.6 pending).
+- **Think budget is limited** — The `think` tool has a per-run budget of 8 calls / 4096 tokens by default. Configure via `agent.think.max_calls` and `agent.think.max_tokens`.
 
 ## Troubleshooting
 

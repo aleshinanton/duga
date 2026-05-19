@@ -535,6 +535,16 @@ Purpose:
 - prevent infinite self-reflection,
 - prevent reasoning collapse loops.
 
+**Per-run reset:** Think limits use atomic counters on the `ThinkTool` instance.
+The `Tool` trait includes a `reset_limits()` default no-op, overridden by `ThinkTool`
+to zero its counters. `AgentLoop::run()` calls `self.tools.reset_limits()` at the
+start of each run, preventing counter accumulation across chats in long-running processes.
+
+**Frontend descriptions:** Each built-in tool args carries a `label: String` field
+populated by the LLM (e.g. `"ls -la"`). This is threaded through
+`FrontendEvent::ToolCallStarted.description` to the Telegram renderer, which shows
+`✅ bash: ls -la` and collapses `tool_name: tool_name` duplicates to `✅ bash`.
+
 -----
 
 # 13. Workspace & Filesystem Isolation
@@ -927,17 +937,14 @@ enum Event {
     },
 
     ToolCallStarted {
-        id: Uuid,
-        tool: String,
-        args: serde_json::Value,   // raw, after redaction
+        tool_call: ToolCall,        // full tool call with raw_args (incl. label)
+        attempt: u32,
     },
 
     ToolCallFinished {
-        id: Uuid,
-        tool: String,
-        success: bool,
-        output: String,            // after redaction + truncation
-        duration_ms: u64,
+        result: ToolResult,         // success, output, duration, etc.
+        attempt: u32,
+        tool_name: String,          // populated so frontends don't need tool_info lookup
     },
 
     ToolCallFailed {
