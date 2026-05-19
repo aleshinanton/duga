@@ -27,6 +27,8 @@ pub struct TelegramEventRenderer {
     tool_info: HashMap<String, (String, String)>,
     /// Map from tool_call_id to index in action_labels (for replacing start with finish).
     tool_label_index: HashMap<String, usize>,
+    /// Fatal error message (shown separately, not counted as a step).
+    error_message: Option<String>,
     /// Whether the run has completed.
     finished: bool,
 }
@@ -41,6 +43,7 @@ impl TelegramEventRenderer {
             action_labels: Vec::new(),
             tool_info: HashMap::new(),
             tool_label_index: HashMap::new(),
+            error_message: None,
             finished: false,
         }
     }
@@ -110,7 +113,7 @@ impl TelegramEventRenderer {
                     let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::Error { message } => {
-                    self.action_labels.push(format!("⚠️ Error: {message}"));
+                    self.error_message = Some(message);
                     let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::MemoryCompressed {
@@ -151,6 +154,11 @@ impl TelegramEventRenderer {
 
         let total = self.action_labels.len();
         let mut text = format!("🔄 Processing… ({total} step{})\n", if total == 1 { "" } else { "s" });
+
+        // Show fatal error at the top if present (not counted as a step).
+        if let Some(ref err) = self.error_message {
+            text.push_str(&format!("⚠️ Error: {err}\n"));
+        }
 
         // Show recent action labels, collapsed if there are many.
         let recent: Vec<_> = self
@@ -210,7 +218,12 @@ impl TelegramEventRenderer {
         // Edit the process message into a final step-history summary.
         if let Some(msg_id) = self.process_message_id {
             let step_count = self.action_labels.len();
-            let header = format!("✅ Completed in {step_count} step(s)\n");
+            let mut header = format!("✅ Completed in {step_count} step(s)\n");
+
+            // Show error if the run failed.
+            if let Some(ref err) = self.error_message {
+                header.push_str(&format!("⚠️ Error: {err}\n"));
+            }
 
             let labels_text = self.action_labels.join("\n");
 
