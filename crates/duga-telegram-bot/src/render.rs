@@ -149,9 +149,10 @@ impl TelegramEventRenderer {
             None => return Ok(()),
         };
 
-        let mut text = String::from("🔄 Processing…\n");
+        let total = self.action_labels.len();
+        let mut text = format!("🔄 Processing… ({total} step{})\n", if total == 1 { "" } else { "s" });
 
-        // Show recent action labels (max 5).
+        // Show recent action labels, collapsed if there are many.
         let recent: Vec<_> = self
             .action_labels
             .iter()
@@ -161,9 +162,19 @@ impl TelegramEventRenderer {
             .cloned()
             .collect();
 
-        for label in &recent {
-            text.push_str(label);
-            text.push('\n');
+        let labels_text = recent.join("\n");
+        if total > 5 {
+            // Collapse the labels, show count outside blockquote.
+            text.push_str(&format!(
+                "<blockquote expandable>{}</blockquote>\n",
+                escape_html(&labels_text)
+            ));
+            text.push_str(&format!("... and {} more\n", total - 5));
+        } else {
+            for label in &recent {
+                text.push_str(label);
+                text.push('\n');
+            }
         }
 
         // Show streaming delta if present.
@@ -180,11 +191,14 @@ impl TelegramEventRenderer {
         }
 
         let chunks = chunk_message(&text);
-        // Send the first chunk as an edit.
+        // Use HTML parse mode when labels are collapsed.
+        let use_html = total > 5;
         if let Some(first) = chunks.first() {
-            self.bot
-                .edit_message_text(self.chat_id, msg_id, first)
-                .await?;
+            let mut req = self.bot.edit_message_text(self.chat_id, msg_id, first.clone());
+            if use_html {
+                req = req.parse_mode(ParseMode::Html);
+            }
+            req.await?;
         }
 
         Ok(())

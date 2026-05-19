@@ -13,7 +13,6 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ReadArgs {
-    #[serde(default)]
     #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
     pub label: String,
     pub path: String,

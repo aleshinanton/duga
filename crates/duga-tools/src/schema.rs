@@ -76,6 +76,16 @@ fn ensure_object_schema_defaults(map: &mut Map<String, Value>) {
             .or_insert_with(|| Value::String("object".into()));
         map.entry("additionalProperties")
             .or_insert_with(|| Value::Bool(false));
+        // Add 'label' to properties if not present, so all tools accept it.
+        // Built-in tools declare it in their args struct; custom/plugin tools
+        // don't need to — the field is silently accepted and ignored.
+        if let Some(props) = map.get_mut("properties") {
+            if let Some(obj) = props.as_object_mut() {
+                obj.entry("label".to_string()).or_insert_with(|| {
+                    serde_json::json!({"type": "string", "description": "Brief human-readable description of what this step does (shown to user)"})
+                });
+            }
+        }
     }
 }
 

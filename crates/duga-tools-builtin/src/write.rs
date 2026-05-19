@@ -16,7 +16,6 @@ use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct WriteArgs {
-    #[serde(default)]
     #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
     pub label: String,
     pub path: String,

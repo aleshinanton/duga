@@ -125,7 +125,15 @@ impl ToolDispatcher {
             }
         };
 
-        tool.validate_args(&call.raw_args)?;
+        // Inject default 'label' if the LLM omitted it, so validation passes.
+        let mut raw_args = call.raw_args.clone();
+        if let Some(obj) = raw_args.as_object_mut() {
+            if !obj.contains_key("label") {
+                obj.insert("label".to_string(), serde_json::Value::String(String::new()));
+            }
+        }
+
+        tool.validate_args(&raw_args)?;
 
         let confirmation = self.confirmation.read().unwrap().clone();
         if let Some(confirmation) = confirmation {
@@ -135,7 +143,6 @@ impl ToolDispatcher {
         }
 
         let call_id = call.id.clone();
-        let raw_args = call.raw_args.clone();
 
         tool.execute(call_id, raw_args, workspace, cancellation, event_sink)
             .await
