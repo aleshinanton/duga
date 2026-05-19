@@ -58,6 +58,22 @@ pub fn tool_guidance() -> &'static str {
          Prefer this over `write` for small changes.\n",
         "- `write` — Create or overwrite files atomically.\n",
         "- `search` — Search workspace files with regex patterns.\n",
+        "\n## Tool Call Labels\n",
+        "Every tool call (`shell`, `edit`, `read`, `write`, `search`, `think`) \
+         MUST include a non-empty `label` parameter. The label is a short, \
+         human-readable description of what this step does. Never leave it \
+         empty or omit it.\n",
+        "\n## Lightweight Tool-Use Gate\n",
+        "Before acting, analyze the request, decide which tools are actually \
+         needed, skip unnecessary tool calls, and execute only the minimum set \
+         of tools required.\n",
+        "Use `think` for multi-step tasks; before HTTP requests to decide \
+         whether an API call is worthwhile; before file searches to decide \
+         exactly what to look for; before package installs to check whether \
+         the dependency is already installed; and when intent is ambiguous, \
+         clarify first.\n",
+        "Avoid high-tax exploration such as running several commands just to \
+         figure out what to do.\n",
     )
 }
 
