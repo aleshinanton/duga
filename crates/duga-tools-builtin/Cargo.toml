@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
 description = "Built-in tools for duga: read, write, edit, shell, search, think"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [dependencies]
 duga-tools = { path = "../duga-tools" }

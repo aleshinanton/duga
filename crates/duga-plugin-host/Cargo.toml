@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
 description = "Host-side plugin loading and Tool adapter for duga"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [dependencies]
 duga-plugin-abi = { path = "../duga-plugin-abi", features = ["host"] }

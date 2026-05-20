@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
 description = "Shared runtime composition for duga frontends (CLI, Telegram, TUI)"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [dependencies]
 duga-config = { path = "../duga-config" }
