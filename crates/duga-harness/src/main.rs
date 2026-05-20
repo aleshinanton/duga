@@ -77,6 +77,8 @@ async fn main() -> Result<()> {
         vec![Message::system(system_prompt)],
         config.memory.max_tokens,
         config.memory.compress_at_ratio,
+        config.memory.context_window_size,
+        config.memory.max_context_tokens,
     );
     let mut agent = AgentLoop::new(
         config.agent,

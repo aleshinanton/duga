@@ -277,6 +277,23 @@ pub struct EnvironmentConfig {
 pub struct MemoryConfig {
     pub max_tokens: usize,
     pub compress_at_ratio: f64,
+    /// Maximum number of recent messages to load from session history.
+    /// Set to 0 to disable (load all, backward-compatible behavior).
+    #[serde(default = "default_context_window_size")]
+    pub context_window_size: usize,
+    /// Hard token budget for loaded history.
+    /// If the window exceeds this, drop oldest messages until it fits.
+    /// Set to 0 to disable.
+    #[serde(default = "default_max_context_tokens")]
+    pub max_context_tokens: usize,
+}
+
+fn default_context_window_size() -> usize {
+    50
+}
+
+fn default_max_context_tokens() -> usize {
+    12000
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -378,6 +395,18 @@ impl Config {
         }
         if self.memory.max_tokens == 0 {
             errors.push("memory.max_tokens must be greater than 0".into());
+        }
+        if self.memory.context_window_size > 10_000 {
+            errors.push(format!(
+                "memory.context_window_size must not exceed 10,000, got {}",
+                self.memory.context_window_size
+            ));
+        }
+        if self.memory.max_context_tokens > 1_000_000 {
+            errors.push(format!(
+                "memory.max_context_tokens must not exceed 1,000,000, got {}",
+                self.memory.max_context_tokens
+            ));
         }
         if self
             .provider
@@ -573,6 +602,8 @@ environment:
 memory:
   max_tokens: 4096
   compress_at_ratio: 0.8
+  context_window_size: 50
+  max_context_tokens: 12000
 plugins:
   dir: {}
   modules:

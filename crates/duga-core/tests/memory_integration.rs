@@ -39,7 +39,7 @@ impl Summarizer for MockSummarizer {
 
 #[tokio::test]
 async fn full_memory_lifecycle_compresses_and_keeps_recent_context() {
-    let mut memory = Memory::new(vec![Message::system("system")], 100, 0.8);
+    let mut memory = Memory::new(vec![Message::system("system")], 100, 0.8, 0, 0);
     for i in 0..8 {
         memory.push_user(format!("message {i}"));
     }
@@ -60,7 +60,7 @@ async fn full_memory_lifecycle_compresses_and_keeps_recent_context() {
 
 #[tokio::test]
 async fn second_compression_receives_previous_summary_as_context() {
-    let mut memory = Memory::new(vec![Message::system("system")], 200, 0.8);
+    let mut memory = Memory::new(vec![Message::system("system")], 200, 0.8, 0, 0);
     for i in 0..6 {
         memory.push_user(format!("message {i}"));
     }
@@ -88,7 +88,7 @@ async fn second_compression_receives_previous_summary_as_context() {
 
 #[tokio::test]
 async fn overflow_reports_error_when_pinned_context_cannot_fit() {
-    let mut memory = Memory::new(vec![Message::system("system")], 10, 1.0);
+    let mut memory = Memory::new(vec![Message::system("system")], 10, 1.0, 0, 0);
     memory.push_user("important pinned task".into());
 
     let result = memory

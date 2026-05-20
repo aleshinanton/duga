@@ -13,9 +13,9 @@ context_window: 1000000
 
 agent:
   limits:
-    max_steps: 30
-    max_tool_calls: 60
-    max_runtime: 15m
+    max_steps: 300
+    max_tool_calls: 600
+    max_runtime: 60m
     retry_on_error: 3
   features:
     streaming: true
@@ -52,8 +52,15 @@ environment:
     - GIT_COMMITTER_EMAIL
 
 memory:
-  max_tokens: 32768
+  max_tokens: 65536
   compress_at_ratio: 0.8
+  # Sliding window: only load the most recent N messages from session history.
+  # Set to 0 to disable (load all).
+  context_window_size: 50
+  # Hard token budget for loaded history. Drop oldest messages until under this limit.
+  # Set to 0 to disable.
+  max_context_tokens: 12000
+  # summarizer: "semantic"  # or "simple" for role-label fallback (EPIC-25)
 
 plugins:
   dir: "./plugins"

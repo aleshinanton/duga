@@ -43,7 +43,7 @@ async fn run_test_agent(
     let sink = CapturingEventSink::new();
     let mut agent = AgentLoop::new(
         config,
-        duga_core::Memory::new(vec![Message::system("system")], 100_000, 0.8),
+        duga_core::Memory::new(vec![Message::system("system")], 100_000, 0.8, 0, 0),
         Arc::new(TestSummarizer),
         Arc::new(mock_llm),
         dispatcher,

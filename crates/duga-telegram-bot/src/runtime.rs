@@ -95,7 +95,8 @@ impl TelegramRuntime {
         let replay_sink = Arc::new(RedactingSink::new(jsonl_sink));
 
         // Load previous conversation context so the agent remembers the chat.
-        let conversation_history = load_conversation_history(&jsonl_path);
+        let conversation_history =
+            load_conversation_history(&jsonl_path, &self.config.memory);
 
         // Build frontend context for system prompt.
         //
@@ -157,7 +158,13 @@ impl TelegramRuntime {
 }
 
 /// Load previous conversation messages from a JSONL session file.
-fn load_conversation_history(path: &PathBuf) -> Option<Vec<Message>> {
+///
+/// Applies the sliding window and token budget from `MemoryConfig` to
+/// prevent old/irrelevant messages from saturating the context window.
+fn load_conversation_history(
+    path: &PathBuf,
+    memory_config: &duga_config::MemoryConfig,
+) -> Option<Vec<Message>> {
     use std::io::{BufRead, BufReader};
 
     let file = std::fs::File::open(path).ok()?;
@@ -183,10 +190,31 @@ fn load_conversation_history(path: &PathBuf) -> Option<Vec<Message>> {
     }
 
     // Filter out system messages (we provide a fresh system prompt).
-    let history: Vec<Message> = messages
+    let mut history: Vec<Message> = messages
         .into_iter()
         .filter(|m| !matches!(m.role, duga_types::message::Role::System))
         .collect();
+
+    let total_in_history = history.len();
+
+    // Apply sliding window: keep only the most recent N messages.
+    if memory_config.context_window_size > 0
+        && history.len() > memory_config.context_window_size
+    {
+        let start = history.len() - memory_config.context_window_size;
+        history = history.split_off(start);
+    }
+
+    // Apply token budget: drop oldest messages until under the cap.
+    // Uses a simple character-based estimate (no LLM round-trip).
+    if memory_config.max_context_tokens > 0 {
+        while duga_core::memory::estimate_tokens(&history)
+            > memory_config.max_context_tokens
+            && history.len() > 1
+        {
+            history.remove(0);
+        }
+    }
 
     // Normalize: drop orphaned tool messages that lack a preceding
     // assistant with tool_calls (can happen after buggy compression in
@@ -197,8 +225,13 @@ fn load_conversation_history(path: &PathBuf) -> Option<Vec<Message>> {
         None
     } else {
         tracing::info!(
-            "Loaded {} previous messages from session history",
-            history.len()
+            loaded = history.len(),
+            total = total_in_history,
+            window = memory_config.context_window_size,
+            token_budget = memory_config.max_context_tokens,
+            "Loaded {} messages from session history ({} total)",
+            history.len(),
+            total_in_history
         );
         Some(history)
     }

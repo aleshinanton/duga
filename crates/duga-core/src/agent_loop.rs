@@ -58,10 +58,22 @@ impl AgentLoop {
     }
 
     /// Restore conversation history into memory (for persistent chat context).
+    ///
+    /// The sliding window and token budget from the memory config are applied
+    /// after loading to prevent irrelevant history from saturating context.
     pub fn restore_history(&mut self, messages: Vec<Message>) {
+        let before = self.memory.recent_messages().len();
         for msg in messages {
             self.memory.push_msg(msg);
         }
+        let after = self.memory.recent_messages().len();
+        self.memory.enforce_window();
+        tracing::info!(
+            before,
+            after,
+            remaining = self.memory.recent_messages().len(),
+            "History restored and window enforced"
+        );
     }
 
     pub async fn run(
@@ -489,7 +501,7 @@ mod tests {
     ) -> (AgentLoop, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let workspace = Workspace::open(dir.path()).unwrap();
-        let memory = Memory::new(vec![Message::system("system")], 10_000, 0.8);
+        let memory = Memory::new(vec![Message::system("system")], 10_000, 0.8, 0, 0);
         (
             AgentLoop::new(
                 AgentConfig::default(),

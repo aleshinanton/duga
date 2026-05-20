@@ -19,10 +19,19 @@ pub struct Memory {
     max_tokens: usize,
     compress_at_ratio: f64,
     pinned_task: Option<String>,
+    /// Sliding window config for restored history (0 = disabled).
+    context_window_size: usize,
+    max_context_tokens: usize,
 }
 
 impl Memory {
-    pub fn new(mut system_messages: Vec<Message>, max_tokens: usize, ratio: f64) -> Self {
+    pub fn new(
+        mut system_messages: Vec<Message>,
+        max_tokens: usize,
+        ratio: f64,
+        context_window_size: usize,
+        max_context_tokens: usize,
+    ) -> Self {
         for message in &mut system_messages {
             message.pinned = true;
         }
@@ -41,6 +50,8 @@ impl Memory {
             max_tokens,
             compress_at_ratio,
             pinned_task: None,
+            context_window_size,
+            max_context_tokens,
         }
     }
 
@@ -80,6 +91,51 @@ impl Memory {
             msg.pinned = true;
             msg
         });
+    }
+
+    /// Enforce the sliding window and token budget on restored history.
+    ///
+    /// Called after `restore_history` to limit how many messages from
+    /// previous sessions are kept in the active context.  Pinned messages
+    /// (including the first user task) are never removed.
+    pub fn enforce_window(&mut self) {
+        let window_size = self.context_window_size;
+        let max_tokens = self.max_context_tokens;
+
+        if window_size > 0 && self.recent_messages.len() > window_size {
+            let excess = self.recent_messages.len() - window_size;
+            let mut dropped = 0;
+            while dropped < excess && self.recent_messages.len() > 1 {
+                // Find the first non-pinned message to drop.
+                if let Some(idx) = self
+                    .recent_messages
+                    .iter()
+                    .position(|m| !m.pinned)
+                {
+                    self.recent_messages.remove(idx);
+                    dropped += 1;
+                } else {
+                    break; // only pinned messages remain
+                }
+            }
+        }
+
+        if max_tokens > 0 {
+            while estimate_tokens(&Vec::from_iter(self.recent_messages.iter().cloned()))
+                > max_tokens
+                && self.recent_messages.len() > 1
+            {
+                if let Some(idx) = self
+                    .recent_messages
+                    .iter()
+                    .position(|m| !m.pinned)
+                {
+                    self.recent_messages.remove(idx);
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
     pub fn push_user(&mut self, task: String) {
@@ -263,6 +319,33 @@ fn format_pinned_facts(facts: &[String]) -> String {
     content
 }
 
+/// Estimate tokens for a slice of messages using a character-based heuristic.
+///
+/// Roughly 1 token ≈ 4 characters for English text.  Falls back to 64 tokens
+/// per message for messages without text content blocks (e.g. tool calls).
+/// No LLM round-trip required — suitable for offline budget enforcement.
+pub fn estimate_tokens(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .map(|m| {
+            let char_count: usize = m
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.len()),
+                    _ => None,
+                })
+                .sum();
+            if char_count > 0 {
+                // +3 for rounding up after integer division
+                (char_count + 3) / 4
+            } else {
+                64 // sensible default for tool-call / empty messages
+            }
+        })
+        .sum()
+}
+
 fn message_text(message: &Message) -> String {
     message
         .content
@@ -338,17 +421,17 @@ mod tests {
 
     #[test]
     fn constructor_pins_system_and_clamps_ratio() {
-        let memory = Memory::new(vec![Message::system("sys")], 100, 2.0);
+        let memory = Memory::new(vec![Message::system("sys")], 100, 2.0, 0, 0);
         assert!(memory.system_messages()[0].pinned);
         assert_eq!(memory.compress_at_ratio(), 1.0);
 
-        let memory = Memory::new(vec![], 100, 0.0);
+        let memory = Memory::new(vec![], 100, 0.0, 0, 0);
         assert_eq!(memory.compress_at_ratio(), 0.1);
     }
 
     #[test]
     fn push_methods_store_expected_messages() {
-        let mut memory = Memory::new(vec![], 100, 0.8);
+        let mut memory = Memory::new(vec![], 100, 0.8, 0, 0);
         memory.push_user("task".into());
         memory.push_assistant(AssistantMessage {
             text: Some("hi".into()),
@@ -371,7 +454,7 @@ mod tests {
 
     #[test]
     fn messages_are_ordered_system_summary_recent() {
-        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8);
+        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8, 0, 0);
         memory.summary = Some(SummaryMessage::with_pinned_facts(
             "old".into(),
             vec!["fact".into()],
@@ -387,18 +470,18 @@ mod tests {
 
     #[test]
     fn budget_uses_tokenizer_and_ratio() {
-        let memory = Memory::new(vec![], 200, 0.8);
+        let memory = Memory::new(vec![], 200, 0.8, 0, 0);
         assert!(!memory.over_budget(&FixedTokenizer(100)));
         assert!(!memory.over_budget(&FixedTokenizer(160)));
         assert!(memory.over_budget(&FixedTokenizer(170)));
 
-        let memory = Memory::new(vec![], 0, 0.8);
+        let memory = Memory::new(vec![], 0, 0.8, 0, 0);
         assert!(memory.over_budget(&FixedTokenizer(0)));
     }
 
     #[tokio::test]
     async fn compression_summarizes_oldest_half_and_preserves_pinned_task() {
-        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8);
+        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8, 0, 0);
         for i in 0..10 {
             memory.push_user(format!("message {i}"));
         }
@@ -419,7 +502,7 @@ mod tests {
 
     #[tokio::test]
     async fn compression_includes_existing_summary_as_context() {
-        let mut memory = Memory::new(vec![], 100, 0.8);
+        let mut memory = Memory::new(vec![], 100, 0.8, 0, 0);
         memory.summary = Some(SummaryMessage::new("previous".into()));
         memory.push_user("task".into());
         memory.push_assistant(AssistantMessage {
@@ -441,7 +524,7 @@ mod tests {
 
     #[tokio::test]
     async fn compression_failure_preserves_recent_messages() {
-        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8);
+        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8, 0, 0);
         for i in 0..4 {
             memory.push_user(format!("message {i}"));
         }
@@ -458,7 +541,7 @@ mod tests {
 
     #[tokio::test]
     async fn overflow_drops_oldest_non_pinned_recent() {
-        let mut memory = Memory::new(vec![Message::system("sys")], 2, 1.0);
+        let mut memory = Memory::new(vec![Message::system("sys")], 2, 1.0, 0, 0);
         memory.push_user("task".into());
         memory.push_assistant(AssistantMessage {
             text: Some("drop me first".into()),
@@ -485,7 +568,7 @@ mod tests {
 
     #[tokio::test]
     async fn overflow_returns_context_overflow_when_only_pinned_remains() {
-        let mut memory = Memory::new(vec![Message::system("sys")], 1, 1.0);
+        let mut memory = Memory::new(vec![Message::system("sys")], 1, 1.0, 0, 0);
         memory.push_user("task".into());
         let summarizer = RecordingSummarizer::new();
 
@@ -501,7 +584,7 @@ mod tests {
         // Regression: splitting at len/2 could separate an assistant
         // tool_calls message from its tool results, violating the
         // OpenAI requirement that tool messages follow tool_calls.
-        let mut memory = Memory::new(vec![Message::system("sys")], 1000, 0.8);
+        let mut memory = Memory::new(vec![Message::system("sys")], 1000, 0.8, 0, 0);
         memory.push_user("task".into());
         memory.push_assistant(AssistantMessage {
             text: None,
@@ -542,7 +625,7 @@ mod tests {
 
     #[test]
     fn task_anchor_at_position_zero() {
-        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8);
+        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8, 0, 0);
         memory.set_task_anchor(Some("test task".into()));
         memory.push_user("hello".into());
 
@@ -557,7 +640,7 @@ mod tests {
 
     #[test]
     fn task_anchor_excluded_from_messages_when_not_set() {
-        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8);
+        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8, 0, 0);
         memory.push_user("task".into());
 
         let messages = memory.messages();
@@ -569,7 +652,7 @@ mod tests {
 
     #[test]
     fn task_anchor_not_in_recent_messages() {
-        let mut memory = Memory::new(vec![], 100, 0.8);
+        let mut memory = Memory::new(vec![], 100, 0.8, 0, 0);
         memory.set_task_anchor(Some("task".into()));
         memory.push_user("hello".into());
 
@@ -580,7 +663,7 @@ mod tests {
 
     #[tokio::test]
     async fn compression_input_excludes_task_anchor() {
-        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8);
+        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8, 0, 0);
         memory.set_task_anchor(Some("my task".into()));
         for i in 0..10 {
             memory.push_user(format!("message {i}"));
@@ -608,7 +691,7 @@ mod tests {
         // Set a tight budget so drop_until_budget fires but still
         // accommodates the anchor + system + summary + pinned user.
         // Non-pinned assistant messages get dropped first.
-        let mut memory = Memory::new(vec![Message::system("sys")], 5, 1.0);
+        let mut memory = Memory::new(vec![Message::system("sys")], 5, 1.0, 0, 0);
         memory.set_task_anchor(Some("critical task".into()));
         memory.push_user("user1".into()); // pinned (first user)
         memory.push_assistant(AssistantMessage {
@@ -634,7 +717,7 @@ mod tests {
 
     #[test]
     fn set_task_anchor_none_clears_anchor() {
-        let mut memory = Memory::new(vec![], 100, 0.8);
+        let mut memory = Memory::new(vec![], 100, 0.8, 0, 0);
         memory.set_task_anchor(Some("task".into()));
         assert!(memory.task_anchor.is_some());
 
@@ -652,7 +735,7 @@ mod tests {
         // messages.
         // max_tokens=5: fits system(1) + summary(1) + pinned_user(1) safely,
         // but the assistant+tool pair is evicted together.
-        let mut memory = Memory::new(vec![Message::system("sys")], 5, 1.0);
+        let mut memory = Memory::new(vec![Message::system("sys")], 5, 1.0, 0, 0);
         // First, build up a non-compressible base.
         memory.push_user("task".into());
         memory.push_assistant(AssistantMessage {
