@@ -4,15 +4,16 @@
 //! complete agent runtime from config and frontend-specific sinks.
 
 use anyhow::Result;
-use duga_config::{Config, SandboxMode};
-use duga_core::{AgentLoop, Memory, Summarizer, SummaryFuture};
+use duga_config::{Config, SandboxMode, SummarizerKind};
+use duga_core::{AgentLoop, Memory, Summarizer};
 use duga_events::{EventSink, MultiSink};
 use duga_llm::LlmClient;
 use duga_sandbox::{CancellationToken, Workspace};
 use duga_tools::ToolDispatcher;
-use duga_types::llm::SummaryMessage;
 use duga_types::message::Message;
 use std::sync::Arc;
+
+use crate::summarizer::SemanticSummarizer;
 
 /// An assembled agent runtime ready to accept tasks.
 pub struct BuiltRuntime {
@@ -112,7 +113,11 @@ pub fn build_agent(
         config.memory.max_context_tokens,
     );
 
-    let summarizer = Arc::new(RuntimeSummarizer);
+    // Dispatch summarizer based on config.
+    let summarizer: Arc<dyn Summarizer> = match config.memory.summarizer {
+        SummarizerKind::Simple => Arc::new(RuntimeSummarizer),
+        SummarizerKind::Semantic => Arc::new(SemanticSummarizer::new(llm.clone())),
+    };
 
     let event_sink = Arc::new(MultiSink::new(event_sinks));
 
@@ -128,17 +133,19 @@ pub fn build_agent(
 }
 
 /// A simple summarizer that compresses context by retaining recent role labels.
+///
+/// Preserved for fallback; the default summarizer is now `SemanticSummarizer`.
 struct RuntimeSummarizer;
 
 impl Summarizer for RuntimeSummarizer {
-    fn summarize<'a>(&'a self, messages: &'a [Message]) -> SummaryFuture<'a> {
+    fn summarize<'a>(&'a self, messages: &'a [Message]) -> duga_core::SummaryFuture<'a> {
         Box::pin(async move {
             let mut content = String::from("Compressed context:");
             for message in messages.iter().take(16) {
                 content.push_str("\n- ");
                 content.push_str(&message.role.to_string());
             }
-            Ok(SummaryMessage::new(content))
+            Ok(duga_types::llm::SummaryMessage::new(content))
         })
     }
 }

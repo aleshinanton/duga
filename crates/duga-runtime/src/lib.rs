@@ -10,6 +10,7 @@ pub mod events;
 pub mod memory_context;
 pub mod providers;
 pub mod skills;
+pub mod summarizer;
 pub mod tools;
 
 pub use agent::{build_agent, sandbox_environment_context, tool_guidance, BuiltRuntime};

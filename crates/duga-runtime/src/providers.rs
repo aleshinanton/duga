@@ -140,7 +140,7 @@ mod tests {
     use super::*;
     use duga_config::{
         Config, EnvironmentConfig, FrontendConfig, MemoryConfig, PluginConfig, SandboxConfig,
-        WorkspaceConfig,
+        SummarizerKind, WorkspaceConfig,
     };
     use duga_types::config::AgentConfig;
     use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -203,6 +203,9 @@ mod tests {
             memory: MemoryConfig {
                 max_tokens: 1024,
                 compress_at_ratio: 0.8,
+                context_window_size: 0,
+                max_context_tokens: 0,
+                summarizer: SummarizerKind::Simple,
             },
             plugins: PluginConfig {
                 dir: "./plugins".into(),

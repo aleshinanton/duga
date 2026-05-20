@@ -274,6 +274,21 @@ pub struct EnvironmentConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SummarizerKind {
+    /// Role-label summarizer (trivial, fast, no LLM call).
+    Simple,
+    /// LLM-driven semantic summarizer (preserves topic identity).
+    Semantic,
+}
+
+impl Default for SummarizerKind {
+    fn default() -> Self {
+        Self::Semantic
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct MemoryConfig {
     pub max_tokens: usize,
     pub compress_at_ratio: f64,
@@ -286,6 +301,10 @@ pub struct MemoryConfig {
     /// Set to 0 to disable.
     #[serde(default = "default_max_context_tokens")]
     pub max_context_tokens: usize,
+    /// Which summarizer to use for context compression.
+    /// "semantic" (default) uses an LLM call; "simple" uses role labels.
+    #[serde(default)]
+    pub summarizer: SummarizerKind,
 }
 
 fn default_context_window_size() -> usize {
@@ -604,6 +623,7 @@ memory:
   compress_at_ratio: 0.8
   context_window_size: 50
   max_context_tokens: 12000
+  summarizer: semantic
 plugins:
   dir: {}
   modules:
