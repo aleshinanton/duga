@@ -851,6 +851,11 @@ struct Memory {
     /// Pinned at construction; never compressed.
     system_messages: Vec<Message>,
 
+    /// Task anchoring prefix pinned at position 0 of every request.
+    /// Never compressed, never evicted. Set per-run by AgentLoop.
+    /// Text: "CURRENT TASK: {task}\nAll prior context is background only..."
+    task_anchor: Option<Message>,
+
     /// At most one summary message exists at any time. Pinned task facts
     /// (§22) live inside it, prefixed and protected from re-compression.
     summary: Option<SummaryMessage>,
@@ -861,6 +866,12 @@ struct Memory {
     /// Soft budget. Counted via `LlmClient::count_tokens` (§6a) using the
     /// active provider's tokenizer — the runtime never guesses.
     max_tokens: usize,
+
+    /// Sliding window config for restored history (0 = disabled).
+    context_window_size: usize,
+
+    /// Hard token budget for history loaded from previous sessions (0 = disabled).
+    max_context_tokens: usize,
 }
 
 impl Memory {
@@ -892,6 +903,9 @@ single new SummaryMessage  (replaces previous summary)
 
 Rules:
 
+- **Task anchor excluded.** The `task_anchor` message (§21) lives in its own
+  field and is never passed to the summarizer. It is a persistent directive,
+  not conversation content to be summarized.
 - **Summaries never summarize summaries.** The previous summary is included
   in the summarizer's input as plain context, but the output replaces it
   wholesale.
@@ -901,7 +915,45 @@ Rules:
 - **Recent context preserved.** The newest half of `recent_messages` is
   retained verbatim; only the older half is fed to the summarizer.
 
-## 22.1 Summary overflow
+## 22a. Semantic Summarizer
+
+The default summarizer (`SemanticSummarizer`) uses an LLM call to produce
+meaningful summaries instead of role-label lists:
+
+```text
+Summary:
+- User asked about Portuguese citizenship law (Lei 37/81)
+- Key findings: Article 6 covers naturalization requirements, 5-year residency needed
+- DRE consolidated version fetched but not fully parsed
+- Unresolved: exact residency period requirements for different cases
+```
+
+**Incremental updates:** When a prior summary exists, the summarizer prompt
+shifts to an update mode — the LLM receives the existing summary plus new
+messages and extends/rewrites rather than re-summarizing from scratch.
+
+**Failure handling:** A 15-second timeout guards the summarizer call. On timeout
+or LLM error, it falls back to the role-label (`"simple"`) summarizer so the
+agent can continue. Configurable via `memory.summarizer: "semantic" | "simple"`.
+
+## 22.1 Sliding window on restored history
+
+When restoring conversation history from a previous session:
+
+1. All messages from the last `LlmRequest` are loaded from `session.jsonl`.
+2. System messages are filtered out (a fresh system prompt is provided).
+3. If `context_window_size > 0`, only the last N messages are kept.
+4. If `max_context_tokens > 0`, oldest messages are dropped until the
+   character-based token estimate fits under the budget.
+   Estimate: `sum(message_text_chars / 4)` with a floor of 64 tokens per
+   tool-call/empty message. No LLM round-trip required.
+5. Orphaned tool messages are normalized out.
+
+Pinned messages (including the first user task) are never removed during
+window enforcement. Set both limits to `0` for backward-compatible
+"load all" behavior.
+
+## 22.2 Summary overflow
 
 If, after compression, system + summary + retained-recent still exceeds
 `max_tokens`, the runtime:
@@ -1254,8 +1306,14 @@ environment:
   # PATH is set internally to /usr/bin:/bin and is NOT inherited (§20).
 
 memory:
-  max_tokens: 8192
+  max_tokens: 65536
   compress_at_ratio: 0.8
+  # Sliding window for session history restoration (0 = disabled).
+  context_window_size: 50
+  # Hard token budget for restored history (0 = disabled).
+  max_context_tokens: 12000
+  # Summarizer type: "semantic" (LLM-driven, default) or "simple" (role-label fallback).
+  summarizer: semantic
 
 plugins:
   dir: "./plugins"

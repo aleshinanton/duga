@@ -50,6 +50,9 @@ environment:
 memory:
   max_tokens: 4096
   compress_at_ratio: 0.8
+  context_window_size: 50
+  max_context_tokens: 12000
+  summarizer: semantic
 plugins:
   dir: "./plugins"
   modules: []
