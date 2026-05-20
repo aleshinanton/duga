@@ -2,6 +2,7 @@
 
 **Repository:** `aleshinanton/duga`  
 **Generated:** 2026-05-10  
+**Updated:** 2026-05-20 (added EPIC-23–25 context management)  
 **Spec version:** 1.2  
 **Plan version:** Implementation-Grade Execution Plan  
 
@@ -32,7 +33,11 @@
 | EPIC-19 | Provider Compatibility Follow-up | 4 | §6a, §32 | 14 |
 | EPIC-20 | Provider API Key and Base URL Config | 4 | §32 | 14 |
 | EPIC-21 | Binary Allowlist Patterns | 4 | §16, §17 | 11 |
-| **Total** | | **146** | | **612** |
+| EPIC-22 | Step Descriptions | 5 | §24–25 | 18 |
+| EPIC-23 | Task Anchoring Prefix | 3 | §21, §26 | 6 |
+| EPIC-24 | Sliding Window & Budget Enforcement | 4 | §21–23 | 8.5 |
+| EPIC-25 | Semantic Summarization | 4 | §21–23 | 8.5 |
+| **Total** | | **162** | | **653** |
 
 ---
 
