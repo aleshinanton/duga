@@ -11,6 +11,9 @@ use std::collections::VecDeque;
 #[derive(Debug)]
 pub struct Memory {
     system_messages: Vec<Message>,
+    /// Task anchoring prefix pinned at position 0 of every request.
+    /// Never compressed, never evicted.
+    task_anchor: Option<Message>,
     summary: Option<SummaryMessage>,
     recent_messages: VecDeque<Message>,
     max_tokens: usize,
@@ -32,6 +35,7 @@ impl Memory {
 
         Self {
             system_messages,
+            task_anchor: None,
             summary: None,
             recent_messages: VecDeque::new(),
             max_tokens,
@@ -64,6 +68,20 @@ impl Memory {
         self.pinned_task.as_deref()
     }
 
+    /// Set the task anchoring prefix that is pinned at position 0 of every request.
+    ///
+    /// The anchor is never included in compression input nor evicted by the
+    /// token budget.  Passing `None` clears any existing anchor.
+    pub fn set_task_anchor(&mut self, task: Option<String>) {
+        self.task_anchor = task.map(|t| {
+            let mut msg = Message::system(format!(
+                "CURRENT TASK: {t}\nAll prior context is background only. Focus exclusively on the current task."
+            ));
+            msg.pinned = true;
+            msg
+        });
+    }
+
     pub fn push_user(&mut self, task: String) {
         let should_pin = self.pinned_task.is_none();
         let mut message = Message::user(task.clone());
@@ -91,10 +109,15 @@ impl Memory {
 
     pub fn messages(&self) -> Vec<Message> {
         let mut messages = Vec::with_capacity(
-            self.system_messages.len()
+            usize::from(self.task_anchor.is_some())
+                + self.system_messages.len()
                 + usize::from(self.summary.is_some())
                 + self.recent_messages.len(),
         );
+        // Task anchor at position 0 — never evicted.
+        if let Some(anchor) = &self.task_anchor {
+            messages.push(anchor.clone());
+        }
         messages.extend(self.system_messages.iter().cloned());
         if let Some(summary) = &self.summary {
             messages.push(Self::summary_to_message(summary));
@@ -140,7 +163,11 @@ impl Memory {
     }
 
     fn compression_input(&self, oldest: Vec<Message>, pinned_facts: &[String]) -> Vec<Message> {
-        let mut input = Vec::with_capacity(oldest.len() + usize::from(self.summary.is_some()) + 1);
+        // The task anchor lives in its own field and is never passed here
+        // (it is not part of recent_messages).  Therefore no explicit
+        // filtering is needed — the anchor is excluded by construction.
+        let mut input =
+            Vec::with_capacity(oldest.len() + usize::from(self.summary.is_some()) + 1);
         if !pinned_facts.is_empty() {
             input.push(Message::system(format_pinned_facts(pinned_facts)));
         }
@@ -509,6 +536,113 @@ mod tests {
             recent[0].role != Role::Tool,
             "first recent message must not be an orphaned tool role"
         );
+    }
+
+    // ── Task anchoring (EPIC-23) tests ──────────────────────────────────
+
+    #[test]
+    fn task_anchor_at_position_zero() {
+        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8);
+        memory.set_task_anchor(Some("test task".into()));
+        memory.push_user("hello".into());
+
+        let messages = memory.messages();
+        assert!(messages[0].role == Role::System);
+        let text = message_text(&messages[0]);
+        assert!(text.contains("CURRENT TASK: test task"));
+        assert!(text.contains("Focus exclusively on the current task"));
+        // System messages come after the anchor.
+        assert_eq!(messages[1].role.to_string(), "system");
+    }
+
+    #[test]
+    fn task_anchor_excluded_from_messages_when_not_set() {
+        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8);
+        memory.push_user("task".into());
+
+        let messages = memory.messages();
+        assert_eq!(messages[0].role.to_string(), "system");
+        // The anchor is not there — first system message is the one we passed.
+        let text = message_text(&messages[0]);
+        assert_eq!(text, "sys");
+    }
+
+    #[test]
+    fn task_anchor_not_in_recent_messages() {
+        let mut memory = Memory::new(vec![], 100, 0.8);
+        memory.set_task_anchor(Some("task".into()));
+        memory.push_user("hello".into());
+
+        // The anchor lives in its own field, not in recent_messages.
+        assert_eq!(memory.recent_messages().len(), 1);
+        assert_eq!(memory.recent_messages()[0].role, Role::User);
+    }
+
+    #[tokio::test]
+    async fn compression_input_excludes_task_anchor() {
+        let mut memory = Memory::new(vec![Message::system("sys")], 100, 0.8);
+        memory.set_task_anchor(Some("my task".into()));
+        for i in 0..10 {
+            memory.push_user(format!("message {i}"));
+        }
+        let summarizer = RecordingSummarizer::new();
+
+        memory
+            .compress(&summarizer, &LinearTokenizer { per_message: 1 })
+            .await
+            .unwrap();
+
+        let calls = summarizer.calls.lock().unwrap();
+        // The summarizer input should NOT contain the task anchor text.
+        for msg in &calls[0] {
+            let text = message_text(msg);
+            assert!(
+                !text.contains("CURRENT TASK:"),
+                "task anchor should not be in compression input, got: {text}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn task_anchor_survives_drop_until_budget() {
+        // Set a tight budget so drop_until_budget fires but still
+        // accommodates the anchor + system + summary + pinned user.
+        // Non-pinned assistant messages get dropped first.
+        let mut memory = Memory::new(vec![Message::system("sys")], 5, 1.0);
+        memory.set_task_anchor(Some("critical task".into()));
+        memory.push_user("user1".into()); // pinned (first user)
+        memory.push_assistant(AssistantMessage {
+            text: Some("reply1".into()),
+            tool_calls: vec![],
+            reasoning_content: None,
+        }); // NOT pinned, can be evicted
+
+        let summarizer = RecordingSummarizer::new();
+        memory
+            .compress(&summarizer, &LinearTokenizer { per_message: 1 })
+            .await
+            .unwrap();
+
+        // The anchor must still be present in messages().
+        let messages = memory.messages();
+        let anchor_text = message_text(&messages[0]);
+        assert!(
+            anchor_text.contains("CURRENT TASK: critical task"),
+            "anchor should survive budget enforcement"
+        );
+    }
+
+    #[test]
+    fn set_task_anchor_none_clears_anchor() {
+        let mut memory = Memory::new(vec![], 100, 0.8);
+        memory.set_task_anchor(Some("task".into()));
+        assert!(memory.task_anchor.is_some());
+
+        memory.set_task_anchor(None);
+        assert!(memory.task_anchor.is_none());
+
+        let messages = memory.messages();
+        assert!(messages.is_empty());
     }
 
     #[tokio::test]

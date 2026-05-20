@@ -77,7 +77,18 @@ impl AgentLoop {
         self.tools.reset_limits();
         self.emit(Event::AgentStarted { task: task.clone() })
             .await?;
-        self.memory.push_user(task);
+
+        // Set the task anchoring prefix so the LLM stays focused on the
+        // current task even when the context contains older topics.
+        self.memory.set_task_anchor(Some(task.clone()));
+
+        // Append a reminder suffix to the user message as a
+        // belt-and-suspenders measure for providers that may ignore
+        // system messages.
+        let anchored_task = format!(
+            "{task}\n\nReminder: Focus exclusively on the current task: {task}"
+        );
+        self.memory.push_user(anchored_task);
 
         for step in 1..=self.config.limits.max_steps {
             if let Err(error) = self.check_limits(started, &cancellation) {

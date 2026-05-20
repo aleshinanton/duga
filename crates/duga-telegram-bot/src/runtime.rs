@@ -98,6 +98,11 @@ impl TelegramRuntime {
         let conversation_history = load_conversation_history(&jsonl_path);
 
         // Build frontend context for system prompt.
+        //
+        // The task anchoring prefix ("CURRENT TASK: ...") is injected by
+        // AgentLoop::run() via Memory::set_task_anchor() and always appears
+        // at position 0 of every LLM request.  We build the remaining
+        // system prompt here — it sits right after the anchor.
         let env_ctx = sandbox_environment_context(&self.config);
         let tool_guide = tool_guidance();
         let system_prompt = format!(
