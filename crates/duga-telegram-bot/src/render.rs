@@ -130,8 +130,8 @@ impl TelegramEventRenderer {
 
     /// Start a new process message (or edit existing).
     async fn start_process_message(&mut self, task: &str) -> Result<(), teloxide::RequestError> {
-        let preview = if task.len() > 80 {
-            format!("{}…", &task[..77])
+        let preview = if task.chars().count() > 80 {
+            format!("{}…", task.chars().take(77).collect::<String>())
         } else {
             task.to_string()
         };
