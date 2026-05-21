@@ -10,8 +10,8 @@ use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use duga_config::{Config, TelegramConfig};
 use duga_core::loop_context::LoopContext;
-use duga_core::loops::SimpleReActLoop;
-use duga_core::Loop;
+use duga_core::loops::{register_default_loops, SimpleReActLoop};
+use duga_core::{Loop, LoopRegistry};
 use duga_events::{Event, JsonlSink, RedactingSink, StoredEvent};
 use duga_runtime::events::FrontendEventBridge;
 use duga_runtime::{
@@ -109,11 +109,22 @@ impl TelegramRuntime {
         // system prompt here — it sits right after the anchor.
         let env_ctx = sandbox_environment_context(&self.config);
         let tool_guide = tool_guidance();
+
+        // Build the strategies prompt from the loop registry.
+        let mut reg = LoopRegistry::new();
+        reg.register(Box::new(SimpleReActLoop))
+            .expect("SimpleReActLoop must register successfully");
+        register_default_loops(&mut reg);
+        let strategies = reg.build_strategies_prompt(
+            &self.config.agent.loop_config.enabled_loops,
+        );
+
         let system_prompt = format!(
             "You are duga, a safe coding agent operating through Telegram.\n\
              Chat ID: {chat_id}\n\n\
              {env_ctx}\n\n\
              {tool_guide}\n\n\
+             {strategies}\n\n\
              When facing a complex or multi-step problem, use the `think` tool first to \
              plan your approach before acting. This saves steps and produces better results.\n\
              Prefer `think` over running many small `shell` commands to explore the environment.\n\
