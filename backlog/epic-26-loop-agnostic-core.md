@@ -880,3 +880,27 @@ T26.14 (Documentation — depends on T26.1–T26.13)
 | System prompt grows with many loops | Low — each loop adds ~1 sentence | Strategy section is ~3 lines + 1 line per enabled loop. Even with 10 loops it's under 20 lines. |
 | Infinite delegation chains | Low — depth counter prevents this | `max_delegation_depth` enforces hard limit at `DelegateTool` level. Default 2 prevents runaway chains. |
 | LLM never learns to delegate | Medium — model may never emit `delegate` tool call | Acceptable — `simple_react` handles any task. Delegation is an optimization. Can add a prompt nudge in system message: "For complex multi-step tasks, consider using the delegate tool." |
+
+---
+
+## Implementation Status (2026-05-21)
+
+| Task | Name | Status | Notes |
+|------|------|--------|-------|
+| TASK-26.1 | Loop trait, LoopContext, LoopResult, Event::LoopDelegated | ✅ Done | 138 tests pass |
+| TASK-26.2 | LoopRegistry with prompt generation | ✅ Done | |
+| TASK-26.3 | Extract SimpleReActLoop | ✅ Done | Zero behavior change |
+| TASK-26.4 | DelegateTool (schema-only) | ✅ Done | Registered in dispatcher |
+| TASK-26.5 | Delegation intercept in SimpleReActLoop | ✅ Done | Depth limiting, error handling |
+| TASK-26.6 | LoopConfig in AgentConfig | ✅ Done | Backward-compatible defaults |
+| TASK-26.7 | Wire into harness/runtime/bot | ✅ Done | All 3 frontends migrated |
+| TASK-26.13 | System prompt + observability | ✅ Partial | Strategies section + `#[instrument]` |
+| TASK-26.15 | Remove deprecated AgentLoop | ✅ Partial | `Memory::restore_history`, deprecated attrs |
+| TASK-26.8 | ProblemSolving loop | ⬜ Not started | Future epic |
+| TASK-26.9 | Verification loop | ⬜ Not started | Future epic |
+| TASK-26.10 | Decomposition loop | ⬜ Not started | Future epic |
+| TASK-26.11 | Search loop (RAG) | ⬜ Not started | Future epic |
+| TASK-26.12 | Register all + integration tests | ⬜ Not started | Depends on T26.8-26.11 |
+| TASK-26.14 | Documentation + migration guide | ⬜ Not started | |
+
+**Core architecture shipped. Specialized loops deferred to future epics.**
