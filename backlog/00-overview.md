@@ -2,7 +2,7 @@
 
 **Repository:** `aleshinanton/duga`  
 **Generated:** 2026-05-10  
-**Updated:** 2026-05-20 (added EPIC-23–25 context management)  
+**Updated:** 2026-05-21 (added EPIC-26 loop-agnostic core)  
 **Spec version:** 1.2  
 **Plan version:** Implementation-Grade Execution Plan  
 
@@ -37,7 +37,8 @@
 | EPIC-23 | Task Anchoring Prefix | 3 | §21, §26 | 6 |
 | EPIC-24 | Sliding Window & Budget Enforcement | 4 | §21–23 | 8.5 |
 | EPIC-25 | Semantic Summarization | 4 | §21–23 | 8.5 |
-| **Total** | | **162** | | **653** |
+| EPIC-26 | Loop-Agnostic Core | 15 | §5 (redesign) | 86 |
+| **Total** | | **177** | | **739** |
 
 ---
 
@@ -430,7 +431,7 @@ Applied consistently across all tasks:
 # Type
 epic/foundation, epic/security, epic/tools, epic/builtin-tools,
 epic/execution, epic/memory, epic/events, epic/llm, epic/validation,
-epic/loop, epic/wasm, epic/cli, epic/observability, epic/testing,
+epic/loop, epic/core, epic/wasm, epic/cli, epic/observability, epic/testing,
 epic/build, epic/telegram, epic/tui, epic/frontend-runtime,
 epic/provider-compatibility
 
@@ -480,3 +481,8 @@ status/ready (unblocked, can be picked up)
 | `epic-19-provider-compatibility.md` | EPIC-19: Provider Compatibility Follow-up (4 tasks) |
 | `epic-20-provider-config.md` | EPIC-20: Provider API Key and Base URL Config (4 tasks) |
 | `epic-21-binary-allowlist-patterns.md` | EPIC-21: Binary Allowlist Patterns (4 tasks) |
+| `epic-22-step-descriptions.md` | EPIC-22: Step Descriptions in Frontend Events (5 tasks) |
+| `epic-23-task-anchoring.md` | EPIC-23: Task Anchoring Prefix (3 tasks) |
+| `epic-24-sliding-window.md` | EPIC-24: Sliding Window & Budget Enforcement (4 tasks) |
+| `epic-25-semantic-summarization.md` | EPIC-25: Semantic Summarization (4 tasks) |
+| `epic-26-loop-agnostic-core.md` | EPIC-26: Loop-Agnostic Core — Agent Loop System Redesign (15 tasks) |
