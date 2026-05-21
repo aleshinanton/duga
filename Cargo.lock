@@ -607,6 +607,7 @@ dependencies = [
  "duga-tools",
  "duga-tools-builtin",
  "duga-types",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
