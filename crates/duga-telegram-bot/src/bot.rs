@@ -111,6 +111,11 @@ async fn handle_message(
             handle_command(&bot, chat_id, t, &session_manager).await;
             return;
         }
+        // Also recognise plain "stop"/"cancel" (case-insensitive) as /stop.
+        if is_cancel_text(t) {
+            handle_command(&bot, chat_id, "/stop", &session_manager).await;
+            return;
+        }
     }
 
     let task = match text {
@@ -216,6 +221,13 @@ async fn handle_command(
     let _ = bot.send_message(chat_id, reply).await;
 }
 
+/// Returns `true` if the text is a plain cancel/stop request (case-insensitive).
+/// This catches "stop" and "cancel" without requiring the `/` prefix.
+pub fn is_cancel_text(text: &str) -> bool {
+    let lowered = text.trim().to_lowercase();
+    lowered == "stop" || lowered == "cancel"
+}
+
 async fn handle_attachment_message(
     bot: &Bot,
     msg: &Message,
@@ -249,5 +261,50 @@ async fn handle_attachment_message(
                 .send_message(chat_id, "No supported attachments found in this message.")
                 .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_cancel_text_lowercase() {
+        assert!(is_cancel_text("stop"));
+        assert!(is_cancel_text("cancel"));
+    }
+
+    #[test]
+    fn is_cancel_text_case_insensitive() {
+        assert!(is_cancel_text("Stop"));
+        assert!(is_cancel_text("STOP"));
+        assert!(is_cancel_text("Cancel"));
+        assert!(is_cancel_text("CANCEL"));
+        assert!(is_cancel_text("StOp"));
+        assert!(is_cancel_text("cAnCeL"));
+    }
+
+    #[test]
+    fn is_cancel_text_with_whitespace() {
+        assert!(is_cancel_text("  stop  "));
+        assert!(is_cancel_text("\tstop\n"));
+        assert!(is_cancel_text(" cancel "));
+    }
+
+    #[test]
+    fn is_cancel_text_rejects_non_cancel() {
+        assert!(!is_cancel_text("hello"));
+        assert!(!is_cancel_text("/stop"));     // handled by / prefix check
+        assert!(!is_cancel_text("stopping"));
+        assert!(!is_cancel_text("stopp"));
+        assert!(!is_cancel_text(""));
+    }
+
+    #[test]
+    fn is_cancel_text_rejects_partial_matches() {
+        assert!(!is_cancel_text("stopping"));
+        assert!(!is_cancel_text("stop it"));
+        assert!(!is_cancel_text("cancelling"));
+        assert!(!is_cancel_text("please stop"));
     }
 }

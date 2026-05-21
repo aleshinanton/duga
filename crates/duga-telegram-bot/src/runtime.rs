@@ -142,25 +142,34 @@ impl TelegramRuntime {
         }
 
         // Build LoopContext and run via SimpleReActLoop.
-        let loop_impl = SimpleReActLoop;
-        let agent_config = self.config.agent.clone();
-        let loop_config = &agent_config.loop_config;
-        let mut ctx = LoopContext {
-            config: &agent_config,
-            memory: &mut runtime.memory,
-            llm: &runtime.llm,
-            tools: &runtime.dispatcher,
-            workspace: &runtime.workspace,
-            event_sink: &runtime.event_sink,
-            summarizer: &runtime.summarizer,
-            cancellation: &cancellation,
-            registry: &runtime.registry,
-            max_refinement_iterations: loop_config.max_refinement_iterations,
-            max_delegation_depth: loop_config.max_delegation_depth,
-            delegation_depth: 0,
-        };
+        // Scope ctx so borrows are released before we drop `runtime`.
+        let result = {
+            let loop_impl = SimpleReActLoop;
+            let agent_config = self.config.agent.clone();
+            let loop_config = &agent_config.loop_config;
+            let mut ctx = LoopContext {
+                config: &agent_config,
+                memory: &mut runtime.memory,
+                llm: &runtime.llm,
+                tools: &runtime.dispatcher,
+                workspace: &runtime.workspace,
+                event_sink: &runtime.event_sink,
+                summarizer: &runtime.summarizer,
+                cancellation: &cancellation,
+                registry: &runtime.registry,
+                max_refinement_iterations: loop_config.max_refinement_iterations,
+                max_delegation_depth: loop_config.max_delegation_depth,
+                delegation_depth: 0,
+            };
 
-        let result = loop_impl.run(task.clone(), &mut ctx).await;
+            loop_impl.run(task.clone(), &mut ctx).await
+        }; // ctx dropped here → borrows released
+
+        // Drop runtime (which holds the frontend event sink senders)
+        // BEFORE awaiting the renderer.  Otherwise the renderer blocks on
+        // rx.recv() waiting for the channel to close, but the sender is
+        // still alive inside `runtime` — deadlock.
+        drop(runtime);
 
         let _ = renderer_handle.await;
 
@@ -385,5 +394,56 @@ mod tests {
         assert_eq!(result.len(), 5);
         assert_eq!(result[2].role, Role::Tool);
         assert_eq!(result[3].role, Role::Tool);
+    }
+
+    // ── Renderer deadlock regression test ──────────────────────────
+
+    /// Verify that the frontend event bridge completes cleanly: when the
+    /// sender is dropped, the receiver stream terminates promptly.
+    /// This guards against the deadlock fixed in
+    /// `run_task_for_chat` where `renderer_handle.await` blocked
+    /// indefinitely because the sending half was still alive inside
+    /// `runtime`.
+    #[tokio::test]
+    async fn frontend_bridge_closes_when_sender_dropped() {
+        use duga_runtime::events::{FrontendEvent, FrontendEventBridge, FrontendEventSink};
+        use duga_events::{Event, EventSink};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let (tx, mut bridge) = FrontendEventBridge::new(16);
+        let sink = Arc::new(FrontendEventSink::new(tx));
+
+        // Spawn a "renderer" that collects events.
+        let renderer_handle = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(event) = bridge.recv().await {
+                events.push(event);
+            }
+            events
+        });
+
+        // Emit a few events and then drop the sender.
+        sink.emit(Event::AgentStarted {
+            task: "test".into(),
+        })
+        .await
+        .unwrap();
+        sink.emit(Event::AgentFinished {
+            text: Some("done".into()),
+        })
+        .await
+        .unwrap();
+        drop(sink);
+
+        // The renderer must complete within 5 seconds.
+        let events = tokio::time::timeout(Duration::from_secs(5), renderer_handle)
+            .await
+            .expect("renderer deadlocked — sender was dropped but receiver did not close")
+            .expect("renderer task panicked");
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], FrontendEvent::RunStarted { .. }));
+        assert!(matches!(events[1], FrontendEvent::RunFinished { .. }));
     }
 }

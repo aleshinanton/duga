@@ -206,3 +206,84 @@ impl SessionManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_sets_flag_and_triggers_token() {
+        let manager = SessionManager::new();
+        let cancellation = duga_sandbox::CancellationToken::new();
+
+        // Set up a session with an active run.
+        {
+            let mut session = manager.sessions.entry(1).or_default();
+            session.active = true;
+            session.cancellation = Some(cancellation.clone());
+            session.cancelled = false;
+        }
+
+        assert!(!cancellation.is_cancelled());
+
+        manager.cancel(1);
+
+        // Token should be cancelled.
+        assert!(cancellation.is_cancelled());
+
+        // Session should be marked cancelled.
+        let session = manager.sessions.get(&1).unwrap();
+        assert!(session.cancelled);
+    }
+
+    #[test]
+    fn cancel_on_nonexistent_chat_is_noop() {
+        let manager = SessionManager::new();
+        // Should not panic.
+        manager.cancel(999);
+    }
+
+    #[test]
+    fn cancel_clears_pending_confirmation() {
+        let manager = SessionManager::new();
+        let cancellation = duga_sandbox::CancellationToken::new();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+
+        {
+            let mut session = manager.sessions.entry(1).or_default();
+            session.active = true;
+            session.cancellation = Some(cancellation.clone());
+            session.pending_confirmation = Some(PendingConfirmation {
+                confirmation_id: "test-123".into(),
+                resolver: tx,
+            });
+        }
+
+        manager.cancel(1);
+
+        let session = manager.sessions.get(&1).unwrap();
+        assert!(session.pending_confirmation.is_none());
+    }
+
+    #[test]
+    fn status_reports_active_and_idle() {
+        let manager = SessionManager::new();
+
+        // No session → idle.
+        assert!(manager.status(1).contains("No active"));
+
+        // Active session.
+        {
+            let mut session = manager.sessions.entry(1).or_default();
+            session.active = true;
+        }
+        assert!(manager.status(1).contains("Active"));
+
+        // Inactive session.
+        {
+            let mut session = manager.sessions.entry(1).or_default();
+            session.active = false;
+        }
+        assert!(manager.status(1).contains("No active"));
+    }
+}
