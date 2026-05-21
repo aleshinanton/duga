@@ -5,32 +5,16 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cli::Cli;
 use duga_config::Config;
-use duga_core::{AgentLoop, Memory, Summarizer, SummaryFuture};
+use duga_core::loop_context::LoopContext;
+use duga_core::loops::SimpleReActLoop;
+use duga_core::Loop;
 use duga_events::{JsonlSink, MultiSink, NullSink};
 use duga_runtime::{
-    build_dispatcher,
+    build_agent, build_dispatcher,
     providers::{build_llm, resolve_provider},
-    sandbox_environment_context, tool_guidance,
 };
 use duga_sandbox::{CancellationToken, Workspace};
-use duga_types::llm::SummaryMessage;
-use duga_types::message::Message;
 use std::sync::Arc;
-
-struct HarnessSummarizer;
-
-impl Summarizer for HarnessSummarizer {
-    fn summarize<'a>(&'a self, messages: &'a [Message]) -> SummaryFuture<'a> {
-        Box::pin(async move {
-            let mut content = String::from("Compressed context:");
-            for message in messages.iter().take(16) {
-                content.push_str("\n- ");
-                content.push_str(&message.role.to_string());
-            }
-            Ok(SummaryMessage::new(content))
-        })
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -63,36 +47,40 @@ async fn main() -> Result<()> {
 
     let event_sink = build_sinks(&cli, &config)?;
     let llm = build_llm(&selection.provider, &selection.model, &config)?;
-    let env_ctx = sandbox_environment_context(&config);
-    let tool_guide = tool_guidance();
-    let system_prompt = format!(
-        "You are duga, a safe coding agent.\n\n\
-         {env_ctx}\n\n\
-         {tool_guide}\n\n\
-         When facing a complex or multi-step problem, use the `think` tool first to \
-         plan your approach before acting. Prefer `think` over running many small \
-         `shell` commands to explore the environment.",
-    );
-    let memory = Memory::new(
-        vec![Message::system(system_prompt)],
-        config.memory.max_tokens,
-        config.memory.compress_at_ratio,
-        config.memory.context_window_size,
-        config.memory.max_context_tokens,
-    );
-    let mut agent = AgentLoop::new(
-        config.agent,
-        memory,
-        Arc::new(HarnessSummarizer),
-        llm,
-        dispatcher,
-        (*workspace).clone(),
-        event_sink,
-    );
+
+    // Use the shared runtime builder.
+    let mut runtime = build_agent(
+        &config,
+        llm.clone(),
+        dispatcher.clone(),
+        workspace.clone(),
+        vec![event_sink],
+        None,
+    )?;
 
     let cancellation = CancellationToken::new();
     let signal_handle = signal::setup_signal_handler(cancellation.clone());
-    let result = agent.run(task, cancellation).await;
+
+    // Build LoopContext and run via SimpleReActLoop.
+    let loop_impl = SimpleReActLoop;
+    let agent_config = config.agent.clone();
+    let loop_config = &agent_config.loop_config;
+    let mut ctx = LoopContext {
+        config: &agent_config,
+        memory: &mut runtime.memory,
+        llm: &runtime.llm,
+        tools: &runtime.dispatcher,
+        workspace: &runtime.workspace,
+        event_sink: &runtime.event_sink,
+        summarizer: &runtime.summarizer,
+        cancellation: &cancellation,
+        registry: &runtime.registry,
+        max_refinement_iterations: loop_config.max_refinement_iterations,
+        max_delegation_depth: loop_config.max_delegation_depth,
+        delegation_depth: 0,
+    };
+
+    let result = loop_impl.run(task, &mut ctx).await;
     signal_handle.abort();
 
     match result {

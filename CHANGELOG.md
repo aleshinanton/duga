@@ -8,6 +8,27 @@ This project has not published versioned releases yet. Entries below summarize t
 
 ### Added
 
+- **EPIC-26: Loop-Agnostic Core — Agent Loop System Redesign.**  Complete architectural change: the core agent loop is now fully loop-agnostic.  Any loop type can be added without touching the dispatcher, bot, classifier prompt, or output validation.  Key changes:
+  - **`Loop` trait** (`duga-core::Loop`) — defines the contract every loop implements: `id()`, `name()`, `description()`, and `run()`.  Object-safe via manual `LoopRunFuture` type alias (same pattern as `Summarizer`/`SummaryFuture`).
+  - **`LoopContext`** — borrowed runtime context passed to every `Loop::run()` invocation.  Holds all dependencies (config, memory, LLM, tools, workspace, event sink, summarizer, cancellation, registry, delegation depth).
+  - **`LoopResult`** — unified return type (supersedes `AgentRunResult`) with `loop_id` field recording which loop produced the result.
+  - **`LoopRegistry`** — maps `loop_id → Box<dyn Loop>`, with `build_strategies_prompt()` auto-generating the "Available Strategies" prompt section from registered + enabled loops.
+  - **`SimpleReActLoop`** — the existing ReAct logic extracted into a loop implementation.  Zero behavior change.  Always the entry point for bots.
+  - **`DelegateTool`** — built-in tool visible to the LLM, with dynamic description listing enabled loops.  The LLM can emit `{"tool": "delegate", "args": {"loop": "problem_solving", "reason": "..."}}` to hand control to a specialized loop.
+  - **Delegation intercept** — `SimpleReActLoop` intercepts `delegate` calls before tool dispatch.  Validates depth limit, looks up the target loop in the registry, runs it with an incremented depth context, and returns the delegated result as the final answer.
+  - **`LoopConfig`** — new `agent.loop` config block with `enabled_loops`, `max_refinement_iterations` (default 3), and `max_delegation_depth` (default 2).  Backward-compatible: existing configs without `loop:` block get sensible defaults.
+  - **`Event::LoopDelegated`** — new event emitted on every successful delegation, carrying `from`, `to`, `reason`, and `depth` fields.
+  - **`BuiltRuntime`** restructured** — now holds all infrastructure as public fields (memory, registry, llm, dispatcher, etc.) instead of a monolithic `AgentLoop`.  Frontends build a `LoopContext` and run via `SimpleReActLoop`.
+  - **System prompt integration** — the "Available Strategies" section is injected into the system prompt at agent construction time, derived from config's `enabled_loops`.
+
+### Changed
+
+- **`AgentLoop` and `AgentRunResult` are deprecated** — consumers should use `SimpleReActLoop` + `LoopContext` + `LoopResult` instead.  Backward-compatible shim remains.
+- **System prompt now includes a "Available Strategies" section** that tells the LLM about the `delegate` tool and lists enabled loop types with descriptions.
+- **All frontends (CLI harness, Telegram bot) now use the loop system** — they build a `LoopContext` and run via `SimpleReActLoop`.
+
+### Added (continued)
+
 - **EPIC-23: Task anchoring prefix.** A persistent `CURRENT TASK: ...` system message is pinned at position 0 of every LLM request so the model cannot drift to older topics in a saturated context window. The anchor is never compressed, never evicted by the token budget, and excluded from summarization input. A reminder suffix (`"Reminder: Focus exclusively on the current task: {task}"`) is appended to the user message as belt-and-suspenders.
 - **EPIC-24: Sliding window and token budget enforcement.** Replaces the previous "load ALL messages" approach with configurable limits. New `memory.context_window_size` (default 50) caps the number of recent messages loaded from session history. `memory.max_context_tokens` (default 12000) provides a hard token budget — oldest messages are dropped until the estimate fits. Uses character-based token estimation (`estimate_tokens()` in `duga-core`) with no LLM round-trip. Applied in both `load_conversation_history()` (Telegram) and `Memory::enforce_window()` (CLI/TUI). Pinned messages are never removed. Set either to 0 to disable (backward-compatible).
 - **EPIC-25: Semantic summarization.** Replaces the trivial role-label summarizer (`"Compressed context:\n- user\n- assistant..."`) with an LLM-driven `SemanticSummarizer` that produces 3-5 bullet points preserving topic identity, key findings, decisions, and unresolved questions. Supports incremental updates — subsequent compressions include the previous summary as context so the LLM extends rather than rewrites. Falls back to role-label summary on LLM error or timeout (15s). Configurable via `memory.summarizer: "semantic"` (default) or `"simple"`.

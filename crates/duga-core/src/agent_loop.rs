@@ -61,6 +61,7 @@ impl AgentLoop {
     ///
     /// The sliding window and token budget from the memory config are applied
     /// after loading to prevent irrelevant history from saturating context.
+    #[deprecated(note = "use Memory::restore_history() via BuiltRuntime::memory_mut()")]
     pub fn restore_history(&mut self, messages: Vec<Message>) {
         let before = self.memory.recent_messages().len();
         for msg in messages {

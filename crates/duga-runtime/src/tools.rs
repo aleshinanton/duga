@@ -1,7 +1,7 @@
 //! Tool dispatcher construction shared by all frontends.
 //!
-//! Registers built-in tools (shell, read, write, search, think) and loads
-//! WASM plugins into a single `ToolDispatcher`.
+//! Registers built-in tools (shell, read, write, search, think, delegate) and
+//! loads WASM plugins into a single `ToolDispatcher`.
 
 use anyhow::{Context, Result};
 use duga_config::{Config, SandboxMode as ConfigSandboxMode};
@@ -10,6 +10,7 @@ use duga_sandbox::binary_registry::{BinaryPattern, BinaryRegistry};
 use duga_sandbox::executor::SandboxMode;
 use duga_sandbox::{SandboxExecutor, Workspace};
 use duga_tools::{ErasedTool, ToolDispatcher};
+use duga_tools_builtin::delegate::DelegateTool;
 use std::sync::Arc;
 
 /// Build a fully-populated `ToolDispatcher` with built-in tools and plugins.
@@ -51,6 +52,13 @@ pub fn build_dispatcher(config: &Config, workspace: Arc<Workspace>) -> Result<Ar
         executor,
     )
     .context("registering built-in tools")?;
+
+    // Register the delegate tool (schema-only placeholder for LLM visibility).
+    // Actual delegation is handled by SimpleReActLoop's intercept.
+    let delegate_tool = DelegateTool::new(config.agent.loop_config.enabled_loops.clone());
+    dispatcher
+        .register_erased(ErasedTool::erase(delegate_tool))
+        .context("registering delegate tool")?;
 
     let plugin_registry = load_plugins(
         &config.plugins.dir,

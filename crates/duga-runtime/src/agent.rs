@@ -5,7 +5,8 @@
 
 use anyhow::Result;
 use duga_config::{Config, SandboxMode, SummarizerKind};
-use duga_core::{AgentLoop, Memory, Summarizer};
+use duga_core::loops::SimpleReActLoop;
+use duga_core::{LoopRegistry, Memory, Summarizer};
 use duga_events::{EventSink, MultiSink};
 use duga_llm::LlmClient;
 use duga_sandbox::{CancellationToken, Workspace};
@@ -17,9 +18,27 @@ use crate::summarizer::SemanticSummarizer;
 
 /// An assembled agent runtime ready to accept tasks.
 pub struct BuiltRuntime {
-    pub agent: AgentLoop,
     pub workspace: Arc<Workspace>,
     pub cancellation: CancellationToken,
+    pub registry: Arc<LoopRegistry>,
+    pub memory: Memory,
+    pub summarizer: Arc<dyn Summarizer>,
+    pub llm: Arc<dyn LlmClient>,
+    pub dispatcher: Arc<ToolDispatcher>,
+    pub event_sink: Arc<dyn EventSink>,
+    pub config: Config,
+}
+
+impl BuiltRuntime {
+    /// Read-only access to conversation memory.
+    pub fn memory(&self) -> &Memory {
+        &self.memory
+    }
+
+    /// Mutable access to conversation memory (for pre-run history restoration).
+    pub fn memory_mut(&mut self) -> &mut Memory {
+        &mut self.memory
+    }
 }
 
 /// Build sandbox environment context for the system prompt.
@@ -81,7 +100,7 @@ pub fn tool_guidance() -> &'static str {
 /// Build a complete agent runtime from config and external dependencies.
 ///
 /// Frontends provide their own LLM client, dispatcher, workspace, and event sinks.
-/// This function constructs the memory, summarizer, and agent loop around them.
+/// This function constructs the memory, summarizer, loop registry, and all wiring.
 pub fn build_agent(
     config: &Config,
     llm: Arc<dyn LlmClient>,
@@ -89,14 +108,17 @@ pub fn build_agent(
     workspace: Arc<Workspace>,
     event_sinks: Vec<Arc<dyn EventSink>>,
     system_prompt: Option<String>,
-) -> Result<AgentLoop> {
+) -> Result<BuiltRuntime> {
     let system_text = system_prompt.unwrap_or_else(|| {
         let env = sandbox_environment_context(config);
         let tools = tool_guidance();
+        let strategies =
+            build_strategies_section(&config.agent.loop_config.enabled_loops);
         format!(
             "You are duga, a safe coding agent.\n\n\
              {env}\n\n\
              {tools}\n\n\
+             {strategies}\n\n\
              When facing a complex or multi-step problem, use the `think` tool first to \
              plan your approach before acting. This saves steps and produces better results.\n\
              Prefer `think` over running many small `shell` commands to explore the environment.\n\
@@ -119,17 +141,77 @@ pub fn build_agent(
         SummarizerKind::Semantic => Arc::new(SemanticSummarizer::new(llm.clone())),
     };
 
-    let event_sink = Arc::new(MultiSink::new(event_sinks));
+    let event_sink: Arc<dyn EventSink> = Arc::new(MultiSink::new(event_sinks));
 
-    Ok(AgentLoop::new(
-        config.agent.clone(),
+    // Build loop registry and register SimpleReActLoop (always the entry point).
+    let mut registry = LoopRegistry::new();
+    registry
+        .register(Box::new(SimpleReActLoop))
+        .expect("SimpleReActLoop must register successfully");
+    let registry = Arc::new(registry);
+
+    Ok(BuiltRuntime {
+        workspace,
+        cancellation: CancellationToken::new(),
+        registry,
         memory,
         summarizer,
         llm,
         dispatcher,
-        (*workspace).clone(),
         event_sink,
-    ))
+        config: config.clone(),
+    })
+}
+
+/// Build the "Available Strategies" prompt section.
+///
+/// This is auto-generated from the enabled loop list.  A full
+/// LoopRegistry-based prompt generator is available in
+/// `LoopRegistry::build_strategies_prompt()` (T26.13).
+fn build_strategies_section(enabled: &[String]) -> String {
+    if enabled.is_empty() {
+        return "No specialized loops available. Proceed with your standard \
+                tools (think, shell, read, edit, write, search)."
+            .to_string();
+    }
+
+    let filtered: Vec<_> = enabled.iter().filter(|id| *id != "simple_react").collect();
+    if filtered.is_empty() {
+        return "No specialized loops available. Proceed with your standard \
+                tools (think, shell, read, edit, write, search)."
+            .to_string();
+    }
+
+    let mut lines = vec![
+        "## Available Strategies".to_string(),
+        String::new(),
+        "You have access to a `delegate` tool that hands control to a \
+         specialized loop for complex tasks. Use it when your current \
+         approach isn't optimal."
+            .to_string(),
+        String::new(),
+        "Available loop types:".to_string(),
+    ];
+
+    for id in &filtered {
+        let desc = match id.as_str() {
+            "problem_solving" => "Plan → execute → audit for code generation, multi-step reasoning, and structured tasks.",
+            "verification" => "Generate multiple independent answers then vote. For factual accuracy and verification tasks.",
+            "decomposition" => "Break into independent subtasks, solve separately, merge results. For large compound tasks.",
+            "search" => "Query → search → evaluate → refine. For information retrieval and codebase exploration.",
+            other => other,
+        };
+        lines.push(format!("- {id} — {desc}"));
+    }
+
+    lines.push(String::new());
+    lines.push(
+        "If the task doesn't need a specialized strategy, proceed directly \
+         with your normal tools (think, shell, read, edit, write, search)."
+            .to_string(),
+    );
+
+    lines.join("\n")
 }
 
 /// A simple summarizer that compresses context by retaining recent role labels.

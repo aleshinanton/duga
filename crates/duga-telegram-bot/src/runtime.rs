@@ -9,6 +9,9 @@ use crate::safety::TelegramConfirmationProvider;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use duga_config::{Config, TelegramConfig};
+use duga_core::loop_context::LoopContext;
+use duga_core::loops::SimpleReActLoop;
+use duga_core::Loop;
 use duga_events::{Event, JsonlSink, RedactingSink, StoredEvent};
 use duga_runtime::events::FrontendEventBridge;
 use duga_runtime::{
@@ -117,7 +120,7 @@ impl TelegramRuntime {
              Be concise — Telegram messages have length limits."
         );
 
-        let mut agent = build_agent(
+        let mut runtime = build_agent(
             &self.config,
             llm,
             dispatcher,
@@ -133,13 +136,31 @@ impl TelegramRuntime {
         let mut renderer = TelegramEventRenderer::new(bot.clone(), ChatId(chat_id));
         let renderer_handle = tokio::spawn(async move { renderer.run(&mut renderer_rx).await });
 
-        // Restore conversation history into the agent's memory.
+        // Restore conversation history into memory.
         if let Some(history) = conversation_history {
-            agent.restore_history(history);
+            runtime.memory_mut().restore_history(history);
         }
 
-        let result = agent.run(task.clone(), cancellation).await;
-        drop(agent);
+        // Build LoopContext and run via SimpleReActLoop.
+        let loop_impl = SimpleReActLoop;
+        let agent_config = self.config.agent.clone();
+        let loop_config = &agent_config.loop_config;
+        let mut ctx = LoopContext {
+            config: &agent_config,
+            memory: &mut runtime.memory,
+            llm: &runtime.llm,
+            tools: &runtime.dispatcher,
+            workspace: &runtime.workspace,
+            event_sink: &runtime.event_sink,
+            summarizer: &runtime.summarizer,
+            cancellation: &cancellation,
+            registry: &runtime.registry,
+            max_refinement_iterations: loop_config.max_refinement_iterations,
+            max_delegation_depth: loop_config.max_delegation_depth,
+            delegation_depth: 0,
+        };
+
+        let result = loop_impl.run(task.clone(), &mut ctx).await;
 
         let _ = renderer_handle.await;
 

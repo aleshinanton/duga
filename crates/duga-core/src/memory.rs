@@ -93,6 +93,25 @@ impl Memory {
         });
     }
 
+    /// Restore conversation history into memory (for persistent chat context).
+    ///
+    /// The sliding window and token budget from the memory config are applied
+    /// after loading to prevent irrelevant history from saturating context.
+    pub fn restore_history(&mut self, messages: Vec<Message>) {
+        let before = self.recent_messages.len();
+        for msg in messages {
+            self.push_msg(msg);
+        }
+        let after = self.recent_messages.len();
+        self.enforce_window();
+        tracing::info!(
+            before,
+            after,
+            remaining = self.recent_messages.len(),
+            "History restored and window enforced"
+        );
+    }
+
     /// Enforce the sliding window and token budget on restored history.
     ///
     /// Called after `restore_history` to limit how many messages from

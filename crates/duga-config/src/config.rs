@@ -490,6 +490,29 @@ impl Config {
             }
         }
 
+        // Loop config validation.
+        if self.agent.loop_config.max_refinement_iterations == 0 {
+            errors.push(
+                "agent.loop.max_refinement_iterations must be at least 1".into(),
+            );
+        }
+        if self.agent.loop_config.max_delegation_depth > 10 {
+            tracing::warn!(
+                "agent.loop.max_delegation_depth is {}. Values above 10 are suspicious — \
+                 the default is 2. Did you mean to set it that high?",
+                self.agent.loop_config.max_delegation_depth
+            );
+        }
+        // `simple_react` is always the entry point, not a delegation target.
+        // Warn if it appears in `enabled_loops` (harmless but confusing).
+        if self.agent.loop_config.enabled_loops.contains(&"simple_react".to_string()) {
+            tracing::warn!(
+                "'simple_react' listed in agent.loop.enabled_loops — it is always \
+                 the entry point and cannot be delegated to. Removing it from \
+                 effective enabled list."
+            );
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {

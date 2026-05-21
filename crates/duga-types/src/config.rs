@@ -6,6 +6,39 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// Configuration for the loop-agnostic delegation system.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct LoopConfig {
+    /// Loop ids that are available for delegation (e.g. `["problem_solving"]`).
+    /// Empty means only `simple_react` is usable — delegation always fails.
+    #[serde(default)]
+    pub enabled_loops: Vec<String>,
+    /// Maximum refinement iterations used by advanced loops.
+    #[serde(default = "default_max_refinement_iterations")]
+    pub max_refinement_iterations: u32,
+    /// Hard cap on delegation chain depth (0 = no delegation allowed).
+    #[serde(default = "default_max_delegation_depth")]
+    pub max_delegation_depth: u32,
+}
+
+fn default_max_refinement_iterations() -> u32 {
+    3
+}
+
+fn default_max_delegation_depth() -> u32 {
+    2
+}
+
+impl Default for LoopConfig {
+    fn default() -> Self {
+        Self {
+            enabled_loops: Vec::new(),
+            max_refinement_iterations: default_max_refinement_iterations(),
+            max_delegation_depth: default_max_delegation_depth(),
+        }
+    }
+}
+
 /// Top-level agent configuration composing all sub-configs.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AgentConfig {
@@ -13,6 +46,8 @@ pub struct AgentConfig {
     pub features: AgentFeatures,
     pub output: OutputLimits,
     pub think: ThinkLimits,
+    #[serde(default)]
+    pub loop_config: LoopConfig,
 }
 
 /// Controls loop and sandbox resource limits.
@@ -91,6 +126,7 @@ impl Default for AgentConfig {
             features: AgentFeatures::default(),
             output: OutputLimits::default(),
             think: ThinkLimits::default(),
+            loop_config: LoopConfig::default(),
         }
     }
 }

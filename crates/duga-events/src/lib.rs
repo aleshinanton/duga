@@ -72,6 +72,13 @@ pub enum Event {
     Error {
         message: String,
     },
+    /// Emitted when execution is handed from one loop to another via `delegate`.
+    LoopDelegated {
+        from: String,
+        to: String,
+        reason: String,
+        depth: u32,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -514,5 +521,24 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let decoded: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn loop_delegated_event_roundtrip() {
+        let event = Event::LoopDelegated {
+            from: "simple_react".into(),
+            to: "problem_solving".into(),
+            reason: "multi-step code generation".into(),
+            depth: 1,
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
+
+        // Verify the variant tag.
+        assert!(json.contains("loop_delegated"));
+        assert!(json.contains("simple_react"));
+        assert!(json.contains("problem_solving"));
     }
 }

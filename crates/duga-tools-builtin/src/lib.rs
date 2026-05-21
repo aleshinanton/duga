@@ -4,6 +4,7 @@
 //! Each tool implements the `Tool` trait and uses the security primitives from
 //! `duga-sandbox` (Workspace, BinaryRegistry, ShellSession, run_captured).
 
+pub mod delegate;
 pub mod edit;
 pub mod read;
 pub mod search;

@@ -274,7 +274,7 @@ impl BinaryRegistry {
         match &self.mode {
             RegistryMode::Normal(allowed) => allowed
                 .get(name)
-                .map(|p| p.clone())
+                .cloned()
                 .ok_or_else(|| BinaryError::NotAllowed(name.to_string())),
             RegistryMode::AllowAll => {
                 // In allow-all mode, the bare name is the "path".
