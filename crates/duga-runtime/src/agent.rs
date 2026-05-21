@@ -109,11 +109,20 @@ pub fn build_agent(
     event_sinks: Vec<Arc<dyn EventSink>>,
     system_prompt: Option<String>,
 ) -> Result<BuiltRuntime> {
+    // Build loop registry first — needed for system prompt generation.
+    let mut registry = LoopRegistry::new();
+    registry
+        .register(Box::new(SimpleReActLoop))
+        .expect("SimpleReActLoop must register successfully");
+    duga_core::loops::register_default_loops(&mut registry);
+    let registry = Arc::new(registry);
+
     let system_text = system_prompt.unwrap_or_else(|| {
         let env = sandbox_environment_context(config);
         let tools = tool_guidance();
-        let strategies =
-            build_strategies_section(&config.agent.loop_config.enabled_loops);
+        let strategies = registry.build_strategies_prompt(
+            &config.agent.loop_config.enabled_loops,
+        );
         format!(
             "You are duga, a safe coding agent.\n\n\
              {env}\n\n\
@@ -143,13 +152,6 @@ pub fn build_agent(
 
     let event_sink: Arc<dyn EventSink> = Arc::new(MultiSink::new(event_sinks));
 
-    // Build loop registry and register SimpleReActLoop (always the entry point).
-    let mut registry = LoopRegistry::new();
-    registry
-        .register(Box::new(SimpleReActLoop))
-        .expect("SimpleReActLoop must register successfully");
-    let registry = Arc::new(registry);
-
     Ok(BuiltRuntime {
         workspace,
         cancellation: CancellationToken::new(),
@@ -161,57 +163,6 @@ pub fn build_agent(
         event_sink,
         config: config.clone(),
     })
-}
-
-/// Build the "Available Strategies" prompt section.
-///
-/// This is auto-generated from the enabled loop list.  A full
-/// LoopRegistry-based prompt generator is available in
-/// `LoopRegistry::build_strategies_prompt()` (T26.13).
-fn build_strategies_section(enabled: &[String]) -> String {
-    if enabled.is_empty() {
-        return "No specialized loops available. Proceed with your standard \
-                tools (think, shell, read, edit, write, search)."
-            .to_string();
-    }
-
-    let filtered: Vec<_> = enabled.iter().filter(|id| *id != "simple_react").collect();
-    if filtered.is_empty() {
-        return "No specialized loops available. Proceed with your standard \
-                tools (think, shell, read, edit, write, search)."
-            .to_string();
-    }
-
-    let mut lines = vec![
-        "## Available Strategies".to_string(),
-        String::new(),
-        "You have access to a `delegate` tool that hands control to a \
-         specialized loop for complex tasks. Use it when your current \
-         approach isn't optimal."
-            .to_string(),
-        String::new(),
-        "Available loop types:".to_string(),
-    ];
-
-    for id in &filtered {
-        let desc = match id.as_str() {
-            "problem_solving" => "Plan → execute → audit for code generation, multi-step reasoning, and structured tasks.",
-            "verification" => "Generate multiple independent answers then vote. For factual accuracy and verification tasks.",
-            "decomposition" => "Break into independent subtasks, solve separately, merge results. For large compound tasks.",
-            "search" => "Query → search → evaluate → refine. For information retrieval and codebase exploration.",
-            other => other,
-        };
-        lines.push(format!("- {id} — {desc}"));
-    }
-
-    lines.push(String::new());
-    lines.push(
-        "If the task doesn't need a specialized strategy, proceed directly \
-         with your normal tools (think, shell, read, edit, write, search)."
-            .to_string(),
-    );
-
-    lines.join("\n")
 }
 
 /// A simple summarizer that compresses context by retaining recent role labels.

@@ -1,5 +1,8 @@
+use duga_core::loop_context::LoopContext;
+use duga_core::loop_registry::LoopRegistry;
+use duga_core::loops::SimpleReActLoop;
 use duga_core::testing::{CapturingEventSink, MockLlm, MockTool};
-use duga_core::{AgentLoop, Summarizer, SummaryFuture};
+use duga_core::{Loop, Summarizer, SummaryFuture};
 use duga_events::{Event, JsonlSink};
 use duga_replay::JsonlReader;
 use duga_sandbox::{CancellationToken, Workspace};
@@ -41,17 +44,30 @@ async fn run_test_agent(
         dispatcher.register_erased(ErasedTool::erase(tool)).unwrap();
     }
     let sink = CapturingEventSink::new();
-    let mut agent = AgentLoop::new(
-        config,
-        duga_core::Memory::new(vec![Message::system("system")], 100_000, 0.8, 0, 0),
-        Arc::new(TestSummarizer),
-        Arc::new(mock_llm),
-        dispatcher,
-        workspace,
-        Arc::new(sink.clone()),
-    );
+    let sink_arc: Arc<dyn duga_events::EventSink> = Arc::new(sink.clone());
+    let mut memory = duga_core::Memory::new(vec![Message::system("system")], 100_000, 0.8, 0, 0);
+    let llm: Arc<dyn duga_llm::LlmClient> = Arc::new(mock_llm);
+    let summarizer: Arc<dyn Summarizer> = Arc::new(TestSummarizer);
+    let registry = Arc::new(LoopRegistry::new());
+    let cancellation = CancellationToken::new();
 
-    let result = agent.run(task, CancellationToken::new()).await.unwrap();
+    let mut ctx = LoopContext {
+        config: &config,
+        memory: &mut memory,
+        llm: &llm,
+        tools: &dispatcher,
+        workspace: &workspace,
+        event_sink: &sink_arc,
+        summarizer: &summarizer,
+        cancellation: &cancellation,
+        registry: &registry,
+        max_refinement_iterations: config.loop_config.max_refinement_iterations,
+        max_delegation_depth: config.loop_config.max_delegation_depth,
+        delegation_depth: 0,
+    };
+
+    let loop_impl = SimpleReActLoop;
+    let result = loop_impl.run(task.to_string(), &mut ctx).await.unwrap();
     (result.message.text.unwrap_or_default(), sink)
 }
 

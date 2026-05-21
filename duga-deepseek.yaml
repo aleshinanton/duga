@@ -26,6 +26,13 @@ agent:
   think:
     max_calls: 8
     max_tokens: 8192
+  loop_config:
+    enabled_loops:
+     - problem_solving
+     - verification
+     - search
+    max_refinement_iterations: 3
+    max_delegation_depth: 2
 
 sandbox:
   mode: "docker"

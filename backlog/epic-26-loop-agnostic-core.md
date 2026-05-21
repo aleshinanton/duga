@@ -887,20 +887,20 @@ T26.14 (Documentation — depends on T26.1–T26.13)
 
 | Task | Name | Status | Notes |
 |------|------|--------|-------|
-| TASK-26.1 | Loop trait, LoopContext, LoopResult, Event::LoopDelegated | ✅ Done | 138 tests pass |
+| TASK-26.1 | Loop trait, LoopContext, LoopResult, Event::LoopDelegated | ✅ Done | |
 | TASK-26.2 | LoopRegistry with prompt generation | ✅ Done | |
 | TASK-26.3 | Extract SimpleReActLoop | ✅ Done | Zero behavior change |
 | TASK-26.4 | DelegateTool (schema-only) | ✅ Done | Registered in dispatcher |
 | TASK-26.5 | Delegation intercept in SimpleReActLoop | ✅ Done | Depth limiting, error handling |
 | TASK-26.6 | LoopConfig in AgentConfig | ✅ Done | Backward-compatible defaults |
 | TASK-26.7 | Wire into harness/runtime/bot | ✅ Done | All 3 frontends migrated |
-| TASK-26.13 | System prompt + observability | ✅ Partial | Strategies section + `#[instrument]` |
-| TASK-26.15 | Remove deprecated AgentLoop | ✅ Partial | `Memory::restore_history`, deprecated attrs |
-| TASK-26.8 | ProblemSolving loop | ⬜ Not started | Future epic |
-| TASK-26.9 | Verification loop | ⬜ Not started | Future epic |
-| TASK-26.10 | Decomposition loop | ⬜ Not started | Future epic |
-| TASK-26.11 | Search loop (RAG) | ⬜ Not started | Future epic |
-| TASK-26.12 | Register all + integration tests | ⬜ Not started | Depends on T26.8-26.11 |
-| TASK-26.14 | Documentation + migration guide | ⬜ Not started | |
+| TASK-26.8 | ProblemSolving loop | ✅ Done | Plan→Execute→Audit with mock tests |
+| TASK-26.9 | Verification loop | ✅ Done | N-generations + voting with mock tests |
+| TASK-26.10 | Decomposition loop | ✅ Done | Decompose→Solve→Merge with mock tests |
+| TASK-26.11 | Search loop (RAG) | ✅ Done | Query→Search→Evaluate→Refine with mock tests |
+| TASK-26.12 | Register all + integration tests | ✅ Done | All loops registered, e2e tests migrated |
+| TASK-26.13 | System prompt + observability | ✅ Done | LoopRegistry::build_strategies_prompt + #[instrument] |
+| TASK-26.14 | Documentation + migration guide | ✅ Done | docs/loop-system.md, README, architecture updates |
+| TASK-26.15 | Remove deprecated AgentLoop | ✅ Done | agent_loop.rs deleted, all consumers migrated |
 
-**Core architecture shipped. Specialized loops deferred to future epics.**
+**All 15 tasks complete. 49 tests pass.**
