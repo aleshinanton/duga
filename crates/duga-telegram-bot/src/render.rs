@@ -201,6 +201,10 @@ impl TelegramEventRenderer {
 
         let chunks = chunk_message(&text);
         // Use HTML parse mode when labels are collapsed.
+        // Streaming updates (≤5 steps, no collapsible blockquotes) intentionally
+        // do NOT use ParseMode::Html — streaming deltas are escaped as plain
+        // text, and setting Html mode would cause Telegram to misparse the
+        // plain backtick-delimited code fences.
         let use_html = total > 5;
         if let Some(first) = chunks.first() {
             let mut req = self.bot.edit_message_text(self.chat_id, msg_id, first.clone());
@@ -274,7 +278,13 @@ impl TelegramEventRenderer {
                 let formatted = format_final_message(&text);
                 let chunks = chunk_message(&formatted);
                 for chunk in chunks {
-                    let _ = self.bot.send_message(self.chat_id, chunk).await;
+                    // Short messages (≤300 chars) are sent with ParseMode::Html
+                    // so that Markdown→HTML conversion is rendered by Telegram.
+                    let _ = self
+                        .bot
+                        .send_message(self.chat_id, chunk)
+                        .parse_mode(ParseMode::Html)
+                        .await;
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }

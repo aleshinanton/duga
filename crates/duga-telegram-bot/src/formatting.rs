@@ -2,7 +2,9 @@
 //!
 //! Handles escaping, chunking, and final formatting of Telegram messages.
 //! Partial streaming output is escaped as plain text; the final complete
-//! message may be formatted in Telegram HTML.
+//! message is converted from Markdown to Telegram-compatible HTML.
+
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 /// Escape Telegram plain text to prevent accidental Markdown/HTML parsing.
 pub fn escape_telegram_plain_text(text: &str) -> String {
@@ -18,6 +20,13 @@ pub fn escape_html(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Escape an HTML attribute value (quotes + ampersand).
+fn escape_attr(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 /// Wrap text in a collapsible blockquote if it exceeds the threshold.
 /// Returns (html_text, needs_html_parse_mode).
 pub fn maybe_collapse(text: &str, threshold: usize) -> (String, bool) {
@@ -29,19 +38,133 @@ pub fn maybe_collapse(text: &str, threshold: usize) -> (String, bool) {
     }
 }
 
-/// Format a final message with Telegram HTML.
-/// Applies safe formatting: bold, italic, code, pre blocks.
-pub fn format_final_message(text: &str) -> String {
-    // For simplicity, wrap in a pre block if it looks like code output.
-    if text.contains('\n') && (text.contains("```") || text.starts_with("```")) {
-        text.to_string()
-    } else if text.len() > 200 {
-        // Just use plain text for long messages — safe fallback.
-        escape_telegram_plain_text(text)
-    } else {
-        // Safe plain text.
-        escape_telegram_plain_text(text)
+/// Convert Markdown text into Telegram-compatible HTML.
+///
+/// Parses Markdown with strikethrough + table extensions and maps supported
+/// elements to Telegram HTML tags:
+///   - **bold** / headings → `<b>` `</b>`
+///   - *italic* → `<i>` `</i>`
+///   - ~~strikethrough~~ → `<s>` `</s>`
+///   - `inline code` → `<code>` `</code>`
+///   - fenced code blocks → `<pre><code class="language-[lang]">` `</code></pre>`
+///   - blockquotes → `<blockquote>` `</blockquote>`
+///   - links → `<a href="url">` `</a>`
+///   - unordered list items → `• ` prefix
+///
+/// All text (including inside `<code>` and `<pre>`) is HTML-escaped to
+/// prevent Telegram 400 errors on generic types or logic symbols.
+/// Unsupported elements (tables, horizontal rules) are stripped to plain
+/// escaped text.  Raw `Event::Html` nodes from the parser are escaped to
+/// mitigate indirect prompt injection.
+pub fn markdown_to_telegram_html(input: &str) -> String {
+    let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
+    let parser = Parser::new_ext(input, options);
+
+    let mut output = String::new();
+
+    for event in parser {
+        match event {
+            Event::Start(tag) => push_start_tag(&mut output, tag),
+            Event::End(tag) => push_end_tag(&mut output, tag),
+            Event::Text(text) => {
+                output.push_str(&escape_html(&text));
+            }
+            Event::Code(code) => {
+                output.push_str("<code>");
+                output.push_str(&escape_html(&code));
+                output.push_str("</code>");
+            }
+            Event::Html(html) => {
+                // Security: escape raw HTML nodes to prevent indirect
+                // prompt injection from untrusted third-party data.
+                output.push_str(&escape_html(&html));
+            }
+            Event::SoftBreak => output.push('\n'),
+            Event::HardBreak => output.push('\n'),
+            Event::Rule => {
+                output.push_str("---\n");
+            }
+            Event::FootnoteReference(_) => {}
+            Event::TaskListMarker(checked) => {
+                if checked {
+                    output.push_str("☑ ");
+                } else {
+                    output.push_str("☐ ");
+                }
+            }
+            // InlineHtml: raw HTML embedded in Markdown (e.g., "<b>text</b>"
+            // without Markdown delimiters).  Escape to prevent injection.
+            Event::InlineHtml(html) => {
+                output.push_str(&escape_html(&html));
+            }
+            // Math nodes: strip formulas (Telegram has no math rendering).
+            Event::InlineMath(_) | Event::DisplayMath(_) => {}
+        }
     }
+
+    output.trim().to_string()
+}
+
+fn push_start_tag(output: &mut String, tag: Tag) {
+    match tag {
+        Tag::Paragraph | Tag::List(_) | Tag::Table(_)
+        | Tag::TableHead | Tag::TableRow | Tag::TableCell => {}
+        Tag::Heading { .. } => output.push_str("<b>"),
+        Tag::BlockQuote(_) => output.push_str("<blockquote>"),
+        Tag::CodeBlock(kind) => {
+            let lang_attr = match kind {
+                CodeBlockKind::Fenced(lang) if !lang.is_empty() => {
+                    format!(" class=\"language-{}\"", escape_attr(&lang))
+                }
+                _ => String::new(),
+            };
+            output.push_str(&format!("<pre><code{}>", lang_attr));
+        }
+        Tag::Item => output.push_str("• "),
+        Tag::Emphasis => output.push_str("<i>"),
+        Tag::Strong => output.push_str("<b>"),
+        Tag::Strikethrough => output.push_str("<s>"),
+        Tag::Link { dest_url, .. } => {
+            output.push_str(&format!("<a href=\"{}\">", escape_attr(&dest_url)));
+        }
+        Tag::Image { .. } => {
+            // Images are not supported in Telegram HTML.
+            output.push_str("[image]");
+        }
+        // Remaining unsupported elements — let text content pass through.
+        _ => {}
+    }
+}
+
+fn push_end_tag(output: &mut String, tag: TagEnd) {
+    match tag {
+        TagEnd::Paragraph | TagEnd::List(_) => output.push('\n'),
+        TagEnd::Heading(_) => {
+            output.push_str("</b>");
+            output.push('\n');
+        }
+        TagEnd::BlockQuote(_) => output.push_str("</blockquote>"),
+        TagEnd::CodeBlock => output.push_str("</code></pre>"),
+        TagEnd::Item => output.push('\n'),
+        TagEnd::Emphasis => output.push_str("</i>"),
+        TagEnd::Strong => output.push_str("</b>"),
+        TagEnd::Strikethrough => output.push_str("</s>"),
+        TagEnd::Link => output.push_str("</a>"),
+        TagEnd::Image
+        | TagEnd::Table
+        | TagEnd::TableHead
+        | TagEnd::TableRow
+        | TagEnd::TableCell => {}
+        _ => {}
+    }
+}
+
+/// Format a final message with Telegram HTML.
+///
+/// Delegates to `markdown_to_telegram_html` for full Markdown→HTML conversion
+/// that Telegram's `ParseMode::Html` can render.
+pub fn format_final_message(text: &str) -> String {
+    markdown_to_telegram_html(text)
 }
 
 /// Chunk a message near Telegram's 4096 character limit.
