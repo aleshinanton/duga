@@ -31,9 +31,9 @@ impl Loop for ProblemSolvingLoop {
     }
 
     fn description(&self) -> &'static str {
-        "Plan → execute → audit cycle for code generation, multi-step reasoning, and \
-         tasks requiring structured thinking. Use when the task involves generating \
-         complex code, designing architecture, or solving multi-stage problems."
+        "Plan→execute→audit for code generation and multi-file refactors. \
+         NOT for: calculations, facts, lookups, single-file edits, \
+         or tasks answerable in one step. Only for genuinely multi-stage work."
     }
 
     fn run<'a>(&'a self, task: String, ctx: &'a mut LoopContext<'a>) -> LoopRunFuture<'a> {

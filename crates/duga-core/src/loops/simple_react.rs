@@ -30,10 +30,9 @@ impl Loop for SimpleReActLoop {
     }
 
     fn description(&self) -> &'static str {
-        "Direct tool calls for single-step and straightforward tasks. Uses think, \
-         shell, read, edit, write, and search tools. When a task requires structured \
-         planning, multi-step reasoning, verification, decomposition, or information \
-         retrieval, delegate to the appropriate specialized loop."
+        "Default strategy — direct tool use. For calculations, lookups, file \
+         edits, and straightforward queries. Use your normal tools directly. \
+         Only delegate when the task genuinely needs a specialized workflow."
     }
 
     fn run<'a>(&'a self, task: String, ctx: &'a mut LoopContext<'a>) -> LoopRunFuture<'a> {

@@ -29,8 +29,9 @@ impl Loop for VerificationLoop {
     }
 
     fn description(&self) -> &'static str {
-        "Generates multiple independent answers then votes for the most accurate one. \
-         For factual questions, verification tasks, and correctness-critical work."
+        "Generate multiple answers then vote. For questions where correctness \
+         matters and competing answers are possible: math, facts, logic puzzles, \
+         code correctness verification, and ambiguity resolution."
     }
 
     fn run<'a>(&'a self, task: String, ctx: &'a mut LoopContext<'a>) -> LoopRunFuture<'a> {

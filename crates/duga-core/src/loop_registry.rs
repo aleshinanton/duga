@@ -79,8 +79,17 @@ impl LoopRegistry {
         lines.push(String::new());
         lines.push(
             "You have access to a `delegate` tool that hands control to a \
-             specialized loop for complex tasks. Use it when your current \
-             approach isn't optimal."
+             specialized loop. Only use it for genuinely complex tasks that \
+             benefit from a structured approach. For simple questions, \
+             calculations, lookups, or single-step tasks, use your normal \
+             tools directly — delegation adds overhead."
+                .to_string(),
+        );
+        lines.push(String::new());
+        lines.push(
+            "IMPORTANT: The `reason` field must describe the actual current task \
+             in 3-5 words. Never reference previous conversations or unrelated \
+             tasks. It is used for logging only."
                 .to_string(),
         );
         lines.push(String::new());
@@ -98,8 +107,9 @@ impl LoopRegistry {
 
         lines.push(String::new());
         lines.push(
-            "If the task doesn't need a specialized strategy, proceed directly \
-             with your normal tools (think, shell, read, edit, write, search)."
+            "For simple tasks (arithmetic, file reads, single edits, quick lookups), \
+             do NOT delegate — just answer directly with your tools. Delegation is \
+             only for tasks that genuinely need a multi-phase structured approach."
                 .to_string(),
         );
 
