@@ -156,16 +156,36 @@ async fn run_simple_react(
             });
         }
 
-        // ── Delegation intercept (full logic added in T26.5) ──
-        // For now, just scan for delegate calls and handle them.
-        // If a delegate call is found and succeeds, return the delegated result.
+        // ── Delegation intercept ──
+        // Scan for delegate calls BEFORE the normal tool loop.
+        // - Success → returns Some(LoopResult), remaining tools skipped, placeholder results pushed.
+        // - Error  → pushes error tool result, marks delegate as handled, returns None.
+        // - No delegate → returns None, normal loop proceeds.
+        let mut delegate_handled = false;
         if let Some(delegated) =
-            try_handle_delegate(&assistant.tool_calls, &task, ctx).await?
+            try_handle_delegate(&assistant.tool_calls, &task, ctx, &mut delegate_handled).await?
         {
+            // Delegation succeeded — push skipped results for any remaining tool calls
+            for call in &assistant.tool_calls {
+                if call.tool == "delegate" {
+                    continue; // already handled by intercept
+                }
+                let skipped = ToolResult::from_outcome(
+                    call.id.clone(),
+                    &call.tool,
+                    Err(ToolError::Cancelled),
+                    Instant::now(),
+                );
+                ctx.memory.push_tool_result(skipped);
+            }
             return Ok(delegated);
         }
 
         for call in &assistant.tool_calls {
+            // Skip delegate calls already handled by the intercept
+            if call.tool == "delegate" && delegate_handled {
+                continue;
+            }
             if tool_calls >= ctx.config.limits.max_tool_calls {
                 return fatal(
                     ctx,
@@ -214,6 +234,7 @@ async fn try_handle_delegate(
     tool_calls: &[ToolCall],
     task: &str,
     ctx: &mut LoopContext<'_>,
+    delegate_handled: &mut bool,
 ) -> Result<Option<LoopResult>, AgentError> {
     for call in tool_calls {
         if call.tool != "delegate" {
@@ -232,6 +253,7 @@ async fn try_handle_delegate(
                 Instant::now(),
             );
             ctx.memory.push_tool_result(error_result);
+            *delegate_handled = true;
             return Ok(None);
         }
 
@@ -247,6 +269,7 @@ async fn try_handle_delegate(
                 Instant::now(),
             );
             ctx.memory.push_tool_result(error_result);
+            *delegate_handled = true;
             return Ok(None);
         }
 
@@ -262,6 +285,7 @@ async fn try_handle_delegate(
                 Instant::now(),
             );
             ctx.memory.push_tool_result(error_result);
+            *delegate_handled = true;
             return Ok(None);
         };
 
@@ -278,6 +302,7 @@ async fn try_handle_delegate(
                     Instant::now(),
                 );
                 ctx.memory.push_tool_result(error_result);
+                *delegate_handled = true;
                 return Ok(None);
             }
         };

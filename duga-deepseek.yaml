@@ -39,7 +39,7 @@ sandbox:
   container: "duga-sandbox"
   workspace_mount: "/workspace"
   allow_all_binaries: true
-  timeout: 60s
+  timeout: 120s
 
 workspace:
   root: "~/duga-workspace"
@@ -66,7 +66,7 @@ memory:
   context_window_size: 50
   # Hard token budget for loaded history. Drop oldest messages until under this limit.
   # Set to 0 to disable.
-  max_context_tokens: 12000
+  max_context_tokens: 24000
   # summarizer: "semantic"  # or "simple" for role-label fallback (EPIC-25)
 
 plugins:
