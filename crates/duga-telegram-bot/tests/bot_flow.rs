@@ -330,6 +330,62 @@ mod formatting_tests {
         assert!(!result.contains("<script>"));
         assert!(result.contains("&lt;script&gt;"));
     }
+
+    #[test]
+    fn reddit_post_list_with_bold_and_italic() {
+        // Exact pattern from the user bug report:
+        // **#1** — *Heretic has been served a legal notice by Meta, Inc.*
+        let md = "**#1** — *Heretic has been served a legal notice by Meta, Inc.*";
+        let result = markdown_to_telegram_html(md);
+        // Bold wrapping **#1**.
+        assert!(result.contains("<b>#1</b>"));
+        // Italic wrapping the description.
+        assert!(result.contains("<i>Heretic has been served a legal notice by Meta, Inc.</i>"));
+        // Raw asterisks must NOT appear.
+        assert!(!result.contains("**"));
+        // The em-dash should be preserved.
+        assert!(result.contains("—"));
+    }
+
+    #[test]
+    fn reddit_post_list_full_block() {
+        // Simulates the full Reddit top-10 output from the bug report.
+        // LLMs typically produce [text](url) or plain URLs; bare URLs
+        // are preserved as text (pulldown-cmark autolinks require <...>).
+        let md = "**#1** — *Some title*\n   💬 250 comments · ⬆️ 1703 (98%) · `Discussion`\n   [link](https://example.com/post1)\n\n**#2** — *Another title*\n   💬 120 comments · ⬆️ 406 (92%) · `Discussion`\n   [link](https://example.com/post2)";
+        let result = markdown_to_telegram_html(md);
+        // Bold numbers.
+        assert!(result.contains("<b>#1</b>"));
+        assert!(result.contains("<b>#2</b>"));
+        // Italic titles.
+        assert!(result.contains("<i>Some title</i>"));
+        assert!(result.contains("<i>Another title</i>"));
+        // Inline code for tags like `Discussion`.
+        assert!(result.contains("<code>Discussion</code>"));
+        // Raw asterisks must NOT appear.
+        assert!(!result.contains("**"));
+        // Links should be converted to <a> tags.
+        assert!(result.contains("<a href=\"https://example.com/post1\">"));
+        assert!(result.contains("<a href=\"https://example.com/post2\">"));
+    }
+
+    #[test]
+    fn bare_url_preserved_as_text() {
+        // Bare URLs (without [text](url) or <url> syntax) are NOT
+        // autolinked by pulldown-cmark by default — they pass through
+        // as escaped text.  This matches the LLM's typical output.
+        let result = markdown_to_telegram_html("see https://example.com/foo");
+        assert!(result.contains("https://example.com/foo"));
+        // Not wrapped in <a> — just escaped text.
+        assert!(!result.contains("<a href"));
+    }
+
+    #[test]
+    fn autolink_angle_bracket_syntax() {
+        // pulldown-cmark supports <url> autolink syntax.
+        let result = markdown_to_telegram_html("see <https://example.com> for details");
+        assert!(result.contains("<a href=\"https://example.com\">"));
+    }
 }
 
 #[cfg(test)]
