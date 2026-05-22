@@ -329,12 +329,12 @@ async fn try_handle_delegate(
         }
     };
 
-    let reason = delegate_call
-        .raw_args
-        .get("reason")
-        .and_then(|v| v.as_str())
-        .unwrap_or("no reason given")
-        .to_string();
+    // Use the actual task as the reason — never trust the LLM's reason
+    // field since it can hallucinate content from previous conversations.
+    let reason = format!(
+        "{}…",
+        task.chars().take(80).collect::<String>().trim()
+    );
 
     // Build child context with incremented depth.
     let new_depth = ctx.delegation_depth + 1;

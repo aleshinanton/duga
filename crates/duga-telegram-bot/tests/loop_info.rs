@@ -147,7 +147,7 @@ async fn delegation_event_emitted_with_correct_fields() {
         Event::LoopDelegated { from, to, reason, depth } => {
             assert_eq!(from, "simple_react");
             assert_eq!(to, "problem_solving");
-            assert!(reason.contains("complex"));
+            assert!(!reason.is_empty(), "reason should be task text");
             assert_eq!(*depth, 1);
         }
         _ => panic!("wrong event"),

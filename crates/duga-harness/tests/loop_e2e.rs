@@ -258,7 +258,7 @@ async fn delegate_to_problem_solving() {
         } => {
             assert_eq!(from, "simple_react");
             assert_eq!(to, "problem_solving");
-            assert!(reason.contains("multi-step"));
+            assert!(!reason.is_empty(), "reason should be task text");
             assert_eq!(*depth, 1);
         }
         _ => panic!("wrong event variant"),
