@@ -125,6 +125,19 @@ async fn run_problem_solving(
     })
 }
 
+/// Build a minimal message list for LLM calls that should not be influenced
+/// by previous conversation context. Includes only system messages + task.
+pub fn minimal_context(ctx: &LoopContext<'_>, task_prompt: &str) -> Vec<Message> {
+    let mut msgs: Vec<Message> = ctx
+        .memory
+        .messages()
+        .into_iter()
+        .filter(|m| matches!(m.role, duga_types::message::Role::System))
+        .collect();
+    msgs.push(Message::user(task_prompt));
+    msgs
+}
+
 struct Plan {
     steps: Vec<String>,
 }
@@ -137,12 +150,13 @@ struct AuditResult {
 
 async fn plan_phase(task: &str, ctx: &LoopContext<'_>) -> Result<Plan, AgentError> {
     let plan_prompt = format!(
-        "Create a step-by-step plan to accomplish this task. \
+        "Create a step-by-step plan to accomplish the following task. \
+         Focus ONLY on this task — ignore any previous conversation. \
          Output ONLY a JSON array of strings, each being one step. \
          No other text.\n\nTask: {task}\n\nPlan (JSON array):"
     );
-    let mut messages = ctx.memory.messages();
-    messages.push(Message::user(&plan_prompt));
+    // Use minimal context: only system messages + task, not full history.
+    let messages = minimal_context(ctx, &plan_prompt);
 
     let response = ctx
         .llm
@@ -264,6 +278,7 @@ async fn audit_phase(
 
     let audit_prompt = format!(
         "Review the execution output against the original plan and task. \
+         Focus ONLY on whether THIS task is complete — ignore previous conversation. \
          Reply with a JSON object with these fields:\n\
          - complete: boolean (true if task is fully done)\n\
          - final_answer: string (the final result if complete, null if not)\n\
@@ -272,8 +287,7 @@ async fn audit_phase(
          Audit JSON:"
     );
 
-    let mut messages = ctx.memory.messages();
-    messages.push(Message::user(&audit_prompt));
+    let messages = minimal_context(ctx, &audit_prompt);
 
     let response = ctx
         .llm

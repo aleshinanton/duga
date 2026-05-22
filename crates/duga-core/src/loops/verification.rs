@@ -14,7 +14,6 @@ use crate::loops::simple_react::dispatch_tool_with_events;
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
-use duga_types::message::Message;
 use std::time::Instant;
 
 pub struct VerificationLoop;
@@ -169,8 +168,7 @@ async fn vote(
          Question: {task}\n\n{answers_text}\nFinal answer:"
     );
 
-    let mut messages = ctx.memory.messages();
-    messages.push(Message::user(&vote_prompt));
+    let messages = crate::loops::problem_solving::minimal_context(ctx, &vote_prompt);
 
     let response = ctx
         .llm

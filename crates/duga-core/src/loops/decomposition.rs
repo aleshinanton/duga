@@ -11,7 +11,6 @@ use crate::loops::simple_react::dispatch_tool_with_events;
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
-use duga_types::message::Message;
 use std::time::Instant;
 
 pub struct DecompositionLoop;
@@ -127,8 +126,7 @@ async fn decompose(
          Output ONLY a JSON array of objects, each with 'title' and 'description' fields. \
          No other text.\n\nTask: {task}\n\nSubtasks (JSON array):"
     );
-    let mut messages = ctx.memory.messages();
-    messages.push(Message::user(&prompt));
+    let messages = crate::loops::problem_solving::minimal_context(ctx, &prompt);
 
     let response = ctx
         .llm
@@ -229,8 +227,7 @@ async fn merge_results(
          Reply with only the final answer.\n\n\
          Original task: {task}\n\n{results_text}\nFinal answer:"
     );
-    let mut messages = ctx.memory.messages();
-    messages.push(Message::user(&merge_prompt));
+    let messages = crate::loops::problem_solving::minimal_context(ctx, &merge_prompt);
 
     let response = ctx
         .llm
