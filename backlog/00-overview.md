@@ -38,7 +38,9 @@
 | EPIC-24 | Sliding Window & Budget Enforcement | 4 | §21–23 | 8.5 |
 | EPIC-25 | Semantic Summarization | 4 | §21–23 | 8.5 |
 | EPIC-26 | Loop-Agnostic Core | 15 | §5 (redesign) | 86 |
-| **Total** | | **177** | | **739** |
+| EPIC-27 | Markdown → Telegram HTML | 5 | §5, §24 | 12 |
+| EPIC-28 | File Attachment Sending | 7 | §5, §24, §11 | 21 |
+| **Total** | | **189** | | **772** |
 
 ---
 
@@ -486,3 +488,5 @@ status/ready (unblocked, can be picked up)
 | `epic-24-sliding-window.md` | EPIC-24: Sliding Window & Budget Enforcement (4 tasks) |
 | `epic-25-semantic-summarization.md` | EPIC-25: Semantic Summarization (4 tasks) |
 | `epic-26-loop-agnostic-core.md` | EPIC-26: Loop-Agnostic Core — Agent Loop System Redesign (15 tasks) |
+| `epic-27-markdown-html-formatting.md` | EPIC-27: Markdown → Telegram HTML Conversion (5 tasks) |
+| `epic-28-file-attachment-send.md` | EPIC-28: File Attachment Sending (7 tasks) |

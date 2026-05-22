@@ -118,18 +118,51 @@ async fn handle_message(
         }
     }
 
+    // Always download attachments when present, even if the message also has text.
+    let attachment_summary = if telegram_config.attachments.enabled
+        && (msg.photo().is_some()
+            || msg.document().is_some()
+            || msg.audio().is_some()
+            || msg.voice().is_some()
+            || msg.video().is_some())
+    {
+        let chat_dir = telegram_config
+            .data_dir
+            .join(chat_id_i64.to_string())
+            .join("attachments");
+        let _ = tokio::fs::create_dir_all(&chat_dir).await;
+        match crate::attachments::download_attachments(&bot, &msg, &chat_dir, &telegram_config).await {
+            Ok(files) if !files.is_empty() => {
+                let summary = crate::attachments::summarize_attachments(&files);
+                let _ = bot
+                    .send_message(chat_id, format!("📎 Downloaded {} attachment(s)", files.len()))
+                    .await;
+                summary
+            }
+            _ => String::new(),
+        }
+    } else {
+        String::new()
+    };
+
     let task = match text {
-        Some(ref t) => strip_mention(t, &bot_username).to_string(),
+        Some(ref t) => {
+            let stripped = strip_mention(t, &bot_username);
+            if attachment_summary.is_empty() {
+                stripped.to_string()
+            } else {
+                format!("{}\n\n{}", attachment_summary, stripped)
+            }
+        }
         None => {
-            // Attachment message — download and reference.
-            handle_attachment_message(
-                &bot,
-                &msg,
-                chat_id,
-                &telegram_config,
-            )
-            .await;
-            return;
+            if attachment_summary.is_empty() {
+                // No text and no attachments.
+                let _ = bot
+                    .send_message(chat_id, "No supported attachments found in this message.")
+                    .await;
+                return;
+            }
+            attachment_summary
         }
     };
 
@@ -226,42 +259,6 @@ async fn handle_command(
 pub fn is_cancel_text(text: &str) -> bool {
     let lowered = text.trim().to_lowercase();
     lowered == "stop" || lowered == "cancel"
-}
-
-async fn handle_attachment_message(
-    bot: &Bot,
-    msg: &Message,
-    chat_id: ChatId,
-    telegram_config: &duga_config::TelegramConfig,
-) {
-    use crate::attachments::download_attachments;
-    if !telegram_config.attachments.enabled {
-        let _ = bot
-            .send_message(chat_id, "Attachments are disabled in this bot config.")
-            .await;
-        return;
-    }
-
-    let chat_dir = telegram_config
-        .data_dir
-        .join(chat_id.0.to_string())
-        .join("attachments");
-    let _ = tokio::fs::create_dir_all(&chat_dir).await;
-
-    let downloaded = download_attachments(bot, msg, &chat_dir, telegram_config).await;
-    match downloaded {
-        Ok(files) if !files.is_empty() => {
-            let paths: Vec<_> = files.iter().map(|f| f.path.display().to_string()).collect();
-            let _ = bot
-                .send_message(chat_id, format!("📎 Downloaded:\n{}", paths.join("\n")))
-                .await;
-        }
-        _ => {
-            let _ = bot
-                .send_message(chat_id, "No supported attachments found in this message.")
-                .await;
-        }
-    }
 }
 
 #[cfg(test)]

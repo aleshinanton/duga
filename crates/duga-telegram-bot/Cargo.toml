@@ -22,6 +22,7 @@ chrono = "0.4"
 cron = "0.16"
 dashmap = "6"
 notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+schemars = { version = "1", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 teloxide = { version = "0.17", default-features = false, features = ["rustls", "macros"] }

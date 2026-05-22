@@ -197,6 +197,100 @@ telegram:
 
 Image-to-LLM support depends on a future multimodal content type in `duga-types`/`duga-llm`.
 
+### Mixed Text + Attachment Handling
+
+Messages that contain both text AND attachments (e.g., a photo with a caption) are no longer treated as text-only. The bot now:
+1. Downloads all supported attachments from the message
+2. Generates a textual summary like:
+   ```
+   [Attachments:
+   - photo_718.jpg (photo, 1.2 MB)
+   - report.pdf (document, 234 KB)]
+   ```
+3. Prepends the summary to the user's text before sending it to the agent
+
+This means the agent can always `read` downloaded file paths to access attachment content, regardless of whether the message also has text.
+
+## Sending Files (Bot → User)
+
+The agent can send workspace files as proper Telegram attachments using the `send_file` tool. This is useful for delivering generated files (SVGs, PDFs, code files, screenshots, etc.) instead of dumping raw content into text messages.
+
+### File Type Detection
+
+The tool automatically selects the correct Telegram send method based on file extension:
+
+| Extension | Send Method | Notes |
+|-----------|-------------|-------|
+| `.jpg`, `.jpeg`, `.png`, `.webp` | `sendDocument` (default) or `sendPhoto` (with `as_photo: true`) | Images are sent as documents by default for reliability |
+| `.mp3`, `.flac`, `.m4a`, `.wav` | `sendAudio` | |
+| `.mp4`, `.mov`, `.webm`, `.avi`, `.mkv` | `sendVideo` | |
+| `.gif` | `sendAnimation` | |
+| `.ogg` | `sendVoice` | |
+| `.svg`, `.pdf`, `.zip`, `.json`, `.txt`, `.rs`, `.py`, `.csv`, `.html`, others | `sendDocument` | Catch-all for non-media files |
+
+### Tool Arguments
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `path` | string | Yes | Workspace path to the file to send |
+| `caption` | string | No | Text caption (up to 1024 chars) |
+| `as_photo` | boolean | No | Send image files as photo instead of document |
+| `label` | string | No | Human-readable step description (shown in UI) |
+
+### Configuration
+
+Configure `send_file` behavior under `telegram.send_file`:
+
+```yaml
+telegram:
+  send_file:
+    enabled: true
+    max_file_size_mb: 50      # Default 50 MB (Telegram Bot API limit)
+    allowed_extensions:
+      - .svg
+      - .png
+      - .jpg
+      - .pdf
+      - .txt
+      - .json
+      - .rs
+      - .py
+      - .html
+      - .md
+      - .csv
+      - .zip
+      - .mp3
+      - .mp4
+```
+
+- `enabled`: Whether the tool is available (default: `true`)
+- `max_file_size_mb`: Maximum file size (default: 50 MB for standard Bot API, up to 2000 MB with a Local Bot API Server)
+- `allowed_extensions`: If non-empty, restricts which file types the bot can send. Empty means all types are allowed.
+
+### Security
+
+- **Path traversal protection**: `send_file` validates that the requested path is within the workspace using the same `Workspace::resolve()` mechanism used by `read`/`write`/`edit` tools
+- **File size limits**: Enforced at the tool level to prevent large uploads from consuming bandwidth
+- **Extension allowlist**: Optional restrict-on-send policy via `allowed_extensions`
+- **No shell execution**: The tool only reads files and sends them via the Telegram API
+
+### Usage Example
+
+The agent can use `send_file` like this:
+
+```json
+{
+  "tool": "send_file",
+  "raw_args": {
+    "path": "chessboard.svg",
+    "caption": "Here's your chessboard!",
+    "as_photo": false
+  }
+}
+```
+
+The bot will send the file as a proper downloadable attachment with the caption below it.
+
 ## Logging and Replay
 
 - **log.jsonl** — All messages (incoming and outgoing) are logged per chat in `data/<chat_id>/log.jsonl`.
@@ -267,6 +361,8 @@ During execution, the bot edits a single live "process message" with:
 - **Single run per chat** — A second task is rejected while one is active.
 - **No streaming in group chats** — Live message editing is DM-only.
 - **Think budget is limited** — The `think` tool has a per-run budget of 8 calls / 4096 tokens by default. Configure via `agent.think.max_calls` and `agent.think.max_tokens`.
+- **Standard Bot API 50 MB file limit** — The `send_file` tool enforces a 50 MB limit by default. If you run a [Local Bot API Server](https://core.telegram.org/bots/api#using-a-local-bot-api-server), you can increase `max_file_size_mb` up to 2000 MB.
+- **No streaming file uploads** — The file is fully read into memory before sending. Very large files may consume significant memory.
 
 ## Troubleshooting
 

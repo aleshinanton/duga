@@ -110,6 +110,8 @@ pub struct TelegramConfig {
     pub data_dir: PathBuf,
     #[serde(default)]
     pub attachments: TelegramAttachmentConfig,
+    #[serde(default)]
+    pub send_file: TelegramSendFileConfig,
 }
 
 fn default_telegram_token_env() -> String {
@@ -130,6 +132,30 @@ fn default_telegram_data_dir() -> PathBuf {
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TelegramSendFileConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_max_send_file_mb")]
+    pub max_file_size_mb: u64,
+    #[serde(default)]
+    pub allowed_extensions: Vec<String>,
+}
+
+impl Default for TelegramSendFileConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_file_size_mb: default_max_send_file_mb(),
+            allowed_extensions: Vec::new(),
+        }
+    }
+}
+
+fn default_max_send_file_mb() -> u64 {
+    50
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -174,6 +200,7 @@ impl Default for TelegramConfig {
             skills_dir: default_telegram_skills_dir(),
             data_dir: default_telegram_data_dir(),
             attachments: TelegramAttachmentConfig::default(),
+            send_file: TelegramSendFileConfig::default(),
         }
     }
 }
@@ -488,6 +515,12 @@ impl Config {
             if telegram.attachments.enabled && telegram.attachments.max_file_size_mb > 50 {
                 errors.push("telegram.attachments.max_file_size_mb must not exceed Telegram's 50 MB limit".into());
             }
+            if telegram.send_file.enabled && telegram.send_file.max_file_size_mb == 0 {
+                errors.push("telegram.send_file.max_file_size_mb must be > 0".into());
+            }
+            if telegram.send_file.enabled && telegram.send_file.max_file_size_mb > 2000 {
+                errors.push("telegram.send_file.max_file_size_mb must not exceed 2000 MB (Bot API limit)".into());
+            }
         }
 
         // Loop config validation.
@@ -746,5 +779,139 @@ plugins:
         let err = Config::load(&path).unwrap_err();
 
         assert!(matches!(err, ConfigError::ParseError(_)));
+    }
+
+    // ── TelegramSendFileConfig tests ────────────────────────────────────
+
+    #[test]
+    fn send_file_config_defaults() {
+        let config = TelegramSendFileConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.max_file_size_mb, 50);
+        assert!(config.allowed_extensions.is_empty());
+    }
+
+    #[test]
+    fn send_file_config_validate_zero_max_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = executable_file(&dir);
+        let mut c: Config = serde_yaml::from_str(&yaml(&dir, &binary)).unwrap();
+        c.telegram = Some(TelegramConfig {
+            send_file: TelegramSendFileConfig {
+                enabled: true,
+                max_file_size_mb: 0,
+                allowed_extensions: vec![],
+            },
+            allowed_chat_ids: vec![1],
+            ..Default::default()
+        });
+        let err = c.validate().unwrap_err().to_string();
+        assert!(err.contains("send_file.max_file_size_mb must be > 0"),
+            "Expected max_file_size_mb validation error, got: {err}");
+        let _ = dir;
+    }
+
+    #[test]
+    fn send_file_config_validate_exceeds_max() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = executable_file(&dir);
+        let mut c: Config = serde_yaml::from_str(&yaml(&dir, &binary)).unwrap();
+        c.telegram = Some(TelegramConfig {
+            send_file: TelegramSendFileConfig {
+                enabled: true,
+                max_file_size_mb: 5000,
+                allowed_extensions: vec![],
+            },
+            allowed_chat_ids: vec![1],
+            ..Default::default()
+        });
+        let err = c.validate().unwrap_err().to_string();
+        assert!(err.contains("send_file.max_file_size_mb must not exceed 2000 MB"),
+            "Expected max_file_size_mb validation error, got: {err}");
+        let _ = dir;
+    }
+
+    #[test]
+    fn send_file_config_disabled_skips_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = executable_file(&dir);
+        let mut c: Config = serde_yaml::from_str(&yaml(&dir, &binary)).unwrap();
+        c.telegram = Some(TelegramConfig {
+            send_file: TelegramSendFileConfig {
+                enabled: false,
+                max_file_size_mb: 0,
+                allowed_extensions: vec![],
+            },
+            allowed_chat_ids: vec![1],
+            ..Default::default()
+        });
+        assert!(c.validate().is_ok(), "Disabled send_file should not validate size");
+        let _ = dir;
+    }
+
+    #[test]
+    fn send_file_config_allowed_extensions() {
+        let config = TelegramSendFileConfig {
+            enabled: true,
+            max_file_size_mb: 50,
+            allowed_extensions: vec![".svg".into(), ".png".into()],
+        };
+        assert_eq!(config.allowed_extensions.len(), 2);
+        assert!(config.allowed_extensions.contains(&".svg".to_string()));
+        assert!(config.allowed_extensions.contains(&".png".to_string()));
+    }
+
+    #[test]
+    fn send_file_yaml_parse() {
+        let yaml = r#"
+model: "dummy/test"
+agent:
+  limits:
+    max_steps: 5
+    max_tool_calls: 10
+    max_runtime: 60s
+    retry_on_error: 1
+  features:
+    streaming: false
+  output:
+    max_stdout_bytes: 1024
+    max_stderr_bytes: 1024
+    max_combined_bytes: 2048
+  think:
+    max_calls: 2
+    max_tokens: 128
+sandbox:
+  timeout: 10s
+  allowed_binaries:
+    - /usr/bin/echo
+workspace:
+  root: /
+environment:
+  allowed:
+    - HOME
+memory:
+  max_tokens: 4096
+  compress_at_ratio: 0.8
+  context_window_size: 50
+  max_context_tokens: 12000
+  summarizer: semantic
+plugins:
+  dir: /tmp
+  modules: []
+telegram:
+  allowed_chat_ids:
+    - 123
+  send_file:
+    enabled: true
+    max_file_size_mb: 100
+    allowed_extensions:
+      - .svg
+      - .png
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let tg = config.telegram.unwrap();
+        assert!(tg.send_file.enabled);
+        assert_eq!(tg.send_file.max_file_size_mb, 100);
+        assert_eq!(tg.send_file.allowed_extensions, vec![".svg", ".png"]);
     }
 }

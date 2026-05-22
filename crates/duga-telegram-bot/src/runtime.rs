@@ -6,6 +6,7 @@
 use crate::log::BotLogger;
 use crate::render::TelegramEventRenderer;
 use crate::safety::TelegramConfirmationProvider;
+use crate::send_file::SendFileTool;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use duga_config::{Config, TelegramConfig};
@@ -13,6 +14,7 @@ use duga_core::loop_context::LoopContext;
 use duga_core::loops::{register_default_loops, SimpleReActLoop};
 use duga_core::{Loop, LoopRegistry};
 use duga_events::{Event, JsonlSink, RedactingSink, StoredEvent};
+use duga_tools::ErasedTool;
 use duga_runtime::events::FrontendEventBridge;
 use duga_runtime::memory_context::{format_memory_for_prompt, load_persistent_memory};
 use duga_runtime::skills::{format_skills_for_prompt, load_skills};
@@ -60,6 +62,18 @@ impl TelegramRuntime {
             Arc::new(Workspace::open(&self.config.workspace.root).context("opening workspace")?);
 
         let dispatcher = build_dispatcher(&self.config, workspace.clone())?;
+
+        // Register Telegram-specific tool: send_file
+        let send_file_tool = SendFileTool::new(
+            bot.clone(),
+            teloxide::types::ChatId(chat_id),
+            telegram_config.send_file.clone(),
+            workspace.clone(),
+        );
+        dispatcher
+            .register_erased(ErasedTool::erase(send_file_tool))
+            .context("registering send_file tool")?;
+
         // When allow_all_binaries is enabled, shell confirmations are redundant —
         // the operator has already accepted the risk of arbitrary command execution.
         let require_confirmation: Vec<String> = if self.config.sandbox.allow_all_binaries {
@@ -166,7 +180,10 @@ impl TelegramRuntime {
              When facing a complex or multi-step problem, use the `think` tool first to \
              plan your approach before acting. This saves steps and produces better results.\n\
              Prefer `think` over running many small `shell` commands to explore the environment.\n\
-             Be concise — Telegram messages have length limits."
+             Be concise — Telegram messages have length limits.\n\
+             You have a `send_file` tool available to send files (documents, images, audio, video) \
+             to the user as proper Telegram attachments. When the user asks for a file you created, \
+             use `send_file` with the file path instead of dumping file content into a text message."
         );
 
         let mut runtime = build_agent(

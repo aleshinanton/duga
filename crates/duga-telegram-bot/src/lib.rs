@@ -9,4 +9,5 @@ pub mod log;
 pub mod render;
 pub mod runtime;
 pub mod safety;
+pub mod send_file;
 pub mod session;
