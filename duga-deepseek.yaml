@@ -30,6 +30,7 @@ agent:
     enabled_loops:
      - problem_solving
      - verification
+     - decomposition
      - search
     max_refinement_iterations: 3
     max_delegation_depth: 2
