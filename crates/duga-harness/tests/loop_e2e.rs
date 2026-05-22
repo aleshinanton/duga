@@ -603,3 +603,151 @@ async fn cancellation_before_delegation_is_fatal() {
 
     assert_eq!(err, duga_types::error::AgentError::Cancelled);
 }
+
+// ── Tool events during specialized loop execution ───────────────────────────
+
+#[tokio::test]
+async fn specialized_loop_emits_tool_events() {
+    // Verify that when a specialized loop (problem_solving) uses tools,
+    // ToolCallStarted/Finished events are emitted so the frontend sees progress.
+
+    let echo_call = ToolCall::new("echo", serde_json::json!({"msg": "compile"}));
+
+    let llm: Arc<dyn duga_llm::LlmClient> = Arc::new(MockLlm::new(vec![
+        // SimpleReAct delegates to problem_solving
+        Ok(tool_call_response(vec![delegate_call(
+            "problem_solving",
+            "code task",
+        )])),
+        // problem_solving plan
+        Ok(text_response(r#"["Step 1: compile code"]"#)),
+        // problem_solving execute — LLM emits echo tool call
+        Ok(tool_call_response(vec![echo_call.clone()])),
+        // LLM sees tool result, continues
+        Ok(text_response("Compiled successfully. ALL STEPS COMPLETE")),
+        // audit
+        Ok(text_response(
+            r#"{"complete": true, "final_answer": "Build passed", "gaps": null}"#,
+        )),
+    ]));
+
+    let mut tc = build_test_context(llm, 3, 2);
+    let loop_impl = SimpleReActLoop;
+    let result = loop_impl
+        .run("build the project".into(), &mut tc.ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(result.loop_id, "problem_solving");
+    assert!(result.message.text.unwrap().contains("Build passed"));
+
+    let events = tc.sink.events();
+
+    // Should have LoopDelegated event
+    let delegations: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::LoopDelegated { .. }))
+        .collect();
+    assert_eq!(delegations.len(), 1);
+
+    // Should have ToolCallStarted for the echo tool used inside problem_solving
+    let tool_starts: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::ToolCallStarted { tool_call, .. } if tool_call.tool == "echo"))
+        .collect();
+    assert!(!tool_starts.is_empty(), "Expected ToolCallStarted for echo tool during specialized loop");
+
+    // Should have ToolCallFinished for the echo tool
+    let tool_finishes: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::ToolCallFinished { tool_name, .. } if tool_name == "echo"))
+        .collect();
+    assert!(!tool_finishes.is_empty(), "Expected ToolCallFinished for echo tool during specialized loop");
+}
+
+async fn assert_delegation_event(
+    loop_id: &str,
+    reason: &str,
+    extra_responses: Vec<Result<LlmResponse, duga_llm::LlmError>>,
+    max_refinement: u32,
+) {
+    let mut responses: Vec<Result<LlmResponse, duga_llm::LlmError>> = vec![
+        Ok(tool_call_response(vec![delegate_call(loop_id, reason)])),
+    ];
+    responses.extend(extra_responses);
+
+    let llm: Arc<dyn duga_llm::LlmClient> = Arc::new(MockLlm::new(responses));
+    let mut tc = build_test_context(llm, max_refinement, 2);
+    let loop_impl = SimpleReActLoop;
+    let result = loop_impl
+        .run("do task".into(), &mut tc.ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(result.loop_id, loop_id, "loop_id should match delegated target");
+
+    let events = tc.sink.events();
+    let delegations: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, Event::LoopDelegated { .. }))
+        .collect();
+    assert_eq!(delegations.len(), 1, "expected 1 LoopDelegated event for {loop_id}");
+
+    match delegations[0] {
+        Event::LoopDelegated { from, to, reason: r, depth } => {
+            assert_eq!(from, "simple_react");
+            assert_eq!(to, loop_id);
+            assert!(!r.is_empty());
+            assert_eq!(*depth, 1);
+        }
+        _ => panic!("wrong event for {loop_id}"),
+    }
+}
+
+#[tokio::test]
+async fn delegation_events_for_all_loop_types() {
+    // problem_solving
+    assert_delegation_event(
+        "problem_solving", "plan-execute-audit",
+        vec![
+            Ok(text_response(r#"["Step 1"]"#)),
+            Ok(text_response("ALL STEPS COMPLETE")),
+            Ok(text_response(r#"{"complete": true, "final_answer": "ok", "gaps": null}"#)),
+        ],
+        3,
+    ).await;
+
+    // verification
+    assert_delegation_event(
+        "verification", "multi-answer-vote",
+        vec![
+            Ok(text_response("Answer 1")),
+            Ok(text_response("Answer 2")),
+            Ok(text_response("Consensus")),
+        ],
+        2,
+    ).await;
+
+    // decomposition
+    assert_delegation_event(
+        "decomposition", "break-merge",
+        vec![
+            Ok(text_response(r#"[{"title": "A", "description": "a"}]"#)),
+            Ok(text_response("done")),
+            Ok(text_response("merged")),
+        ],
+        3,
+    ).await;
+
+    // search
+    assert_delegation_event(
+        "search", "query-refine",
+        vec![
+            Ok(text_response("query")),
+            Ok(text_response("found")),
+            Ok(text_response(r#"{"sufficient": true}"#)),
+            Ok(text_response("result")),
+        ],
+        2,
+    ).await;
+}
