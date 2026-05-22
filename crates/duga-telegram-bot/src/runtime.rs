@@ -186,8 +186,19 @@ impl TelegramRuntime {
 
         match result {
             Ok(run_result) => {
-                let text = run_result.message.text.unwrap_or_default();
-                tracing::info!("chat {chat_id} run completed successfully");
+                let mut text = run_result.message.text.unwrap_or_default();
+                if run_result.loop_id != "simple_react" {
+                    text.push_str(&format!(
+                        "\n\n⟳ via *{}* loop",
+                        run_result.loop_id
+                    ));
+                }
+                tracing::info!(
+                    loop_id = %run_result.loop_id,
+                    steps = run_result.steps,
+                    tool_calls = run_result.tool_calls,
+                    "chat {chat_id} run completed successfully"
+                );
                 Ok(text)
             }
             Err(e) => {

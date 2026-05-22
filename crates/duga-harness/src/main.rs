@@ -85,6 +85,9 @@ async fn main() -> Result<()> {
 
     match result {
         Ok(result) => {
+            if result.loop_id != "simple_react" {
+                println!("⟳ via {} loop", result.loop_id);
+            }
             println!("{}", result.message.text.unwrap_or_default());
             Ok(())
         }
