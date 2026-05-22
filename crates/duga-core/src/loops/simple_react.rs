@@ -130,9 +130,9 @@ async fn run_simple_react(
             })
             .await
             .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
-        ctx.memory.push_assistant(assistant.clone());
 
         if assistant.is_termination() {
+            ctx.memory.push_assistant(assistant.clone());
             ctx.event_sink
                 .emit(Event::StepFinished { step })
                 .await
@@ -157,35 +157,42 @@ async fn run_simple_react(
         }
 
         // ── Delegation intercept ──
-        // Scan for delegate calls BEFORE the normal tool loop.
-        // - Success → returns Some(LoopResult), remaining tools skipped, placeholder results pushed.
-        // - Error  → pushes error tool result, marks delegate as handled, returns None.
-        // - No delegate → returns None, normal loop proceeds.
-        let mut delegate_handled = false;
-        if let Some(delegated) =
-            try_handle_delegate(&assistant.tool_calls, &task, ctx, &mut delegate_handled).await?
-        {
-            // Delegation succeeded — push skipped results for any remaining tool calls
-            for call in &assistant.tool_calls {
-                if call.tool == "delegate" {
-                    continue; // already handled by intercept
+        // Handle delegate BEFORE pushing assistant to memory.
+        // This is critical: the target loop calls the LLM with memory.messages(),
+        // and OpenAI rejects requests where an assistant has unresolved tool_calls.
+        match try_handle_delegate(&assistant.tool_calls, &task, ctx).await? {
+            DelegateOutcome::Success(delegated_result) => {
+                // Push assistant + delegate tool result so conversation is valid.
+                ctx.memory.push_assistant(assistant.clone());
+                // Push skipped results for any remaining tool calls.
+                for call in &assistant.tool_calls {
+                    if call.tool == "delegate" {
+                        continue;
+                    }
+                    let skipped = ToolResult::from_outcome(
+                        call.id.clone(),
+                        &call.tool,
+                        Err(ToolError::Cancelled),
+                        Instant::now(),
+                    );
+                    ctx.memory.push_tool_result(skipped);
                 }
-                let skipped = ToolResult::from_outcome(
-                    call.id.clone(),
-                    &call.tool,
-                    Err(ToolError::Cancelled),
-                    Instant::now(),
-                );
-                ctx.memory.push_tool_result(skipped);
+                return Ok(delegated_result);
             }
-            return Ok(delegated);
+            DelegateOutcome::Error(error_result) => {
+                // Push assistant first, then the error tool result.
+                ctx.memory.push_assistant(assistant.clone());
+                ctx.memory.push_tool_result(error_result);
+                // Fall through to normal tool loop (which skips delegate because
+                // it was already handled).
+            }
+            DelegateOutcome::NotFound => {
+                // No delegate call — push assistant and proceed normally.
+                ctx.memory.push_assistant(assistant.clone());
+            }
         }
 
         for call in &assistant.tool_calls {
-            // Skip delegate calls already handled by the intercept
-            if call.tool == "delegate" && delegate_handled {
-                continue;
-            }
             if tool_calls >= ctx.config.limits.max_tool_calls {
                 return fatal(
                     ctx,
@@ -225,141 +232,142 @@ async fn run_simple_react(
     .await
 }
 
-/// Placeholder — delegates are intercepted but no other loops are registered yet.
+/// Outcome of delegation intercept.
+enum DelegateOutcome {
+    /// No delegate call found — proceed normally.
+    NotFound,
+    /// Delegation succeeded — this is the final answer.
+    Success(LoopResult),
+    /// Delegation failed — push this error tool result after push_assistant.
+    Error(ToolResult),
+}
+
+/// Handle delegate tool call BEFORE the assistant is pushed to memory.
 ///
-/// Full delegation logic is added in T26.5. For now we just check if any tool
-/// call is named "delegate" and return an error tool result to memory so the
-/// LLM learns it can't use delegation yet.
+/// The target loop runs with the current memory state (no unresolved delegate),
+/// so its LLM calls won't trigger OpenAI's "insufficient tool messages" error.
+/// The caller pushes assistant + results AFTER this function returns.
 async fn try_handle_delegate(
     tool_calls: &[ToolCall],
     task: &str,
     ctx: &mut LoopContext<'_>,
-    delegate_handled: &mut bool,
-) -> Result<Option<LoopResult>, AgentError> {
-    for call in tool_calls {
-        if call.tool != "delegate" {
-            continue;
-        }
+) -> Result<DelegateOutcome, AgentError> {
+    let delegate_call = match tool_calls.iter().find(|c| c.tool == "delegate") {
+        Some(c) => c,
+        None => return Ok(DelegateOutcome::NotFound),
+    };
 
-        // If no loops beyond simple_react are enabled, push an error.
-        if ctx.registry.is_empty() {
-            let error_result = ToolResult::from_outcome(
-                call.id.clone(),
-                "delegate",
-                Err(ToolError::InvalidArgs(
-                    "no specialized loops are enabled. Proceed with your standard tools."
-                        .into(),
-                )),
-                Instant::now(),
-            );
-            ctx.memory.push_tool_result(error_result);
-            *delegate_handled = true;
-            return Ok(None);
-        }
+    // Check if any specialized loops are registered.
+    let has_specialized = ctx
+        .registry
+        .get("problem_solving")
+        .or_else(|| ctx.registry.get("verification"))
+        .or_else(|| ctx.registry.get("decomposition"))
+        .or_else(|| ctx.registry.get("search"))
+        .is_some();
 
-        // Check depth.
-        if ctx.delegation_depth >= ctx.max_delegation_depth {
-            let error_result = ToolResult::from_outcome(
-                call.id.clone(),
-                "delegate",
-                Err(ToolError::Denied(format!(
-                    "max delegation depth ({}) reached",
-                    ctx.max_delegation_depth
-                ))),
-                Instant::now(),
-            );
-            ctx.memory.push_tool_result(error_result);
-            *delegate_handled = true;
-            return Ok(None);
-        }
-
-        // Look up target loop.
-        let loop_id = call.raw_args.get("loop").and_then(|v| v.as_str());
-        let Some(target_id) = loop_id else {
-            let error_result = ToolResult::from_outcome(
-                call.id.clone(),
-                "delegate",
-                Err(ToolError::InvalidArgs(
-                    "missing 'loop' field in delegate args".into(),
-                )),
-                Instant::now(),
-            );
-            ctx.memory.push_tool_result(error_result);
-            *delegate_handled = true;
-            return Ok(None);
-        };
-
-        let target = match ctx.registry.get(target_id) {
-            Some(l) => l,
-            None => {
-                let error_result = ToolResult::from_outcome(
-                    call.id.clone(),
-                    "delegate",
-                    Err(ToolError::InvalidArgs(format!(
-                        "unknown loop '{}'. Use one of the available strategy ids from the prompt.",
-                        target_id
-                    ))),
-                    Instant::now(),
-                );
-                ctx.memory.push_tool_result(error_result);
-                *delegate_handled = true;
-                return Ok(None);
-            }
-        };
-
-        let reason = call
-            .raw_args
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("no reason given")
-            .to_string();
-
-        // Build child context with incremented depth.
-        let new_depth = ctx.delegation_depth + 1;
-        let mut child_ctx = LoopContext {
-            config: ctx.config,
-            memory: ctx.memory,
-            llm: ctx.llm,
-            tools: ctx.tools,
-            workspace: ctx.workspace,
-            event_sink: ctx.event_sink,
-            summarizer: ctx.summarizer,
-            cancellation: ctx.cancellation,
-            registry: ctx.registry,
-            max_refinement_iterations: ctx.max_refinement_iterations,
-            max_delegation_depth: ctx.max_delegation_depth,
-            delegation_depth: new_depth,
-        };
-
-        // Emit delegation event.
-        ctx.event_sink
-            .emit(Event::LoopDelegated {
-                from: "simple_react".into(),
-                to: target_id.to_string(),
-                reason: reason.clone(),
-                depth: new_depth,
-            })
-            .await
-            .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
-
-        // Run the target loop.
-        let delegated_result = target
-            .run(task.to_string(), &mut child_ctx)
-            .await?;
-
-        // Push the result as a tool result so the conversation records it.
-        let tool_result = duga_types::tool_result::ToolResultBuilder::new()
-            .tool_call_id(call.id.clone())
-            .success(true)
-            .output(delegated_result.message.text.clone().unwrap_or_default())
-            .build()
-            .unwrap();
-        ctx.memory.push_tool_result(tool_result);
-
-        return Ok(Some(delegated_result));
+    if !has_specialized {
+        return Ok(DelegateOutcome::Error(ToolResult::from_outcome(
+            delegate_call.id.clone(),
+            "delegate",
+            Err(ToolError::InvalidArgs(
+                "no specialized loops are enabled".into(),
+            )),
+            Instant::now(),
+        )));
     }
 
-    Ok(None)
+    // Check depth.
+    if ctx.delegation_depth >= ctx.max_delegation_depth {
+        return Ok(DelegateOutcome::Error(ToolResult::from_outcome(
+            delegate_call.id.clone(),
+            "delegate",
+            Err(ToolError::Denied(format!(
+                "max delegation depth ({}) reached",
+                ctx.max_delegation_depth
+            ))),
+            Instant::now(),
+        )));
+    }
+
+    // Look up target loop.
+    let target_id = match delegate_call.raw_args.get("loop").and_then(|v| v.as_str()) {
+        Some(id) => id,
+        None => {
+            return Ok(DelegateOutcome::Error(ToolResult::from_outcome(
+                delegate_call.id.clone(),
+                "delegate",
+                Err(ToolError::InvalidArgs("missing 'loop' field".into())),
+                Instant::now(),
+            )));
+        }
+    };
+
+    let target = match ctx.registry.get(target_id) {
+        Some(l) => l,
+        None => {
+            return Ok(DelegateOutcome::Error(ToolResult::from_outcome(
+                delegate_call.id.clone(),
+                "delegate",
+                Err(ToolError::InvalidArgs(format!(
+                    "unknown loop '{}'",
+                    target_id
+                ))),
+                Instant::now(),
+            )));
+        }
+    };
+
+    let reason = delegate_call
+        .raw_args
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("no reason given")
+        .to_string();
+
+    // Build child context with incremented depth.
+    let new_depth = ctx.delegation_depth + 1;
+    let mut child_ctx = LoopContext {
+        config: ctx.config,
+        memory: ctx.memory,
+        llm: ctx.llm,
+        tools: ctx.tools,
+        workspace: ctx.workspace,
+        event_sink: ctx.event_sink,
+        summarizer: ctx.summarizer,
+        cancellation: ctx.cancellation,
+        registry: ctx.registry,
+        max_refinement_iterations: ctx.max_refinement_iterations,
+        max_delegation_depth: ctx.max_delegation_depth,
+        delegation_depth: new_depth,
+    };
+
+    // Emit delegation event.
+    ctx.event_sink
+        .emit(Event::LoopDelegated {
+            from: "simple_react".into(),
+            to: target_id.to_string(),
+            reason: reason.clone(),
+            depth: new_depth,
+        })
+        .await
+        .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
+
+    // Run the target loop (memory does NOT have the delegate assistant yet).
+    let delegated_result = target
+        .run(task.to_string(), &mut child_ctx)
+        .await?;
+
+    // Build the tool result for the delegate call (caller pushes after assistant).
+    let tool_result = duga_types::tool_result::ToolResultBuilder::new()
+        .tool_call_id(delegate_call.id.clone())
+        .success(true)
+        .output(delegated_result.message.text.clone().unwrap_or_default())
+        .build()
+        .unwrap();
+    ctx.memory.push_tool_result(tool_result);
+
+    Ok(DelegateOutcome::Success(delegated_result))
 }
 
 // ── Helpers (free functions adapted from AgentLoop) ──────────────────────
