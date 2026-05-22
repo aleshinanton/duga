@@ -14,6 +14,8 @@ use duga_core::loops::{register_default_loops, SimpleReActLoop};
 use duga_core::{Loop, LoopRegistry};
 use duga_events::{Event, JsonlSink, RedactingSink, StoredEvent};
 use duga_runtime::events::FrontendEventBridge;
+use duga_runtime::memory_context::{format_memory_for_prompt, load_persistent_memory};
+use duga_runtime::skills::{format_skills_for_prompt, load_skills};
 use duga_runtime::{
     build_agent, build_dispatcher, build_llm, resolve_provider, sandbox_environment_context,
     tool_guidance, ConfirmationMiddleware, ConfirmationPolicy,
@@ -101,6 +103,26 @@ impl TelegramRuntime {
         let conversation_history =
             load_conversation_history(&jsonl_path, &self.config.memory);
 
+        // Load skills from workspace and chat-level skills/ directories.
+        let skills = load_skills(
+            &self.config.workspace.root,
+            Some(&chat_dir),
+        )
+        .unwrap_or_default();
+        let skills_prompt = format_skills_for_prompt(&skills);
+
+        // Load persistent memory (MEMORY.md) from workspace and chat-level directories.
+        let persistent_memory = load_persistent_memory(
+            &self.config.workspace.root,
+            Some(&chat_dir),
+        )
+        .unwrap_or(duga_runtime::memory_context::PersistentMemory {
+            workspace_memory: None,
+            channel_memory: None,
+            workspace_path: self.config.workspace.root.join("MEMORY.md"),
+        });
+        let memory_prompt = format_memory_for_prompt(&persistent_memory);
+
         // Build frontend context for system prompt.
         //
         // The task anchoring prefix ("CURRENT TASK: ...") is injected by
@@ -119,9 +141,25 @@ impl TelegramRuntime {
             &self.config.agent.loop_config.enabled_loops,
         );
 
+        // Combine all system prompt sections, skipping empty ones.
+        let mut sections: Vec<&str> = Vec::new();
+        if !skills_prompt.is_empty() {
+            sections.push(&skills_prompt);
+        }
+        if !memory_prompt.is_empty() {
+            sections.push(&memory_prompt);
+        }
+
+        let extras = if sections.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n\n", sections.join("\n\n"))
+        };
+
         let system_prompt = format!(
             "You are duga, a safe coding agent operating through Telegram.\n\
              Chat ID: {chat_id}\n\n\
+             {extras}\
              {env_ctx}\n\n\
              {tool_guide}\n\n\
              {strategies}\n\n\
@@ -416,6 +454,213 @@ mod tests {
         assert_eq!(result.len(), 5);
         assert_eq!(result[2].role, Role::Tool);
         assert_eq!(result[3].role, Role::Tool);
+    }
+
+    // ── Skills and persistent memory injection tests ──────────────
+
+    /// Verify that skills and persistent memory are loaded and included in
+    /// the system prompt when the corresponding files exist.
+    ///
+    /// Regression test for: bot didn't use skills until explicitly mentioned
+    /// in a fresh session, because skills and MEMORY.md were never loaded
+    /// into the system prompt in `run_task_for_chat`.
+    #[test]
+    fn system_prompt_includes_skills_and_memory() {
+        use duga_runtime::skills::{format_skills_for_prompt, load_skills};
+        use duga_runtime::memory_context::{format_memory_for_prompt, load_persistent_memory};
+
+        let ws = tempfile::tempdir().unwrap();
+
+        // Create a skill at workspace/skills/code-review/SKILL.md
+        let skill_dir = ws.path().join("skills").join("code-review");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: code-review\ndescription: Review code changes\n---\n\n# Code Review\n\nCheck for correctness, style, and security.",
+        )
+        .unwrap();
+
+        // Create a second skill at workspace/skills/debug/SKILL.md
+        let skill_dir2 = ws.path().join("skills").join("debug");
+        std::fs::create_dir_all(&skill_dir2).unwrap();
+        std::fs::write(
+            skill_dir2.join("SKILL.md"),
+            "---\nname: debug\ndescription: Debug application issues\n---\n\n# Debugging\n\nUse logging and binary search to isolate bugs.",
+        )
+        .unwrap();
+
+        // Create MEMORY.md at workspace root
+        std::fs::write(
+            ws.path().join("MEMORY.md"),
+            "# Project\n\nThis project is a Telegram coding bot.",
+        )
+        .unwrap();
+
+        // Load skills
+        let skills = load_skills(ws.path(), None).unwrap();
+        assert_eq!(skills.len(), 2);
+        let skill_names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(skill_names.contains(&"code-review"));
+        assert!(skill_names.contains(&"debug"));
+
+        let skills_prompt = format_skills_for_prompt(&skills);
+        assert!(skills_prompt.contains("## Available Skills"));
+        assert!(skills_prompt.contains("code-review"));
+        assert!(skills_prompt.contains("Review code changes"));
+        assert!(skills_prompt.contains("debug"));
+        assert!(skills_prompt.contains("Debug application issues"));
+        assert!(skills_prompt.contains("Check for correctness"));
+        assert!(skills_prompt.contains("Use logging and binary search"));
+
+        // Load persistent memory
+        let memory = load_persistent_memory(ws.path(), None).unwrap();
+        assert!(memory.workspace_memory.is_some());
+        assert!(memory.channel_memory.is_none());
+
+        let memory_prompt = format_memory_for_prompt(&memory);
+        assert!(memory_prompt.contains("## Workspace Memory"));
+        assert!(memory_prompt.contains("Telegram coding bot"));
+
+        // Simulate system prompt assembly (same logic as run_task_for_chat)
+        let mut sections: Vec<&str> = Vec::new();
+        if !skills_prompt.is_empty() {
+            sections.push(&skills_prompt);
+        }
+        if !memory_prompt.is_empty() {
+            sections.push(&memory_prompt);
+        }
+        let extras = if sections.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n\n", sections.join("\n\n"))
+        };
+
+        let system_prompt = format!(
+            "You are duga, a safe coding agent.\n\
+             {extras}\
+             Some other context."
+        );
+
+        // Verify both skills and memory appear in the assembled prompt
+        assert!(system_prompt.contains("## Available Skills"),
+            "System prompt should contain skills section");
+        assert!(system_prompt.contains("## Workspace Memory"),
+            "System prompt should contain memory section");
+        assert!(system_prompt.contains("code-review"),
+            "System prompt should contain skill name");
+        assert!(system_prompt.contains("Telegram coding bot"),
+            "System prompt should contain memory content");
+        assert!(system_prompt.contains("Some other context."),
+            "System prompt should still contain original sections");
+    }
+
+    /// Verify that when no skills or MEMORY.md exist, the extras section
+    /// is empty and the system prompt is not cluttered.
+    #[test]
+    fn system_prompt_empty_when_no_skills_or_memory() {
+        use duga_runtime::skills::{format_skills_for_prompt, load_skills};
+        use duga_runtime::memory_context::{format_memory_for_prompt, load_persistent_memory};
+
+        let ws = tempfile::tempdir().unwrap();
+
+        // No skills dir, no MEMORY.md — empty workspace.
+        let skills = load_skills(ws.path(), None).unwrap();
+        assert!(skills.is_empty());
+        let skills_prompt = format_skills_for_prompt(&skills);
+        assert!(skills_prompt.is_empty());
+
+        let memory = load_persistent_memory(ws.path(), None).unwrap();
+        assert!(memory.workspace_memory.is_none());
+        let memory_prompt = format_memory_for_prompt(&memory);
+        assert!(memory_prompt.is_empty());
+
+        // Assemble system prompt (same logic as run_task_for_chat)
+        let mut sections: Vec<&str> = Vec::new();
+        if !skills_prompt.is_empty() {
+            sections.push(&skills_prompt);
+        }
+        if !memory_prompt.is_empty() {
+            sections.push(&memory_prompt);
+        }
+        let extras = if sections.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n\n", sections.join("\n\n"))
+        };
+        assert!(extras.is_empty(),
+            "extras should be empty when no skills or memory exist");
+
+        let system_prompt = format!(
+            "You are duga, a safe coding agent.\n\
+             {extras}\
+             Core content."
+        );
+        assert!(!system_prompt.contains("## Available Skills"));
+        assert!(!system_prompt.contains("## Workspace Memory"));
+        assert!(system_prompt.contains("Core content."));
+    }
+
+    /// Verify that channel-level skills override workspace-level skills
+    /// when both exist with the same name.
+    #[test]
+    fn channel_skills_override_workspace_skills() {
+        use duga_runtime::skills::load_skills;
+
+        let ws = tempfile::tempdir().unwrap();
+        let ch = tempfile::tempdir().unwrap();
+
+        // Workspace skill
+        let ws_skill = ws.path().join("skills").join("review");
+        std::fs::create_dir_all(&ws_skill).unwrap();
+        std::fs::write(
+            ws_skill.join("SKILL.md"),
+            "---\nname: review\ndescription: Workspace review\n---\n\nWorkspace version.",
+        )
+        .unwrap();
+
+        // Channel skill with same name
+        let ch_skill = ch.path().join("skills").join("review");
+        std::fs::create_dir_all(&ch_skill).unwrap();
+        std::fs::write(
+            ch_skill.join("SKILL.md"),
+            "---\nname: review\ndescription: Channel review\n---\n\nChannel version.",
+        )
+        .unwrap();
+
+        let skills = load_skills(ws.path(), Some(ch.path())).unwrap();
+        assert_eq!(skills.len(), 1, "channel should override workspace");
+        assert!(skills[0].body.contains("Channel version"),
+            "channel skill body should be used, got: {}", skills[0].body);
+        assert_eq!(skills[0].source, duga_runtime::skills::SkillSource::Channel);
+    }
+
+    /// Verify that channel-level MEMORY.md appears alongside workspace MEMORY.md.
+    #[test]
+    fn channel_memory_is_included() {
+        use duga_runtime::memory_context::{format_memory_for_prompt, load_persistent_memory};
+
+        let ws = tempfile::tempdir().unwrap();
+        let ch = tempfile::tempdir().unwrap();
+
+        std::fs::write(ws.path().join("MEMORY.md"), "Workspace memory.").unwrap();
+        std::fs::write(ch.path().join("MEMORY.md"), "Channel memory.").unwrap();
+
+        let memory = load_persistent_memory(ws.path(), Some(ch.path())).unwrap();
+        assert!(memory.workspace_memory.is_some());
+        assert!(memory.channel_memory.is_some());
+
+        let prompt = format_memory_for_prompt(&memory);
+        assert!(prompt.contains("## Session Memory"),
+            "channel memory should be labelled 'Session Memory'");
+        assert!(prompt.contains("## Workspace Memory"),
+            "workspace memory should be labelled 'Workspace Memory'");
+        assert!(prompt.contains("Channel memory."));
+        assert!(prompt.contains("Workspace memory."));
+        // Channel memory must appear before workspace memory in the prompt.
+        let ch_pos = prompt.find("Channel").unwrap();
+        let ws_pos = prompt.find("Workspace").unwrap();
+        assert!(ch_pos < ws_pos,
+            "channel memory should come before workspace memory");
     }
 
     // ── Renderer deadlock regression test ──────────────────────────
