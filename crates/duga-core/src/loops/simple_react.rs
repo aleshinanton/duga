@@ -160,6 +160,7 @@ async fn run_simple_react(
         // Handle delegate BEFORE pushing assistant to memory.
         // This is critical: the target loop calls the LLM with memory.messages(),
         // and OpenAI rejects requests where an assistant has unresolved tool_calls.
+        let mut delegate_skip_id: Option<duga_types::tool_call::CallId> = None;
         match try_handle_delegate(&assistant.tool_calls, &task, ctx).await? {
             DelegateOutcome::Success(delegated_result) => {
                 // Push assistant + delegate tool result so conversation is valid.
@@ -183,8 +184,13 @@ async fn run_simple_react(
                 // Push assistant first, then the error tool result.
                 ctx.memory.push_assistant(assistant.clone());
                 ctx.memory.push_tool_result(error_result);
-                // Fall through to normal tool loop (which skips delegate because
-                // it was already handled).
+                // Track which delegate call was handled so we skip it below.
+                delegate_skip_id = assistant
+                    .tool_calls
+                    .iter()
+                    .find(|c| c.tool == "delegate")
+                    .map(|c| c.id.clone());
+                // Fall through to normal tool loop (skipping the handled delegate).
             }
             DelegateOutcome::NotFound => {
                 // No delegate call — push assistant and proceed normally.
@@ -193,6 +199,12 @@ async fn run_simple_react(
         }
 
         for call in &assistant.tool_calls {
+            // Skip the delegate call already handled by the intercept
+            if let Some(ref skip_id) = delegate_skip_id {
+                if call.id == *skip_id {
+                    continue;
+                }
+            }
             if tool_calls >= ctx.config.limits.max_tool_calls {
                 return fatal(
                     ctx,
