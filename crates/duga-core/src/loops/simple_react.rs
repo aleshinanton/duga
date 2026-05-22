@@ -382,6 +382,48 @@ async fn try_handle_delegate(
     Ok(DelegateOutcome::Success(delegated_result))
 }
 
+// ── Public helpers for specialized loops ─────────────────────────────────
+
+/// Dispatch a tool call with proper event emissions.
+/// Specialized loops should use this instead of calling `ctx.tools.dispatch()`
+/// directly so that frontends see tool progress during delegation.
+pub async fn dispatch_tool_with_events(
+    ctx: &LoopContext<'_>,
+    call: &ToolCall,
+) -> Result<ToolResult, AgentError> {
+    ctx.event_sink
+        .emit(Event::ToolCallStarted {
+            tool_call: call.clone(),
+            attempt: 1,
+        })
+        .await
+        .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
+
+    let start = Instant::now();
+    let result = ctx
+        .tools
+        .dispatch(
+            call,
+            ctx.workspace,
+            ctx.cancellation.clone(),
+            ctx.event_sink.as_ref(),
+        )
+        .await;
+
+    let tool_result = ToolResult::from_outcome(call.id.clone(), &call.tool, result, start);
+
+    ctx.event_sink
+        .emit(Event::ToolCallFinished {
+            result: tool_result.clone(),
+            attempt: 1,
+            tool_name: call.tool.clone(),
+        })
+        .await
+        .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
+
+    Ok(tool_result)
+}
+
 // ── Helpers (free functions adapted from AgentLoop) ──────────────────────
 
 async fn call_llm(

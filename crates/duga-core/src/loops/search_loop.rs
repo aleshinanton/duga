@@ -7,11 +7,11 @@
 use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
+use crate::loops::simple_react::dispatch_tool_with_events;
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
 use duga_types::message::Message;
-use duga_types::tool_result::ToolResult;
 use std::time::Instant;
 
 pub struct SearchLoop;
@@ -179,17 +179,10 @@ async fn execute_search(
 
         for call in &assistant.tool_calls {
             tool_calls += 1;
-            let start = Instant::now();
-            let result = ctx
-                .tools
-                .dispatch(
-                    call,
-                    ctx.workspace,
-                    ctx.cancellation.clone(),
-                    ctx.event_sink.as_ref(),
-                )
-                .await;
-            let result = ToolResult::from_outcome(call.id.clone(), &call.tool, result, start);
+            let result = match dispatch_tool_with_events(ctx, call).await {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
             ctx.memory.push_tool_result(result);
         }
 

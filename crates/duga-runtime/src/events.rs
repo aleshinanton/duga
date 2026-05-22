@@ -47,6 +47,13 @@ pub enum FrontendEvent {
     Error {
         message: String,
     },
+    /// Execution was handed to a specialized loop.
+    LoopDelegated {
+        from: String,
+        to: String,
+        reason: String,
+        depth: u32,
+    },
     /// The agent's memory was compressed.
     MemoryCompressed {
         before_tokens: usize,
@@ -145,12 +152,22 @@ fn map_event(event: Event) -> Option<FrontendEvent> {
             before_tokens,
             after_tokens,
         }),
+        Event::LoopDelegated {
+            from,
+            to,
+            reason,
+            depth,
+        } => Some(FrontendEvent::LoopDelegated {
+            from,
+            to,
+            reason,
+            depth,
+        }),
         // Suppress high-volume internal events.
         Event::StepStarted { .. }
         | Event::StepFinished { .. }
         | Event::LlmRequest { .. }
-        | Event::LlmResponse { .. }
-        | Event::LoopDelegated { .. } => None,
+        | Event::LlmResponse { .. } => None,
     }
 }
 

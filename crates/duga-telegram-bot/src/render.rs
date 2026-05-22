@@ -65,6 +65,11 @@ impl TelegramEventRenderer {
                     self.finished = true;
                     return;
                 }
+                FrontendEvent::LoopDelegated { to, reason, .. } => {
+                    let label = format!("🔀 delegated to *{}*: {}", to, reason);
+                    self.action_labels.push(label);
+                    let _ = self.edit_process_message().await;
+                }
                 FrontendEvent::ToolCallStarted {
                     tool_name,
                     tool_call_id,
