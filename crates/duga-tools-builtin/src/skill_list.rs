@@ -36,9 +36,7 @@ struct LiteIndex {
     name: String,
     description: Option<String>,
     source: LiteSource,
-    directory: PathBuf,
     requires: Option<LiteRequires>,
-    disable_model_invocation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,8 +56,6 @@ struct LiteFrontmatter {
     name: Option<String>,
     description: Option<String>,
     requires: Option<LiteRequires>,
-    #[serde(rename = "disable-model-invocation")]
-    disable_model_invocation: Option<bool>,
 }
 
 /// Lightweight gate result.
@@ -273,9 +269,7 @@ fn scan_dir(dir: &std::path::Path, source: LiteSource) -> Vec<LiteIndex> {
             name,
             description: fm.description,
             source: source.clone(),
-            directory: path,
             requires: fm.requires,
-            disable_model_invocation: fm.disable_model_invocation.unwrap_or(false),
         });
     }
     indexes
