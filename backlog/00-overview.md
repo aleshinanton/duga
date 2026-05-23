@@ -2,7 +2,7 @@
 
 **Repository:** `aleshinanton/duga`  
 **Generated:** 2026-05-10  
-**Updated:** 2026-05-21 (added EPIC-26 loop-agnostic core)  
+**Updated:** 2026-05-23 (added EPIC-29 skills system)  
 **Spec version:** 1.2  
 **Plan version:** Implementation-Grade Execution Plan  
 
@@ -40,7 +40,8 @@
 | EPIC-26 | Loop-Agnostic Core | 15 | §5 (redesign) | 86 |
 | EPIC-27 | Markdown → Telegram HTML | 5 | §5, §24 | 12 |
 | EPIC-28 | File Attachment Sending | 7 | §5, §24, §11 | 21 |
-| **Total** | | **189** | | **772** |
+| EPIC-29 | Skills System | 8 | §5, §11, §24, §32 | 18.5 |
+| **Total** | | **197** | | **790.5** |
 
 ---
 
