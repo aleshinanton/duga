@@ -194,7 +194,7 @@ mod tests {
     use duga_tools::ToolDispatcher;
     use duga_types::config::AgentConfig;
     use duga_types::llm::{LlmResponse, TokenUsage};
-    use duga_types::message::AssistantMessage;
+    use duga_types::message::{AssistantMessage, Message};
     use std::sync::Arc;
 
     fn text(msg: &str) -> LlmResponse {

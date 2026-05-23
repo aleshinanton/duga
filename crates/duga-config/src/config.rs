@@ -104,8 +104,6 @@ pub struct TelegramConfig {
     pub require_confirmation_for: Vec<String>,
     #[serde(default = "default_telegram_events_dir")]
     pub events_dir: PathBuf,
-    #[serde(default = "default_telegram_skills_dir")]
-    pub skills_dir: PathBuf,
     #[serde(default = "default_telegram_data_dir")]
     pub data_dir: PathBuf,
     #[serde(default)]
@@ -120,10 +118,6 @@ fn default_telegram_token_env() -> String {
 
 fn default_telegram_events_dir() -> PathBuf {
     PathBuf::from("./events")
-}
-
-fn default_telegram_skills_dir() -> PathBuf {
-    PathBuf::from("./skills")
 }
 
 fn default_telegram_data_dir() -> PathBuf {
@@ -197,7 +191,6 @@ impl Default for TelegramConfig {
             send_final_only: false,
             require_confirmation_for: Vec::new(),
             events_dir: default_telegram_events_dir(),
-            skills_dir: default_telegram_skills_dir(),
             data_dir: default_telegram_data_dir(),
             attachments: TelegramAttachmentConfig::default(),
             send_file: TelegramSendFileConfig::default(),

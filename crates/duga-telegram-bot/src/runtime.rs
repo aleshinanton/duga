@@ -15,9 +15,11 @@ use duga_core::loops::{register_default_loops, SimpleReActLoop};
 use duga_core::{Loop, LoopRegistry};
 use duga_events::{Event, JsonlSink, RedactingSink, StoredEvent};
 use duga_tools::ErasedTool;
+use duga_tools_builtin::skill_install::InstallSkillTool;
+use duga_tools_builtin::skill_list::ListSkillsTool;
 use duga_runtime::events::FrontendEventBridge;
 use duga_runtime::memory_context::{format_memory_for_prompt, load_persistent_memory};
-use duga_runtime::skills::{format_skills_for_prompt, load_skills};
+use duga_runtime::skills::{discover_skills, format_skills_index_for_prompt};
 use duga_runtime::{
     build_agent, build_dispatcher, build_llm, resolve_provider, sandbox_environment_context,
     tool_guidance, ConfirmationMiddleware, ConfirmationPolicy,
@@ -74,6 +76,23 @@ impl TelegramRuntime {
             .register_erased(ErasedTool::erase(send_file_tool))
             .context("registering send_file tool")?;
 
+        // Register skill management tools (EPIC-30).
+        // Global skills: data/skills/; channel skills: data/<chat_id>/skills/
+        let global_skills_dir = telegram_config.data_dir.join("skills");
+        let channel_skills_base = telegram_config.data_dir.clone();
+        dispatcher
+            .register_erased(ErasedTool::erase(InstallSkillTool::new(
+                global_skills_dir.clone(),
+                channel_skills_base.clone(),
+            )))
+            .context("registering install-skill tool")?;
+        dispatcher
+            .register_erased(ErasedTool::erase(ListSkillsTool::new(
+                global_skills_dir.clone(),
+                channel_skills_base,
+            )))
+            .context("registering list-skills tool")?;
+
         // When allow_all_binaries is enabled, shell confirmations are redundant —
         // the operator has already accepted the risk of arbitrary command execution.
         let require_confirmation: Vec<String> = if self.config.sandbox.allow_all_binaries {
@@ -117,13 +136,16 @@ impl TelegramRuntime {
         let conversation_history =
             load_conversation_history(&jsonl_path, &self.config.memory);
 
-        // Load skills from workspace and chat-level skills/ directories.
-        let skills = load_skills(
-            &self.config.workspace.root,
+        // Load skills index (metadata-only) from data/skills/ and channel-level skills/.
+        // Full bodies are lazy-loaded on demand when the LLM calls `read` on a SKILL.md.
+        // Auto-create global skills dir on first run.
+        tokio::fs::create_dir_all(&global_skills_dir).await?;
+        let skill_indexes = discover_skills(
+            &global_skills_dir,
             Some(&chat_dir),
         )
         .unwrap_or_default();
-        let skills_prompt = format_skills_for_prompt(&skills);
+        let skills_prompt = format_skills_index_for_prompt(&skill_indexes);
 
         // Load persistent memory (MEMORY.md) from workspace and chat-level directories.
         let persistent_memory = load_persistent_memory(
@@ -173,6 +195,12 @@ impl TelegramRuntime {
         let system_prompt = format!(
             "You are duga, a safe coding agent operating through Telegram.\n\
              Chat ID: {chat_id}\n\n\
+             ## Skills\n\
+             Skills provide specialized instructions for recurring tasks.\n\
+             - View installed skills: use `list-skills` tool or /skills command\n\
+             - Install new skills: use `install-skill` tool\n\
+             - Use a skill: `read skills/<name>/SKILL.md` to load its full instructions\n\
+             Global skills are in `skills/`. Chat-specific skills in `<chat_id>/skills/`.\n\n\
              {extras}\
              {env_ctx}\n\n\
              {tool_guide}\n\n\

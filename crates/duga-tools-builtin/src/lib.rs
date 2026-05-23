@@ -9,6 +9,8 @@ pub mod edit;
 pub mod read;
 pub mod search;
 pub mod shell;
+pub mod skill_install;
+pub mod skill_list;
 pub mod think;
 pub mod write;
 

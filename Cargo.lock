@@ -689,6 +689,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "which",
 ]
 
 [[package]]
@@ -727,6 +728,7 @@ dependencies = [
  "duga-runtime",
  "duga-sandbox",
  "duga-tools",
+ "duga-tools-builtin",
  "duga-types",
  "notify",
  "pulldown-cmark",
@@ -770,6 +772,7 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "thiserror",
  "tokio",
@@ -777,6 +780,7 @@ dependencies = [
  "tracing",
  "uuid",
  "walkdir",
+ "which",
 ]
 
 [[package]]

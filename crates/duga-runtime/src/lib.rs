@@ -21,5 +21,9 @@ pub use confirmation::{
 pub use events::{FrontendEvent, FrontendEventBridge, FrontendEventSink};
 pub use memory_context::{load_persistent_memory, format_memory_for_prompt, PersistentMemory};
 pub use providers::{build_llm, resolve_provider, ProviderSelection};
-pub use skills::{load_skills, format_skills_for_prompt, Skill, SkillSource};
+pub use skills::{
+    discover_skills, format_skills_for_prompt, format_skills_index_for_prompt,
+    gate_skill, load_skill_body, load_skills, Skill, SkillGate, SkillIndex,
+    SkillRequires, SkillSource,
+};
 pub use tools::build_dispatcher;

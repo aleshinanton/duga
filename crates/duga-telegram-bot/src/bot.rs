@@ -108,12 +108,12 @@ async fn handle_message(
 
     if let Some(ref t) = text {
         if t.starts_with('/') {
-            handle_command(&bot, chat_id, t, &session_manager).await;
+            handle_command(&bot, chat_id, t, &session_manager, &telegram_config.data_dir).await;
             return;
         }
         // Also recognise plain "stop"/"cancel" (case-insensitive) as /stop.
         if is_cancel_text(t) {
-            handle_command(&bot, chat_id, "/stop", &session_manager).await;
+            handle_command(&bot, chat_id, "/stop", &session_manager, &telegram_config.data_dir).await;
             return;
         }
     }
@@ -216,6 +216,7 @@ async fn handle_command(
     chat_id: ChatId,
     text: &str,
     session_manager: &SessionManager,
+    data_dir: &std::path::Path,
 ) {
     let command = text
         .split_whitespace()
@@ -246,7 +247,26 @@ async fn handle_command(
             let memory = session_manager.memory_summary(chat_id.0);
             format!("🧠 {memory}")
         }
-        "skills" => "📚 Skills loaded from workspace and channel directories.".to_string(),
+        "skills" => {
+            let skills_dir = data_dir.join("skills");
+            let indexes = duga_runtime::skills::discover_skills(&skills_dir, None)
+                .unwrap_or_default();
+            if indexes.is_empty() {
+                "📚 No skills installed. Ask me to install one!".to_string()
+            } else {
+                let list = indexes
+                    .iter()
+                    .map(|s| {
+                        let gate = duga_runtime::skills::gate_skill(s);
+                        let status = if gate.available { "✅" } else { "⚠️" };
+                        let desc = s.description.as_deref().unwrap_or("(no description)");
+                        format!("{status} **{}** — {desc}", s.name)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("📚 **Skills**\n\n{list}")
+            }
+        }
         "events" => "📋 Events are written to the replay JSONL file.".to_string(),
         other => format!("Unknown command: /{other}\nUse /help for available commands."),
     };

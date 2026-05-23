@@ -8,13 +8,13 @@ provider: "openai"
 model: "deepseek-v4-flash"
 
 # DeepSeek V3 chat model (no thinking — avoids reasoning_content roundtrip).
-thinking_level: "medium"
+thinking_level: "low"
 context_window: 1000000
 
 agent:
   limits:
-    max_steps: 300
-    max_tool_calls: 600
+    max_steps: 100
+    max_tool_calls: 200
     max_runtime: 60m
     retry_on_error: 3
   features:
@@ -40,7 +40,7 @@ sandbox:
   container: "duga-sandbox"
   workspace_mount: "/workspace"
   allow_all_binaries: true
-  timeout: 120s
+  timeout: 5m
 
 workspace:
   root: "~/duga-workspace"
@@ -76,7 +76,7 @@ plugins:
 
 frontend:
   progress_mode: "summary"
-  confirmation_timeout: 60s
+  confirmation_timeout: 120s
 
 telegram:
   token_env: "TELEGRAM_BOT_TOKEN_OPENWRT"
@@ -86,7 +86,6 @@ telegram:
   send_tool_events: true
   send_final_only: false
   events_dir: "./events"
-  skills_dir: "./skills"
   data_dir: "./data"
   attachments:
     enabled: true
