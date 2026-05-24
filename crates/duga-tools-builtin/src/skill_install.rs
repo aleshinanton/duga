@@ -76,50 +76,23 @@ pub struct SkillFile {
 }
 
 /// The install-skill tool.
+///
+/// Writes through the sandbox workspace: global skills go to `workspace/skills/<name>/`,
+/// channel skills go to `workspace/<chat_id>/skills/<name>/`.
 #[derive(Clone)]
-pub struct InstallSkillTool {
-    global_skills_dir: PathBuf,
-    channel_skills_base: PathBuf,
-}
+pub struct InstallSkillTool;
 
 impl std::fmt::Debug for InstallSkillTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InstallSkillTool")
-            .field("global_skills_dir", &self.global_skills_dir)
-            .field("channel_skills_base", &self.channel_skills_base)
-            .finish()
+        f.debug_struct("InstallSkillTool").finish()
     }
 }
 
 impl InstallSkillTool {
-    /// Create a new install-skill tool.
-    ///
-    /// - `global_skills_dir`: where global skills live (e.g. `data/skills/`)
-    /// - `channel_skills_base`: parent dir for channel skills (e.g. `data/`), channel skills go in `<base>/<channel_id>/skills/`
-    pub fn new(global_skills_dir: PathBuf, channel_skills_base: PathBuf) -> Self {
-        Self {
-            global_skills_dir,
-            channel_skills_base,
-        }
-    }
-
-    /// Resolve the target directory for a skill installation.
-    fn resolve_target_dir(&self, target: &SkillTarget, channel_id: Option<&str>) -> Result<PathBuf, ToolError> {
-        match target {
-            SkillTarget::Global => Ok(self.global_skills_dir.clone()),
-            SkillTarget::Channel => {
-                let cid = channel_id.ok_or_else(|| {
-                    ToolError::InvalidArgs("channel_id is required when target is 'channel'".into())
-                })?;
-                // Reject suspicious channel IDs with path separators
-                if cid.contains('/') || cid.contains('\\') || cid.contains("..") {
-                    return Err(ToolError::InvalidArgs(
-                        "channel_id must not contain path separators or '..'".into(),
-                    ));
-                }
-                Ok(self.channel_skills_base.join(cid).join("skills"))
-            }
-        }
+    pub fn new(_global_skills_dir: PathBuf, _channel_skills_base: PathBuf) -> Self {
+        // Paths are kept for API compatibility with ListSkillsTool but unused —
+        // skills are written through the workspace, which owns the filesystem root.
+        Self
     }
 }
 
@@ -148,33 +121,38 @@ impl Tool for InstallSkillTool {
         // 2. Validate description
         validate_description(&args.description)?;
 
-        // 3. Resolve target directory
-        let target_dir = self.resolve_target_dir(&args.target, args.channel_id.as_deref())?;
-        let skill_dir = target_dir.join(&args.name);
+        // 3. channel_id is required for channel target
+        if args.target == SkillTarget::Channel && args.channel_id.is_none() {
+            return Err(ToolError::InvalidArgs(
+                "channel_id is required when target is 'channel'".into(),
+            ));
+        }
 
-        // 4. Check if overwriting
-        let overwriting = skill_dir.exists() && skill_dir.is_dir();
+        // 4. Build workspace-relative paths (skills live under workspace root)
+        let md_rel = match args.target {
+            SkillTarget::Global => format!("skills/{}/SKILL.md", args.name),
+            SkillTarget::Channel => {
+                let cid = args.channel_id.as_deref().unwrap();
+                if cid.contains('/') || cid.contains('\\') || cid.contains("..") {
+                    return Err(ToolError::InvalidArgs(
+                        "channel_id must not contain path separators or '..'".into(),
+                    ));
+                }
+                format!("{}/skills/{}/SKILL.md", cid, args.name)
+            }
+        };
+
+        let resolved_md = ctx
+            .workspace
+            .resolve(&PathBuf::from(&md_rel))
+            .map_err(|_| {
+                ToolError::Denied(format!("path escapes workspace: {}", md_rel))
+            })?;
 
         // 5. Build SKILL.md content
         let skill_md_content = build_skill_md(&args.name, &args.description, &args.body);
 
-        // 6. Write SKILL.md through workspace
-        let skill_md_rel = match args.target {
-            SkillTarget::Global => format!("skills/{}/SKILL.md", args.name),
-            SkillTarget::Channel => {
-                let cid = args.channel_id.as_deref().unwrap_or("unknown");
-                format!("{}/skills/{}/SKILL.md", cid, args.name)
-            }
-        };
-        // Resolve relative to global skills base, adjusting based on target
-        let resolved_md = ctx
-            .workspace
-            .resolve(&PathBuf::from(&skill_md_rel))
-            .map_err(|_| {
-                ToolError::Denied(format!("path escapes workspace: {}", skill_md_rel))
-            })?;
-
-        // Create parent dirs
+        // 6. Write SKILL.md through workspace (atomic tempfile + rename)
         if let Some(parent) = resolved_md.parent() {
             if parent != std::path::Path::new("") && parent != std::path::Path::new(".") {
                 ctx.workspace
@@ -184,7 +162,6 @@ impl Tool for InstallSkillTool {
             }
         }
 
-        // Atomic write via tempfile (same pattern as WriteTool)
         let temp_path = PathBuf::from(format!(".duga-install-skill-{}.tmp", CallId::new()));
         {
             let mut temp = ctx
@@ -213,7 +190,6 @@ impl Tool for InstallSkillTool {
         let mut aux_count = 0;
         if let Some(ref files) = args.files {
             for file in files {
-                // Validate auxiliary file path
                 validate_aux_path(&file.path)?;
 
                 let aux_rel = match args.target {
@@ -265,16 +241,15 @@ impl Tool for InstallSkillTool {
             }
         }
 
-        let overwrite_note = if overwriting { " (overwritten)" } else { "" };
         let msg = if aux_count > 0 {
             format!(
-                "Installed skill '{}' ({}) with {} auxiliary files to skills/{}/{}{}",
-                args.name, args.target, aux_count, args.name, "SKILL.md", overwrite_note,
+                "Installed skill '{}' ({}) with {} auxiliary files to skills/{}/SKILL.md",
+                args.name, args.target, aux_count, args.name,
             )
         } else {
             format!(
-                "Installed skill '{}' ({}) to skills/{}/{}{}",
-                args.name, args.target, args.name, "SKILL.md", overwrite_note,
+                "Installed skill '{}' ({}) to skills/{}/SKILL.md",
+                args.name, args.target, args.name,
             )
         };
 
@@ -285,7 +260,6 @@ impl Tool for InstallSkillTool {
             metadata: serde_json::json!({
                 "name": args.name,
                 "target": args.target,
-                "overwritten": overwriting,
                 "aux_files": aux_count,
             }),
             duration_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
@@ -522,56 +496,6 @@ mod tests {
         // Triple dashes should be escaped/munged
         assert!(!md.contains("\n---\nbody\n---"));
         assert!(md.contains("- - -"));
-    }
-
-    // ── resolve_target_dir tests ────────────────────────────────────────
-
-    #[test]
-    fn resolve_global_dir() {
-        let tool = InstallSkillTool::new(
-            PathBuf::from("/data/skills"),
-            PathBuf::from("/data"),
-        );
-        let dir = tool.resolve_target_dir(&SkillTarget::Global, None).unwrap();
-        assert_eq!(dir, PathBuf::from("/data/skills"));
-    }
-
-    #[test]
-    fn resolve_channel_dir() {
-        let tool = InstallSkillTool::new(
-            PathBuf::from("/data/skills"),
-            PathBuf::from("/data"),
-        );
-        let dir = tool
-            .resolve_target_dir(&SkillTarget::Channel, Some("12345"))
-            .unwrap();
-        assert_eq!(dir, PathBuf::from("/data/12345/skills"));
-    }
-
-    #[test]
-    fn resolve_channel_missing_id_is_error() {
-        let tool = InstallSkillTool::new(
-            PathBuf::from("/data/skills"),
-            PathBuf::from("/data"),
-        );
-        let err = tool
-            .resolve_target_dir(&SkillTarget::Channel, None)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("channel_id"));
-    }
-
-    #[test]
-    fn resolve_channel_rejects_path_traversal() {
-        let tool = InstallSkillTool::new(
-            PathBuf::from("/data/skills"),
-            PathBuf::from("/data"),
-        );
-        let err = tool
-            .resolve_target_dir(&SkillTarget::Channel, Some("../escape"))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("path separators"));
     }
 
     // ── Integration test: execute via dispatcher ────────────────────────
@@ -870,7 +794,6 @@ mod tests {
             .await
             .unwrap();
         assert!(r1.success);
-        assert!(!r1.output.contains("overwritten"));
 
         // Second install (overwrite)
         let call2 = ToolCall::new(
@@ -888,7 +811,6 @@ mod tests {
             .await
             .unwrap();
         assert!(r2.success);
-        assert!(r2.output.contains("overwritten"));
 
         // Verify new content
         let content =

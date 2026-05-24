@@ -77,9 +77,9 @@ impl TelegramRuntime {
             .context("registering send_file tool")?;
 
         // Register skill management tools (EPIC-30).
-        // Global skills: data/skills/; channel skills: data/<chat_id>/skills/
-        let global_skills_dir = telegram_config.data_dir.join("skills");
-        let channel_skills_base = telegram_config.data_dir.clone();
+        // Skills live under workspace: workspace/skills/ (global), workspace/<chat_id>/skills/ (channel).
+        let global_skills_dir = self.config.workspace.root.join("skills");
+        let channel_skills_base = self.config.workspace.root.clone();
         dispatcher
             .register_erased(ErasedTool::erase(InstallSkillTool::new(
                 global_skills_dir.clone(),
@@ -136,13 +136,13 @@ impl TelegramRuntime {
         let conversation_history =
             load_conversation_history(&jsonl_path, &self.config.memory);
 
-        // Load skills index (metadata-only) from data/skills/ and channel-level skills/.
+        // Load skills index (metadata-only) from workspace/skills/ and chat-level skills/.
         // Full bodies are lazy-loaded on demand when the LLM calls `read` on a SKILL.md.
-        // Auto-create global skills dir on first run.
-        tokio::fs::create_dir_all(&global_skills_dir).await?;
+        // Channel skills live under workspace/<chat_id>/skills/ (same tree as install-skill).
+        let chat_skills = self.config.workspace.root.join(chat_id.to_string());
         let skill_indexes = discover_skills(
-            &global_skills_dir,
-            Some(&chat_dir),
+            &self.config.workspace.root,
+            Some(&chat_skills),
         )
         .unwrap_or_default();
         let skills_prompt = format_skills_index_for_prompt(&skill_indexes);
