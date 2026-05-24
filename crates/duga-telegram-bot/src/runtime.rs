@@ -63,7 +63,7 @@ impl TelegramRuntime {
         let workspace =
             Arc::new(Workspace::open(&self.config.workspace.root).context("opening workspace")?);
 
-        let dispatcher = build_dispatcher(&self.config, workspace.clone())?;
+        let dispatcher = build_dispatcher(&self.config, workspace.clone(), vec![telegram_config.data_dir.clone()])?;
 
         // Register Telegram-specific tool: send_file
         let send_file_tool = SendFileTool::new(

@@ -35,6 +35,9 @@ pub struct EditArgs {
 #[derive(Clone)]
 pub struct EditTool {
     path_locks: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>>,
+    /// Optional secondary root directories for editing files outside the workspace
+    /// (e.g., the bot's data directory for session logs and channel data).
+    aux_roots: Vec<PathBuf>,
 }
 
 impl std::fmt::Debug for EditTool {
@@ -53,7 +56,78 @@ impl EditTool {
     pub fn new() -> Self {
         Self {
             path_locks: Arc::new(Mutex::new(HashMap::new())),
+            aux_roots: Vec::new(),
         }
+    }
+
+    /// Set secondary allowed roots for file edits (e.g., the Telegram data dir).
+    pub fn with_aux_roots(mut self, paths: Vec<PathBuf>) -> Self {
+        self.aux_roots = paths;
+        self
+    }
+
+    /// Resolve a path for editing: workspace first, then aux_roots.
+    fn resolve_edit_path(&self, ctx: &ToolContext<'_>, path_str: &str) -> Result<(PathBuf, bool), ToolError> {
+        let raw = PathBuf::from(path_str);
+        // First, try workspace (supports absolute within-workspace paths via resolve_path)
+        if let Ok(resolved) = resolve_workspace_path(ctx, path_str) {
+            if ctx.workspace.root_dir().metadata(&resolved).map_or(false, |m| m.is_file()) {
+                return Ok((resolved, false));
+            }
+        }
+        // Then try aux_roots — only for relative paths without parent traversal
+        for aux in &self.aux_roots {
+            if !raw.is_absolute() {
+                // Reject path traversal
+                if raw.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                    continue;
+                }
+                let aux_full = aux.join(&raw);
+                if aux_full.exists() && aux_full.is_file() {
+                    return Ok((raw, true));
+                }
+            }
+        }
+        Err(ToolError::Denied(format!("path not found in workspace or auxiliary roots: {}", path_str)))
+    }
+
+    /// Find which aux_root has the file and check for symlinks.
+    fn resolve_aux_path(&self, resolved: &Path) -> Result<PathBuf, ToolError> {
+        for aux in &self.aux_roots {
+            let aux_full = aux.join(resolved);
+            if aux_full.exists() && aux_full.is_file() {
+                // Symlink check
+                Self::reject_aux_symlinks(aux, resolved)?;
+                return Ok(aux_full);
+            }
+        }
+        Err(ToolError::Denied(format!(
+            "path not found in auxiliary roots: {}",
+            resolved.display()
+        )))
+    }
+
+    /// Reject paths that contain symlink components under an aux_root.
+    fn reject_aux_symlinks(aux_root: &Path, rel: &Path) -> Result<(), ToolError> {
+        let mut current = aux_root.to_path_buf();
+        for component in rel.components() {
+            let std::path::Component::Normal(part) = component else {
+                continue;
+            };
+            current.push(part);
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(ToolError::Denied(format!(
+                        "path contains symlink: {}",
+                        current.display()
+                    )));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(ToolError::Io(e.to_string())),
+            }
+        }
+        Ok(())
     }
 
     async fn get_lock(&self, path: &Path) -> Arc<Mutex<()>> {
@@ -65,7 +139,8 @@ impl EditTool {
     }
 }
 
-fn resolve_path(ctx: &ToolContext<'_>, path: &str) -> Result<PathBuf, ToolError> {
+/// Resolve an absolute or relative path within the workspace.
+fn resolve_workspace_path(ctx: &ToolContext<'_>, path: &str) -> Result<PathBuf, ToolError> {
     let raw = PathBuf::from(path);
     if raw.is_absolute() {
         if raw
@@ -109,90 +184,150 @@ impl Tool for EditTool {
             return Err(ToolError::InvalidArgs("oldText must not be empty".into()));
         }
 
-        let resolved = resolve_path(&ctx, &args.path)?;
+        let (resolved, is_aux) = self.resolve_edit_path(&ctx, &args.path)?;
         let lock = self.get_lock(&resolved).await;
         let _guard = lock.lock().await;
 
-        crate::write::reject_symlink_components(&ctx, &resolved)?;
+        if is_aux {
+            // Edit file in aux_roots using std::fs with atomic tempfile+rename
+            let aux_full = self.resolve_aux_path(&resolved)?;
+            let content = std::fs::read_to_string(&aux_full).map_err(|e| {
+                ToolError::InvalidArgs(format!("cannot read {}: {}", aux_full.display(), e))
+            })?;
 
-        let metadata = ctx
-            .workspace
-            .root_dir()
-            .metadata(&resolved)
-            .map_err(ToolError::from)?;
-        if !metadata.is_file() {
-            return Err(ToolError::InvalidArgs(format!(
-                "path is not a file: {}",
-                args.path
-            )));
-        }
-
-        let mut file = ctx
-            .workspace
-            .root_dir()
-            .open(&resolved)
-            .map_err(ToolError::from)?;
-        let mut content = String::new();
-        file.read_to_string(&mut content).map_err(|e| {
-            ToolError::InvalidArgs(format!("file is not valid UTF-8: {} ({})", args.path, e))
-        })?;
-
-        let matches = content.match_indices(&args.old_text).count();
-        match matches {
-            0 => {
-                return Err(ToolError::InvalidArgs(format!(
-                    "oldText not found in {}",
-                    args.path
-                )))
+            let matches = content.match_indices(&args.old_text).count();
+            match matches {
+                0 => {
+                    return Err(ToolError::InvalidArgs(format!(
+                        "oldText not found in {}",
+                        args.path
+                    )))
+                }
+                1 => {}
+                count => {
+                    return Err(ToolError::InvalidArgs(format!(
+                        "oldText appears {} times in {}; include more context for a unique replacement",
+                        count, args.path
+                    )))
+                }
             }
-            1 => {}
-            count => {
-                return Err(ToolError::InvalidArgs(format!(
-                    "oldText appears {} times in {}; include more context for a unique replacement",
-                    count, args.path
-                )))
-            }
-        }
 
-        let updated = content.replacen(&args.old_text, &args.new_text, 1);
-        let temp_path = PathBuf::from(format!(".duga-edit-{}.tmp", CallId::new()));
-        let mut temp = ctx
-            .workspace
-            .root_dir()
-            .create(&temp_path)
-            .map_err(ToolError::from)?;
-        temp.write_all(updated.as_bytes())
-            .map_err(ToolError::from)?;
-        temp.sync_all().map_err(ToolError::from)?;
-
-        match ctx
-            .workspace
-            .root_dir()
-            .rename(&temp_path, ctx.workspace.root_dir(), &resolved)
-        {
-            Ok(()) => Ok(ToolResult {
-                tool_call_id: CallId::new(),
-                success: true,
-                output: format!(
-                    "Edited {}: replaced {} bytes with {} bytes",
-                    args.path,
-                    args.old_text.len(),
-                    args.new_text.len()
-                ),
-                metadata: serde_json::json!({
-                    "path": args.path,
-                    "old_bytes": args.old_text.len(),
-                    "new_bytes": args.new_text.len(),
-                    "bytes_written": updated.len()
+            let updated = content.replacen(&args.old_text, &args.new_text, 1);
+            let temp_aux = aux_full.with_extension(format!(
+                "duga-edit-{}.tmp",
+                CallId::new()
+            ));
+            std::fs::write(&temp_aux, &updated).map_err(|e| {
+                ToolError::Io(format!("write edit temp {}: {}", temp_aux.display(), e))
+            })?;
+            match std::fs::rename(&temp_aux, &aux_full) {
+                Ok(()) => Ok(ToolResult {
+                    tool_call_id: CallId::new(),
+                    success: true,
+                    output: format!(
+                        "Edited {}: replaced {} bytes with {} bytes",
+                        args.path,
+                        args.old_text.len(),
+                        args.new_text.len()
+                    ),
+                    metadata: serde_json::json!({
+                        "path": args.path,
+                        "old_bytes": args.old_text.len(),
+                        "new_bytes": args.new_text.len(),
+                        "bytes_written": updated.len()
+                    }),
+                    duration_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    stdout_bytes: 0,
+                    stderr_bytes: 0,
+                    truncated: false,
                 }),
-                duration_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                stdout_bytes: 0,
-                stderr_bytes: 0,
-                truncated: false,
-            }),
-            Err(e) => {
-                let _ = ctx.workspace.root_dir().remove_file(&temp_path);
-                Err(ToolError::Io(format!("edit failed: {}", e)))
+                Err(e) => {
+                    let _ = std::fs::remove_file(&temp_aux);
+                    Err(ToolError::Io(format!("edit failed: {}", e)))
+                }
+            }
+        } else {
+            crate::write::reject_symlink_components(&ctx, &resolved)?;
+
+            let metadata = ctx
+                .workspace
+                .root_dir()
+                .metadata(&resolved)
+                .map_err(ToolError::from)?;
+            if !metadata.is_file() {
+                return Err(ToolError::InvalidArgs(format!(
+                    "path is not a file: {}",
+                    args.path
+                )));
+            }
+
+            let mut file = ctx
+                .workspace
+                .root_dir()
+                .open(&resolved)
+                .map_err(ToolError::from)?;
+            let mut content = String::new();
+            file.read_to_string(&mut content).map_err(|e| {
+                ToolError::InvalidArgs(format!("file is not valid UTF-8: {} ({})", args.path, e))
+            })?;
+
+            let matches = content.match_indices(&args.old_text).count();
+            match matches {
+                0 => {
+                    return Err(ToolError::InvalidArgs(format!(
+                        "oldText not found in {}",
+                        args.path
+                    )))
+                }
+                1 => {}
+                count => {
+                    return Err(ToolError::InvalidArgs(format!(
+                        "oldText appears {} times in {}; include more context for a unique replacement",
+                        count, args.path
+                    )))
+                }
+            }
+
+            let updated = content.replacen(&args.old_text, &args.new_text, 1);
+            let temp_path = PathBuf::from(format!(".duga-edit-{}.tmp", CallId::new()));
+            let mut temp = ctx
+                .workspace
+                .root_dir()
+                .create(&temp_path)
+                .map_err(ToolError::from)?;
+            temp.write_all(updated.as_bytes())
+                .map_err(ToolError::from)?;
+            temp.sync_all().map_err(ToolError::from)?;
+
+            match ctx
+                .workspace
+                .root_dir()
+                .rename(&temp_path, ctx.workspace.root_dir(), &resolved)
+            {
+                Ok(()) => Ok(ToolResult {
+                    tool_call_id: CallId::new(),
+                    success: true,
+                    output: format!(
+                        "Edited {}: replaced {} bytes with {} bytes",
+                        args.path,
+                        args.old_text.len(),
+                        args.new_text.len()
+                    ),
+                    metadata: serde_json::json!({
+                        "path": args.path,
+                        "old_bytes": args.old_text.len(),
+                        "new_bytes": args.new_text.len(),
+                        "bytes_written": updated.len()
+                    }),
+                    duration_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    stdout_bytes: 0,
+                    stderr_bytes: 0,
+                    truncated: false,
+                }),
+                Err(e) => {
+                    let _ = ctx.workspace.root_dir().remove_file(&temp_path);
+                    Err(ToolError::Io(format!("edit failed: {}", e)))
+                }
             }
         }
     }
@@ -212,6 +347,7 @@ mod tests {
             workspace: ws,
             cancellation: CancellationToken::new(),
             event_sink: &NullSink,
+            aux_root: None,
         }
     }
 

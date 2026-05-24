@@ -270,6 +270,7 @@ mod tests {
             workspace: ws,
             cancellation: CancellationToken::new(),
             event_sink: &NullSink,
+            aux_root: None,
         }
     }
 
@@ -343,6 +344,7 @@ mod tests {
             workspace: &ws,
             cancellation: cancel,
             event_sink: &sink,
+            aux_root: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(tool.execute(

@@ -182,6 +182,27 @@ Use this skill to review code changes...
 
 Channel-level skills (`data/<chat_id>/skills/`) override workspace-level skills on name collision.
 
+### Data Directory Access
+
+The `read`, `write`, and `edit` tools can access files in the bot's data
+directory (`telegram.data_dir`) in addition to the workspace. When a path
+doesn't exist in the workspace, the tools fall back to checking the data
+directory.
+
+**Resolution order** (for all three tools):
+1. Workspace (`~/duga-workspace`) — always checked first
+2. Data directory (`./data`) — fallback for relative paths only
+
+**Write behavior**: new root-level files go to workspace by default.
+Files in subdirectories follow whichever location has the matching parent
+directory (e.g., `logs/out.txt` goes to `data/logs/out.txt` if `data/logs/` exists
+but the workspace has no `logs/` dir).
+
+**Security**: files in the data directory are subject to the same
+symlink and path-traversal checks as workspace files. Tool confirmation
+(if enabled for `edit`/`write`) still applies regardless of which directory
+the file is in.
+
 ## Attachments
 
 The bot downloads supported attachments (photos, documents, audio, voice, video, stickers) into per-chat directories. Downloaded files are referenced by path in the user message so the agent can access them.
@@ -336,6 +357,8 @@ During execution, the bot edits a single live "process message" with:
 │   - JSONL sinks             │
 │   - System prompt with      │
 │     env context + tools     │
+│   - Pass data_dir as        │
+│     aux_roots to tools      │
 └──────────┬──────────────────┘
            │
 ┌──────────▼──────────────────┐

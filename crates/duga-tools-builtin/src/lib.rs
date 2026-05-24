@@ -17,6 +17,7 @@ pub mod write;
 use duga_sandbox::{binary_registry::BinaryRegistry, CommandExecutor, Workspace};
 use duga_tools::{ErasedTool, ToolDispatcher, ToolDispatcherError};
 use duga_types::config::{OutputLimits, ThinkLimits as AgentThinkLimits};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,10 +29,26 @@ pub fn register_builtin_tools(
     sandbox_timeout: Duration,
     think_limits: AgentThinkLimits,
     executor: Arc<dyn CommandExecutor>,
+    aux_roots: Vec<PathBuf>,
 ) -> Result<(), ToolDispatcherError> {
-    dispatcher.register_erased(ErasedTool::erase(read::ReadTool::new()))?;
-    dispatcher.register_erased(ErasedTool::erase(write::WriteTool::new()))?;
-    dispatcher.register_erased(ErasedTool::erase(edit::EditTool::new()))?;
+    let read_tool = if !aux_roots.is_empty() {
+        read::ReadTool::new().with_aux_roots(aux_roots.clone())
+    } else {
+        read::ReadTool::new()
+    };
+    let write_tool = if !aux_roots.is_empty() {
+        write::WriteTool::new().with_aux_roots(aux_roots.clone())
+    } else {
+        write::WriteTool::new()
+    };
+    let edit_tool = if !aux_roots.is_empty() {
+        edit::EditTool::new().with_aux_roots(aux_roots.clone())
+    } else {
+        edit::EditTool::new()
+    };
+    dispatcher.register_erased(ErasedTool::erase(read_tool))?;
+    dispatcher.register_erased(ErasedTool::erase(write_tool))?;
+    dispatcher.register_erased(ErasedTool::erase(edit_tool))?;
     dispatcher.register_erased(ErasedTool::erase(search::SearchTool::new()))?;
     dispatcher.register_erased(ErasedTool::erase(think::ThinkTool::new(
         think::ThinkLimits {

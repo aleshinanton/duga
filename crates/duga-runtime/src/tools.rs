@@ -11,10 +11,15 @@ use duga_sandbox::executor::SandboxMode;
 use duga_sandbox::{SandboxExecutor, Workspace};
 use duga_tools::{ErasedTool, ToolDispatcher};
 use duga_tools_builtin::delegate::DelegateTool;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Build a fully-populated `ToolDispatcher` with built-in tools and plugins.
-pub fn build_dispatcher(config: &Config, workspace: Arc<Workspace>) -> Result<Arc<ToolDispatcher>> {
+pub fn build_dispatcher(
+    config: &Config,
+    workspace: Arc<Workspace>,
+    aux_roots: Vec<PathBuf>,
+) -> Result<Arc<ToolDispatcher>> {
     let registry = if config.sandbox.allow_all_binaries {
         Arc::new(BinaryRegistry::allow_all())
     } else {
@@ -50,6 +55,7 @@ pub fn build_dispatcher(config: &Config, workspace: Arc<Workspace>) -> Result<Ar
         config.sandbox.timeout,
         config.agent.think.clone(),
         executor,
+        aux_roots,
     )
     .context("registering built-in tools")?;
 

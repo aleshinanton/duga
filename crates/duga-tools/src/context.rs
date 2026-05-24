@@ -7,6 +7,7 @@
 use crate::event_sink::EventSink;
 use duga_sandbox::CancellationToken;
 use duga_sandbox::Workspace;
+use std::path::PathBuf;
 
 /// Context passed to tool execution.
 pub struct ToolContext<'a> {
@@ -16,6 +17,9 @@ pub struct ToolContext<'a> {
     pub cancellation: CancellationToken,
     /// Where to emit events.
     pub event_sink: &'a dyn EventSink,
+    /// Optional secondary allowed root (e.g., the bot's data directory).
+    /// Tools use this as a fallback when a path is not in the workspace.
+    pub aux_root: Option<PathBuf>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -28,6 +32,7 @@ impl<'a> ToolContext<'a> {
             workspace,
             cancellation,
             event_sink,
+            aux_root: None,
         }
     }
 

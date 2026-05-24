@@ -138,6 +138,7 @@ mod tests {
             workspace: ws,
             cancellation: CancellationToken::new(),
             event_sink: &NullSink,
+            aux_root: None,
         }
     }
 

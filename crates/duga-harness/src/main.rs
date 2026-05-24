@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     );
 
     let workspace = Arc::new(Workspace::open(&config.workspace.root).context("opening workspace")?);
-    let dispatcher = build_dispatcher(&config, workspace.clone())?;
+    let dispatcher = build_dispatcher(&config, workspace.clone(), vec![])?;
 
     let event_sink = build_sinks(&cli, &config)?;
     let llm = build_llm(&selection.provider, &selection.model, &config)?;
