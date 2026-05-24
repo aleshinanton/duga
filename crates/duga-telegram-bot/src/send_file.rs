@@ -51,6 +51,7 @@ pub struct SendFileTool {
     chat_id: ChatId,
     config: TelegramSendFileConfig,
     workspace: Arc<Workspace>,
+    aux_roots: Vec<PathBuf>,
 }
 
 impl SendFileTool {
@@ -59,12 +60,14 @@ impl SendFileTool {
         chat_id: ChatId,
         config: TelegramSendFileConfig,
         workspace: Arc<Workspace>,
+        aux_roots: Vec<PathBuf>,
     ) -> Self {
         Self {
             bot,
             chat_id,
             config,
             workspace,
+            aux_roots,
         }
     }
 
@@ -100,54 +103,99 @@ impl SendFileTool {
 }
 
 impl SendFileTool {
-    /// Resolve a path (absolute or relative) within the workspace.
+    /// Resolve a path (absolute or relative) within the workspace or aux_roots.
+    ///
+    /// Returns `(resolved_path, is_aux)` where `is_aux` indicates the file was
+    /// found in an auxiliary root rather than the primary workspace.
     ///
     /// LLMs running inside the Docker sandbox often pass absolute paths like
     /// `/workspace/chess.svg` (the sandbox mount point). On the host, the file
-    /// actually lives at `{workspace_root}/chess.svg`, so we strip known
-    /// sandbox mount prefixes before resolving.
-    fn resolve_workspace_path(&self, path: &str) -> Result<PathBuf, String> {
+    /// may live at `{workspace_root}/chess.svg` or `{aux_root}/chess.svg`.
+    fn resolve_send_path(&self, path: &str) -> Result<(PathBuf, bool, PathBuf), String> {
+        // Helper: try to resolve `relative` within workspace, return full host path
+        let try_workspace = |relative: &Path| -> Option<(PathBuf, bool, PathBuf)> {
+            self.workspace.resolve(relative).ok().map(|resolved| {
+                let full = self.workspace.root_path().join(&resolved);
+                (resolved, false, full)
+            })
+        };
+
         let raw = PathBuf::from(path);
 
-        // First, try normal resolution (works for relative paths).
-        if let Ok(resolved) = self.workspace.resolve(&raw) {
-            return Ok(resolved);
+        // Relative path: try workspace first.
+        if !raw.is_absolute() {
+            if let Some(result) = try_workspace(&raw) {
+                return Ok(result);
+            }
+            // Try aux_roots.
+            if !self.aux_roots.is_empty() && !raw.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                for aux in &self.aux_roots {
+                    let aux_full = aux.join(&raw);
+                    if aux_full.exists() {
+                        return Ok((raw.clone(), true, aux_full));
+                    }
+                }
+            }
+            return Err(format!("file not found: {}", path));
         }
 
-        // Absolute path: try stripping the workspace root prefix directly.
-        if raw.is_absolute() {
-            if let Ok(relative) = raw.strip_prefix(self.workspace.root_path()) {
-                return self
-                    .workspace
-                    .resolve(relative)
-                    .map_err(|_| format!("path escapes workspace: {}", path));
-            }
-
-            // Try canonicalizing — works if the absolute path exists on the host
-            // (e.g. if the sandbox mount prefix happens to resolve).
-            if let Ok(canonical) = raw.canonicalize() {
-                if let Ok(relative) = canonical.strip_prefix(self.workspace.root_path()) {
-                    return self
-                        .workspace
-                        .resolve(relative)
-                        .map_err(|_| format!("path escapes workspace: {}", path));
-                }
-            }
-
-            // Last resort: strip known sandbox mount prefixes.
-            // The default Docker sandbox mount is `/workspace`.
-            const KNOWN_MOUNT_PREFIXES: &[&str] = &["/workspace/", "/workspace"];
-            for prefix in KNOWN_MOUNT_PREFIXES {
-                if let Ok(relative) = raw.strip_prefix(prefix) {
-                    return self
-                        .workspace
-                        .resolve(Path::new(relative))
-                        .map_err(|_| format!("path escapes workspace: {}", path));
-                }
+        // Absolute path: try multiple strategies.
+        // 1. Strip workspace root prefix.
+        if let Ok(relative) = raw.strip_prefix(self.workspace.root_path()) {
+            if let Some(result) = try_workspace(Path::new(relative)) {
+                return Ok(result);
             }
         }
 
-        Err(format!("path escapes workspace: {}", path))
+        // 2. Canonicalize then strip workspace root.
+        if let Ok(canonical) = raw.canonicalize() {
+            if let Ok(relative) = canonical.strip_prefix(self.workspace.root_path()) {
+                if let Some(result) = try_workspace(Path::new(relative)) {
+                    return Ok(result);
+                }
+            }
+            // Also check if canonicalized path is in an aux_root.
+            for aux in &self.aux_roots {
+                let aux_canonical = aux.canonicalize().unwrap_or_else(|_| aux.clone());
+                if let Ok(relative) = canonical.strip_prefix(&aux_canonical) {
+                    let aux_full = aux.join(relative);
+                    if aux_full.exists() {
+                        return Ok((relative.to_path_buf(), true, aux_full));
+                    }
+                }
+            }
+        }
+
+        // 3. Strip known sandbox mount prefixes (e.g. /workspace/).
+        const KNOWN_MOUNT_PREFIXES: &[&str] = &["/workspace/", "/workspace"];
+        for prefix in KNOWN_MOUNT_PREFIXES {
+            if let Ok(relative) = raw.strip_prefix(prefix) {
+                let rel = Path::new(relative);
+                if let Some(result) = try_workspace(rel) {
+                    return Ok(result);
+                }
+                // Try aux_roots with the stripped relative path.
+                for aux in &self.aux_roots {
+                    let aux_full = aux.join(rel);
+                    if aux_full.exists() {
+                        return Ok((rel.to_path_buf(), true, aux_full));
+                    }
+                }
+            }
+        }
+
+        // 4. Try each aux_root with the original absolute path stripped.
+        for aux in &self.aux_roots {
+            let aux_canonical = aux.canonicalize().unwrap_or_else(|_| aux.clone());
+            if let Ok(relative) = raw.strip_prefix(&aux_canonical) {
+                let aux_full = aux.join(relative);
+                if aux_full.exists() {
+                    return Ok((relative.to_path_buf(), true, aux_full));
+                }
+            }
+        }
+
+        Err(format!("file not found: {}", path))
     }
 }
 
@@ -165,9 +213,9 @@ impl Tool for SendFileTool {
     async fn execute(&self, ctx: ToolContext<'_>, args: Self::Args) -> ToolCallResult {
         let start = std::time::Instant::now();
 
-        // Resolve the path within the workspace (supports absolute paths).
-        let resolved = match self.resolve_workspace_path(&args.path) {
-            Ok(p) => p,
+        // Resolve the path within the workspace or aux_roots (supports absolute paths).
+        let (resolved, is_aux, full_path) = match self.resolve_send_path(&args.path) {
+            Ok(result) => result,
             Err(msg) => {
                 return Ok(ToolResult {
                     tool_call_id: CallId::new(),
@@ -182,8 +230,13 @@ impl Tool for SendFileTool {
             }
         };
 
-        // Check that the file exists.
-        if !self.workspace.is_file(&resolved) {
+        // Check that the file exists and is a regular file.
+        let file_exists = if is_aux {
+            full_path.is_file()
+        } else {
+            self.workspace.is_file(&resolved)
+        };
+        if !file_exists {
             return Ok(ToolResult {
                 tool_call_id: CallId::new(),
                 success: false,
@@ -234,8 +287,12 @@ impl Tool for SendFileTool {
             }
         }
 
-        // Check file size.
-        let file_size = self.workspace.root_dir().metadata(&resolved).ok().map(|m| m.len()).unwrap_or(0);
+        // Check file size (use full_path for aux-root files).
+        let file_size = if is_aux {
+            std::fs::metadata(&full_path).ok().map(|m| m.len()).unwrap_or(0)
+        } else {
+            self.workspace.root_dir().metadata(&resolved).ok().map(|m| m.len()).unwrap_or(0)
+        };
         let max_bytes = (self.config.max_file_size_mb as u64) * 1024 * 1024;
         if file_size > max_bytes {
             return Ok(ToolResult {
@@ -262,10 +319,16 @@ impl Tool for SendFileTool {
         let send_method = Self::get_send_method(&resolved, args.as_photo.unwrap_or(false));
         let method_name = Self::send_method_name(&send_method);
 
-        // Build the full workspace path for reading the file.
-        let full_path = self.workspace.root_path().join(&resolved);
-        let input_file = teloxide::types::InputFile::file(&full_path)
-            .file_name(resolved.file_name().unwrap_or_default().to_string_lossy().into_owned());
+        // Build the full path for reading the file.
+        // For aux-root files, full_path was already resolved by resolve_send_path.
+        let read_path = if is_aux {
+            full_path.clone()
+        } else {
+            self.workspace.root_path().join(&resolved)
+        };
+        let file_name = resolved.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let input_file = teloxide::types::InputFile::file(&read_path)
+            .file_name(file_name);
 
         // Prepare caption (Telegram limit: 1024 chars).
         let caption = args.caption.as_deref().map(|c| {
