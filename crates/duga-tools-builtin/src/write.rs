@@ -53,40 +53,95 @@ impl WriteTool {
     }
 
     /// Try to resolve a path for writing: workspace first, then aux_roots.
+    /// Supports absolute paths by stripping known sandbox mount prefixes.
     fn resolve_write_path(&self, ctx: &ToolContext<'_>, path_str: &str) -> Result<(PathBuf, bool), ToolError> {
         let raw = PathBuf::from(path_str);
-        // Only accept workspace if the file OR its parent directory exists there.
-        if let Ok(resolved) = ctx.workspace.resolve(&raw) {
-            let exists_in_ws = ctx.workspace.root_dir().metadata(&resolved).is_ok();
-            let is_root_level = resolved.parent().map_or(true, |p| {
-                p == Path::new("") || p == Path::new(".")
-            });
-            let parent_exists_in_ws = !is_root_level && resolved.parent().map_or(false, |p| {
-                ctx.workspace.root_dir().metadata(p).is_ok()
-            });
-            if exists_in_ws || is_root_level || parent_exists_in_ws {
-                return Ok((resolved, false));
+
+        // Helper: try workspace — accept if file or parent dir exists.
+        let try_workspace = |p: &PathBuf| -> Option<PathBuf> {
+            ctx.workspace.resolve(p).ok().and_then(|resolved| {
+                let exists_in_ws = ctx.workspace.root_dir().metadata(&resolved).is_ok();
+                let is_root_level = resolved.parent().map_or(true, |parent| {
+                    parent == Path::new("") || parent == Path::new(".")
+                });
+                let parent_exists_in_ws = !is_root_level && resolved.parent().map_or(false, |parent| {
+                    ctx.workspace.root_dir().metadata(parent).is_ok()
+                });
+                if exists_in_ws || is_root_level || parent_exists_in_ws {
+                    Some(resolved)
+                } else {
+                    None
+                }
+            })
+        };
+
+        // Helper: try aux_roots for a relative path (no parent traversal).
+        let try_aux = |rel: &Path| -> Option<PathBuf> {
+            if rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                return None;
             }
-        }
-        // Then try aux_roots — only for relative paths where parent exists.
-        // Reject paths with parent traversal to prevent escaping aux_root.
-        if !raw.is_absolute() && !self.aux_roots.is_empty() {
-            if raw.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-                return Err(ToolError::Denied(format!(
-                    "path escapes auxiliary roots: {}", path_str
-                )));
+            if self.aux_roots.is_empty() {
+                return None;
             }
             for aux in &self.aux_roots {
-                let aux_full = aux.join(&raw);
-                let exists_in_aux = aux_full.exists();
-                let parent_exists_in_aux = aux_full.parent().map_or(false, |p| {
-                    p.exists()
-                });
-                if exists_in_aux || parent_exists_in_aux {
-                    return Ok((raw, true));
+                let aux_full = aux.join(rel);
+                let exists = aux_full.exists();
+                let parent_exists = aux_full.parent().map_or(false, |p| p.exists());
+                if exists || parent_exists {
+                    return Some(rel.to_path_buf());
+                }
+            }
+            None
+        };
+
+        // Relative path: workspace first, then aux_roots.
+        if !raw.is_absolute() {
+            if let Some(resolved) = try_workspace(&raw) {
+                return Ok((resolved, false));
+            }
+            if let Some(rel) = try_aux(&raw) {
+                return Ok((rel, true));
+            }
+            return Err(ToolError::Denied(format!("path not in workspace or auxiliary roots: {}", path_str)));
+        }
+
+        // Absolute path: try multiple strategies.
+        // 1. Strip workspace root prefix.
+        if let Ok(relative) = raw.strip_prefix(ctx.workspace.root_path()) {
+            let rel = PathBuf::from(relative);
+            if let Some(resolved) = try_workspace(&rel) {
+                return Ok((resolved, false));
+            }
+            if let Some(found) = try_aux(Path::new(relative)) {
+                return Ok((found, true));
+            }
+        }
+
+        // 2. Strip known sandbox mount prefixes.
+        const KNOWN_MOUNT_PREFIXES: &[&str] = &["/workspace/", "/workspace"];
+        for prefix in KNOWN_MOUNT_PREFIXES {
+            if let Ok(relative) = raw.strip_prefix(prefix) {
+                let rel = PathBuf::from(relative);
+                if let Some(resolved) = try_workspace(&rel) {
+                    return Ok((resolved, false));
+                }
+                if let Some(found) = try_aux(Path::new(relative)) {
+                    return Ok((found, true));
                 }
             }
         }
+
+        // 3. Try aux_roots with absolute path stripped.
+        for aux in &self.aux_roots {
+            let aux_canonical = aux.canonicalize().unwrap_or_else(|_| aux.clone());
+            if let Ok(relative) = raw.strip_prefix(&aux_canonical) {
+                let aux_full = aux.join(Path::new(relative));
+                if aux_full.exists() || aux_full.parent().map_or(false, |p| p.exists()) {
+                    return Ok((PathBuf::from(relative), true));
+                }
+            }
+        }
+
         Err(ToolError::Denied(format!("path not in workspace or auxiliary roots: {}", path_str)))
     }
 
