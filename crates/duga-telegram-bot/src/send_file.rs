@@ -112,11 +112,16 @@ impl SendFileTool {
     /// `/workspace/chess.svg` (the sandbox mount point). On the host, the file
     /// may live at `{workspace_root}/chess.svg` or `{aux_root}/chess.svg`.
     fn resolve_send_path(&self, path: &str) -> Result<(PathBuf, bool, PathBuf), String> {
-        // Helper: try to resolve `relative` within workspace, return full host path
+        // Helper: try workspace resolution and verify the file exists there.
         let try_workspace = |relative: &Path| -> Option<(PathBuf, bool, PathBuf)> {
-            self.workspace.resolve(relative).ok().map(|resolved| {
-                let full = self.workspace.root_path().join(&resolved);
-                (resolved, false, full)
+            self.workspace.resolve(relative).ok().and_then(|resolved| {
+                // Only return if the file actually exists in the workspace.
+                if self.workspace.is_file(&resolved) {
+                    let full = self.workspace.root_path().join(&resolved);
+                    Some((resolved, false, full))
+                } else {
+                    None
+                }
             })
         };
 
@@ -131,7 +136,7 @@ impl SendFileTool {
             if !self.aux_roots.is_empty() && !raw.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
                 for aux in &self.aux_roots {
                     let aux_full = aux.join(&raw);
-                    if aux_full.exists() {
+                    if aux_full.is_file() {
                         return Ok((raw.clone(), true, aux_full));
                     }
                 }
@@ -159,7 +164,7 @@ impl SendFileTool {
                 let aux_canonical = aux.canonicalize().unwrap_or_else(|_| aux.clone());
                 if let Ok(relative) = canonical.strip_prefix(&aux_canonical) {
                     let aux_full = aux.join(relative);
-                    if aux_full.exists() {
+                    if aux_full.is_file() {
                         return Ok((relative.to_path_buf(), true, aux_full));
                     }
                 }
@@ -177,7 +182,7 @@ impl SendFileTool {
                 // Try aux_roots with the stripped relative path.
                 for aux in &self.aux_roots {
                     let aux_full = aux.join(rel);
-                    if aux_full.exists() {
+                    if aux_full.is_file() {
                         return Ok((rel.to_path_buf(), true, aux_full));
                     }
                 }
@@ -189,7 +194,7 @@ impl SendFileTool {
             let aux_canonical = aux.canonicalize().unwrap_or_else(|_| aux.clone());
             if let Ok(relative) = raw.strip_prefix(&aux_canonical) {
                 let aux_full = aux.join(relative);
-                if aux_full.exists() {
+                if aux_full.is_file() {
                     return Ok((relative.to_path_buf(), true, aux_full));
                 }
             }
