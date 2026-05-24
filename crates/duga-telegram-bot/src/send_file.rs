@@ -558,4 +558,157 @@ mod tests {
         assert_eq!(SendFileTool::send_method_name(&SendMethod::Animation), "animation");
         assert_eq!(SendFileTool::send_method_name(&SendMethod::Voice), "voice");
     }
+
+    // ── resolve_send_path tests ────────────────────────────────────────
+
+    fn make_tool(workspace: Arc<Workspace>, aux_roots: Vec<PathBuf>) -> SendFileTool {
+        use duga_config::TelegramSendFileConfig;
+        SendFileTool {
+            bot: Bot::new("unused"),
+            chat_id: ChatId(0),
+            config: TelegramSendFileConfig::default(),
+            workspace,
+            aux_roots,
+        }
+    }
+
+    #[test]
+    fn test_resolve_relative_in_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::open(dir.path()).unwrap());
+        // Create file in workspace
+        std::fs::write(dir.path().join("hello.txt"), b"hello").unwrap();
+
+        let tool = make_tool(ws, vec![]);
+        let (resolved, is_aux, _full) = tool.resolve_send_path("hello.txt").unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("hello.txt"));
+    }
+
+    #[test]
+    fn test_resolve_relative_in_aux_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let aux = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::open(dir.path()).unwrap());
+        // Create file in aux_root, NOT in workspace
+        std::fs::write(aux.path().join("video.mp4"), b"fake video").unwrap();
+
+        let tool = make_tool(ws, vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux, full) = tool.resolve_send_path("video.mp4").unwrap();
+        assert!(is_aux);
+        assert_eq!(resolved, PathBuf::from("video.mp4"));
+        assert_eq!(full, aux.path().join("video.mp4"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_workspace_prefix_stripped_to_aux() {
+        // Simulates the real-world case: LLM passes /workspace/video.mp4,
+        // file exists in aux_root (Docker mount) but not in workspace.
+        let dir = tempfile::tempdir().unwrap();
+        let aux = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::open(dir.path()).unwrap());
+        std::fs::write(aux.path().join("video.mp4"), b"fake video").unwrap();
+
+        let tool = make_tool(ws, vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux, full) = tool.resolve_send_path("/workspace/video.mp4").unwrap();
+        assert!(is_aux);
+        assert_eq!(resolved, PathBuf::from("video.mp4"));
+        assert_eq!(full, aux.path().join("video.mp4"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_workspace_prefix_stripped_to_workspace() {
+        // /workspace/file exists in the actual workspace root.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::open(dir.path()).unwrap());
+        std::fs::write(dir.path().join("data.csv"), b"col1,col2").unwrap();
+
+        let tool = make_tool(ws, vec![]);
+        let (resolved, is_aux, _full) = tool.resolve_send_path("/workspace/data.csv").unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("data.csv"));
+    }
+
+    #[test]
+    fn test_resolve_file_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let aux = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::open(dir.path()).unwrap());
+
+        let tool = make_tool(ws, vec![aux.path().to_path_buf()]);
+        let err = tool.resolve_send_path("nonexistent.bin").unwrap_err();
+        assert!(err.contains("file not found"), "expected 'file not found', got: {}", err);
+    }
+
+    #[test]
+    fn test_resolve_workspace_priority_over_aux() {
+        // File exists in BOTH workspace and aux_root — workspace wins.
+        let dir = tempfile::tempdir().unwrap();
+        let aux = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::open(dir.path()).unwrap());
+        std::fs::write(dir.path().join("shared.txt"), b"workspace").unwrap();
+        std::fs::write(aux.path().join("shared.txt"), b"aux").unwrap();
+
+        let tool = make_tool(ws, vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux, full) = tool.resolve_send_path("shared.txt").unwrap();
+        assert!(!is_aux, "workspace should take priority over aux_root");
+        assert_eq!(resolved, PathBuf::from("shared.txt"));
+        assert_eq!(full, dir.path().join("shared.txt"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let aux = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::open(dir.path()).unwrap());
+
+        let tool = make_tool(ws, vec![aux.path().to_path_buf()]);
+        let err = tool.resolve_send_path("/workspace/missing.mp4").unwrap_err();
+        assert!(err.contains("file not found"), "expected 'file not found', got: {}", err);
+    }
+
+    #[test]
+    fn test_resolve_absolute_canonicalize_path() {
+        // Absolute path that exists on disk and is within workspace after canonicalization.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::open(dir.path()).unwrap());
+        let file_path = dir.path().join("sub").join("img.png");
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(&file_path, b"png data").unwrap();
+
+        let tool = make_tool(ws, vec![]);
+        // Use the real absolute path — should resolve via canonicalize.
+        let abs = file_path.canonicalize().unwrap();
+        let (resolved, is_aux, _full) = tool.resolve_send_path(&abs.display().to_string()).unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("sub/img.png"));
+    }
+
+    #[test]
+    fn test_resolve_subdirectory_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::open(dir.path()).unwrap());
+        std::fs::create_dir_all(dir.path().join("a").join("b")).unwrap();
+        std::fs::write(dir.path().join("a").join("b").join("deep.txt"), b"deep").unwrap();
+
+        let tool = make_tool(ws, vec![]);
+        let (resolved, is_aux, _full) = tool.resolve_send_path("a/b/deep.txt").unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("a/b/deep.txt"));
+    }
+
+    #[test]
+    fn test_resolve_subdirectory_in_aux() {
+        let dir = tempfile::tempdir().unwrap();
+        let aux = tempfile::tempdir().unwrap();
+        let ws = Arc::new(Workspace::open(dir.path()).unwrap());
+        std::fs::create_dir_all(aux.path().join("downloads")).unwrap();
+        std::fs::write(aux.path().join("downloads").join("clip.mp4"), b"clip").unwrap();
+
+        let tool = make_tool(ws, vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux, full) = tool.resolve_send_path("downloads/clip.mp4").unwrap();
+        assert!(is_aux);
+        assert_eq!(resolved, PathBuf::from("downloads/clip.mp4"));
+        assert_eq!(full, aux.path().join("downloads/clip.mp4"));
+    }
 }
