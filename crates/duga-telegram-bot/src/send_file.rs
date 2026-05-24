@@ -99,6 +99,58 @@ impl SendFileTool {
     }
 }
 
+impl SendFileTool {
+    /// Resolve a path (absolute or relative) within the workspace.
+    ///
+    /// LLMs running inside the Docker sandbox often pass absolute paths like
+    /// `/workspace/chess.svg` (the sandbox mount point). On the host, the file
+    /// actually lives at `{workspace_root}/chess.svg`, so we strip known
+    /// sandbox mount prefixes before resolving.
+    fn resolve_workspace_path(&self, path: &str) -> Result<PathBuf, String> {
+        let raw = PathBuf::from(path);
+
+        // First, try normal resolution (works for relative paths).
+        if let Ok(resolved) = self.workspace.resolve(&raw) {
+            return Ok(resolved);
+        }
+
+        // Absolute path: try stripping the workspace root prefix directly.
+        if raw.is_absolute() {
+            if let Ok(relative) = raw.strip_prefix(self.workspace.root_path()) {
+                return self
+                    .workspace
+                    .resolve(relative)
+                    .map_err(|_| format!("path escapes workspace: {}", path));
+            }
+
+            // Try canonicalizing — works if the absolute path exists on the host
+            // (e.g. if the sandbox mount prefix happens to resolve).
+            if let Ok(canonical) = raw.canonicalize() {
+                if let Ok(relative) = canonical.strip_prefix(self.workspace.root_path()) {
+                    return self
+                        .workspace
+                        .resolve(relative)
+                        .map_err(|_| format!("path escapes workspace: {}", path));
+                }
+            }
+
+            // Last resort: strip known sandbox mount prefixes.
+            // The default Docker sandbox mount is `/workspace`.
+            const KNOWN_MOUNT_PREFIXES: &[&str] = &["/workspace/", "/workspace"];
+            for prefix in KNOWN_MOUNT_PREFIXES {
+                if let Ok(relative) = raw.strip_prefix(prefix) {
+                    return self
+                        .workspace
+                        .resolve(Path::new(relative))
+                        .map_err(|_| format!("path escapes workspace: {}", path));
+                }
+            }
+        }
+
+        Err(format!("path escapes workspace: {}", path))
+    }
+}
+
 impl Tool for SendFileTool {
     type Args = SendFileArgs;
 
@@ -113,14 +165,14 @@ impl Tool for SendFileTool {
     async fn execute(&self, ctx: ToolContext<'_>, args: Self::Args) -> ToolCallResult {
         let start = std::time::Instant::now();
 
-        // Resolve the path within the workspace.
-        let resolved = match self.workspace.resolve(&PathBuf::from(&args.path)) {
+        // Resolve the path within the workspace (supports absolute paths).
+        let resolved = match self.resolve_workspace_path(&args.path) {
             Ok(p) => p,
-            Err(_) => {
+            Err(msg) => {
                 return Ok(ToolResult {
                     tool_call_id: CallId::new(),
                     success: false,
-                    output: format!("Error: path escapes workspace: {}", args.path),
+                    output: format!("Error: {}", msg),
                     metadata: serde_json::json!({"error": "path_escapes_workspace"}),
                     duration_ms: start.elapsed().as_millis() as u64,
                     stdout_bytes: 0,
