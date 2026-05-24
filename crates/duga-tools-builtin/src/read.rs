@@ -356,4 +356,128 @@ mod tests {
             .unwrap();
         assert!(r.output.starts_with("<binary file:"));
     }
+
+    // ── resolve_path tests ────────────────────────────────────────────
+
+    fn make_ctx_with_aux(ws: &Workspace) -> ToolContext<'static> {
+        let ws: &'static Workspace = unsafe { std::mem::transmute(ws) };
+        ToolContext {
+            workspace: ws,
+            cancellation: CancellationToken::new(),
+            event_sink: &NullSink,
+            aux_root: None,
+        }
+    }
+
+    #[test]
+    fn test_resolve_relative_in_workspace() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("hello.txt"), b"hello").unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx_with_aux(&ws);
+        let tool = ReadTool::new();
+        let (resolved, is_aux) = tool.resolve_path(&ctx, "hello.txt").unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("hello.txt"));
+    }
+
+    #[test]
+    fn test_resolve_relative_in_aux_root() {
+        let dir = tempdir().unwrap();
+        let aux = tempdir().unwrap();
+        std::fs::write(aux.path().join("skills.md"), b"# Skills").unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx_with_aux(&ws);
+        let tool = ReadTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux) = tool.resolve_path(&ctx, "skills.md").unwrap();
+        assert!(is_aux);
+        assert_eq!(resolved, PathBuf::from("skills.md"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_workspace_prefix_to_aux() {
+        let dir = tempdir().unwrap();
+        let aux = tempdir().unwrap();
+        std::fs::write(aux.path().join("config.yaml"), b"key: val").unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx_with_aux(&ws);
+        let tool = ReadTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux) = tool.resolve_path(&ctx, "/workspace/config.yaml").unwrap();
+        assert!(is_aux);
+        assert_eq!(resolved, PathBuf::from("config.yaml"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_workspace_prefix_to_workspace() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("data.csv"), b"a,b,c").unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx_with_aux(&ws);
+        let tool = ReadTool::new();
+        let (resolved, is_aux) = tool.resolve_path(&ctx, "/workspace/data.csv").unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("data.csv"));
+    }
+
+    #[test]
+    fn test_resolve_not_found() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx_with_aux(&ws);
+        let tool = ReadTool::new();
+        let err = tool.resolve_path(&ctx, "missing.txt").unwrap_err();
+        assert!(err.to_string().contains("not in workspace"));
+    }
+
+    #[test]
+    fn test_resolve_workspace_priority_over_aux() {
+        let dir = tempdir().unwrap();
+        let aux = tempdir().unwrap();
+        std::fs::write(dir.path().join("shared.md"), b"workspace").unwrap();
+        std::fs::write(aux.path().join("shared.md"), b"aux").unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx_with_aux(&ws);
+        let tool = ReadTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux) = tool.resolve_path(&ctx, "shared.md").unwrap();
+        assert!(!is_aux, "workspace should have priority");
+        assert_eq!(resolved, PathBuf::from("shared.md"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_not_found() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx_with_aux(&ws);
+        let tool = ReadTool::new();
+        let err = tool.resolve_path(&ctx, "/workspace/ghost.txt").unwrap_err();
+        assert!(err.to_string().contains("not in workspace"));
+    }
+
+    #[test]
+    fn test_resolve_absolute_canonicalize() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("img.png"), b"png").unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx_with_aux(&ws);
+        let tool = ReadTool::new();
+        let abs = dir.path().join("sub").join("img.png").canonicalize().unwrap();
+        let (resolved, is_aux) = tool.resolve_path(&ctx, &abs.display().to_string()).unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("sub/img.png"));
+    }
+
+    #[test]
+    fn test_resolve_subdirectory_in_aux() {
+        let dir = tempdir().unwrap();
+        let aux = tempdir().unwrap();
+        std::fs::create_dir_all(aux.path().join("skills").join("test")).unwrap();
+        std::fs::write(aux.path().join("skills").join("test").join("SKILL.md"), b"# Skill").unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx_with_aux(&ws);
+        let tool = ReadTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux) = tool.resolve_path(&ctx, "skills/test/SKILL.md").unwrap();
+        assert!(is_aux);
+        assert_eq!(resolved, PathBuf::from("skills/test/SKILL.md"));
+    }
 }

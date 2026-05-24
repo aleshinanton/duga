@@ -395,4 +395,87 @@ mod tests {
         assert!(r.is_err());
         assert!(!outside_dir.path().join("pwn.txt").exists());
     }
+
+    // ── resolve_write_path tests ─────────────────────────────────────
+
+    #[test]
+    fn test_resolve_write_relative_in_workspace() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx(&ws);
+        let tool = WriteTool::new();
+        let (resolved, is_aux) = tool.resolve_write_path(&ctx, "sub/new.txt").unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("sub/new.txt"));
+    }
+
+    #[test]
+    fn test_resolve_write_relative_root_level() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx(&ws);
+        let tool = WriteTool::new();
+        let (resolved, is_aux) = tool.resolve_write_path(&ctx, "new.txt").unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("new.txt"));
+    }
+
+    #[test]
+    fn test_resolve_write_relative_in_aux() {
+        let dir = tempdir().unwrap();
+        let aux = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx(&ws);
+        let tool = WriteTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux) = tool.resolve_write_path(&ctx, "output.log").unwrap();
+        assert!(is_aux);
+        assert_eq!(resolved, PathBuf::from("output.log"));
+    }
+
+    #[test]
+    fn test_resolve_write_absolute_workspace_prefix_to_aux() {
+        let dir = tempdir().unwrap();
+        let aux = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx(&ws);
+        let tool = WriteTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux) = tool.resolve_write_path(&ctx, "/workspace/config.toml").unwrap();
+        assert!(is_aux);
+        assert_eq!(resolved, PathBuf::from("config.toml"));
+    }
+
+    #[test]
+    fn test_resolve_write_absolute_workspace_prefix_to_workspace() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx(&ws);
+        let tool = WriteTool::new();
+        let (resolved, is_aux) = tool.resolve_write_path(&ctx, "/workspace/README.md").unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("README.md"));
+    }
+
+    #[test]
+    fn test_resolve_write_not_found() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx(&ws);
+        let tool = WriteTool::new();
+        let err = tool.resolve_write_path(&ctx, "/workspace/deep/nested/new.txt").unwrap_err();
+        assert!(err.to_string().contains("not in workspace"));
+    }
+
+    #[test]
+    fn test_resolve_write_workspace_priority() {
+        let dir = tempdir().unwrap();
+        let aux = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("logs")).unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx(&ws);
+        let tool = WriteTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
+        let (resolved, is_aux) = tool.resolve_write_path(&ctx, "logs/app.log").unwrap();
+        assert!(!is_aux, "workspace should have priority");
+        assert_eq!(resolved, PathBuf::from("logs/app.log"));
+    }
 }
