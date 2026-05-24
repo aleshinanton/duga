@@ -148,3 +148,82 @@ impl ToolDispatcher {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_sink::NullSink;
+    use serde_json::json;
+
+    #[test]
+    fn new_dispatcher_is_empty() {
+        let d = ToolDispatcher::new();
+        assert!(d.names().is_empty());
+        assert!(d.schemas().is_empty());
+    }
+
+    #[test]
+    fn default_dispatcher_is_empty() {
+        let d = ToolDispatcher::default();
+        assert!(d.names().is_empty());
+    }
+
+    #[test]
+    fn get_nonexistent_returns_none() {
+        let d = ToolDispatcher::new();
+        assert!(d.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn tool_schema_not_found() {
+        let d = ToolDispatcher::new();
+        let err = d.tool_schema("missing").unwrap_err();
+        assert_eq!(err, ToolDispatcherError::NotFound("missing".into()));
+    }
+
+    #[test]
+    fn dispatcher_debug_format() {
+        let d = ToolDispatcher::new();
+        let dbg = format!("{:?}", d);
+        assert!(dbg.contains("ToolDispatcher"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_unknown_tool_returns_error() {
+        let d = ToolDispatcher::new();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let cancel = duga_sandbox::CancellationToken::new();
+        let sink = NullSink;
+
+        let call = duga_types::tool_call::ToolCall {
+            id: duga_types::tool_call::CallId::new(),
+            tool: "nonexistent".into(),
+            raw_args: json!({}),
+        };
+
+        let result = d.dispatch(&call, &ws, cancel, &sink).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Unknown tool"), "got: {err_msg}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_to_empty_registry_produces_helpful_error() {
+        let d = ToolDispatcher::new();
+        let dir = tempfile::tempdir().unwrap();
+        let ws = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let cancel = duga_sandbox::CancellationToken::new();
+        let sink = NullSink;
+
+        let call = duga_types::tool_call::ToolCall {
+            id: duga_types::tool_call::CallId::new(),
+            tool: "empty".into(),
+            raw_args: json!({}),
+        };
+
+        let err = d.dispatch(&call, &ws, cancel, &sink).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("No tools registered"), "got: {msg}");
+    }
+}

@@ -4,13 +4,13 @@
 //! LLM history. Supports deduplication by message ID.
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use teloxide::prelude::*;
 use tokio::io::AsyncWriteExt;
 
 /// A single log entry for a chat message.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LogEntry {
     pub message_id: i64,
     pub chat_id: i64,
@@ -72,5 +72,76 @@ impl BotLogger {
 
     fn chat_dir(&self, chat_id: i64) -> PathBuf {
         self.data_dir.join(chat_id.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_entry_serialization_roundtrip() {
+        let entry = LogEntry {
+            message_id: 42,
+            chat_id: -1001234567890,
+            user_id: Some(12345),
+            timestamp: "2024-01-01T00:00:00Z".into(),
+            direction: "in".into(),
+            text: "Hello, bot!".into(),
+            is_edit: false,
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: LogEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.message_id, 42);
+        assert_eq!(parsed.chat_id, -1001234567890);
+        assert_eq!(parsed.user_id, Some(12345));
+        assert_eq!(parsed.direction, "in");
+        assert_eq!(parsed.text, "Hello, bot!");
+        assert!(!parsed.is_edit);
+    }
+
+    #[test]
+    fn log_entry_direction_out() {
+        let entry = LogEntry {
+            message_id: 1,
+            chat_id: 100,
+            user_id: None,
+            timestamp: "2024-01-01T00:00:00Z".into(),
+            direction: "out".into(),
+            text: "Response".into(),
+            is_edit: true,
+        };
+        assert_eq!(entry.direction, "out");
+        assert!(entry.is_edit);
+    }
+
+    #[test]
+    fn log_entry_cloneable() {
+        let entry = LogEntry {
+            message_id: 1,
+            chat_id: 100,
+            user_id: Some(999),
+            timestamp: "now".into(),
+            direction: "in".into(),
+            text: "msg".into(),
+            is_edit: false,
+        };
+        let cloned = entry.clone();
+        assert_eq!(cloned.message_id, entry.message_id);
+        assert_eq!(cloned.text, entry.text);
+    }
+
+    #[test]
+    fn bot_logger_chat_dir() {
+        let logger = BotLogger::new(PathBuf::from("/tmp/logs"));
+        let dir = logger.chat_dir(-123);
+        assert_eq!(dir, PathBuf::from("/tmp/logs/-123"));
+    }
+
+    #[test]
+    fn bot_logger_new_stores_path() {
+        let logger = BotLogger::new(PathBuf::from("/data/bot"));
+        assert_eq!(logger.chat_dir(42), PathBuf::from("/data/bot/42"));
     }
 }

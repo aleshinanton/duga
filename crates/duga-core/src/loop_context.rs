@@ -77,3 +77,174 @@ impl<'a> LoopContext<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loop_registry::LoopRegistry;
+    use crate::summarizer::Summarizer;
+    use duga_events::NullSink;
+    use duga_llm::dummy::DummyClient;
+    use duga_sandbox::CancellationToken;
+    use duga_tools::ToolDispatcher;
+    use duga_types::config::AgentConfig;
+    
+    use duga_types::message::Message;
+    use std::sync::Arc;
+
+    /// A summarizer that does nothing — sufficient for LoopContext tests.
+    struct NoopSummarizer;
+    impl Summarizer for NoopSummarizer {
+        fn summarize<'a>(&'a self, _messages: &'a [Message]) -> crate::SummaryFuture<'a> {
+            Box::pin(async { Ok(duga_types::llm::SummaryMessage::new("summary".into())) })
+        }
+    }
+
+    fn make_test_ctx<'a>(
+        config: &'a AgentConfig,
+        memory: &'a mut crate::memory::Memory,
+        llm: &'a Arc<dyn duga_llm::LlmClient>,
+        tools: &'a Arc<ToolDispatcher>,
+        workspace: &'a duga_sandbox::Workspace,
+        event_sink: &'a Arc<dyn duga_events::EventSink>,
+        summarizer: &'a Arc<dyn Summarizer>,
+        cancellation: &'a CancellationToken,
+        registry: &'a Arc<LoopRegistry>,
+    ) -> LoopContext<'a> {
+        LoopContext {
+            config,
+            memory,
+            llm,
+            tools,
+            workspace,
+            event_sink,
+            summarizer,
+            cancellation,
+            registry,
+            max_refinement_iterations: 2,
+            max_delegation_depth: 3,
+            delegation_depth: 0,
+        }
+    }
+
+    #[test]
+    fn child_increments_delegation_depth() {
+        let config = AgentConfig::default();
+        let llm: Arc<dyn duga_llm::LlmClient> = Arc::new(DummyClient::default());
+        let tools = Arc::new(ToolDispatcher::new());
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let sink: Arc<dyn duga_events::EventSink> = Arc::new(NullSink);
+        let summarizer: Arc<dyn Summarizer> = Arc::new(NoopSummarizer);
+        let cancel = CancellationToken::new();
+        let registry = Arc::new(LoopRegistry::new());
+        let mut memory = crate::memory::Memory::new(
+            vec![Message::system("test")],
+            16_000,
+            0.8,
+            0,
+            16_000,
+        );
+
+        let mut ctx = make_test_ctx(
+            &config, &mut memory, &llm, &tools, &workspace, &sink, &summarizer, &cancel, &registry,
+        );
+        assert_eq!(ctx.delegation_depth, 0);
+
+        let child = ctx.child();
+        assert_eq!(child.delegation_depth, 1, "child should have depth 1");
+        assert_eq!(child.max_delegation_depth, 3, "child inherits max depth");
+    }
+
+    #[test]
+    fn child_inherits_all_fields() {
+        let config = AgentConfig::default();
+        let llm: Arc<dyn duga_llm::LlmClient> = Arc::new(DummyClient::default());
+        let tools = Arc::new(ToolDispatcher::new());
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let sink: Arc<dyn duga_events::EventSink> = Arc::new(NullSink);
+        let summarizer: Arc<dyn Summarizer> = Arc::new(NoopSummarizer);
+        let cancel = CancellationToken::new();
+        let registry = Arc::new(LoopRegistry::new());
+        let mut memory = crate::memory::Memory::new(
+            vec![Message::system("test")],
+            16_000,
+            0.8,
+            0,
+            16_000,
+        );
+
+        let mut ctx = make_test_ctx(
+            &config, &mut memory, &llm, &tools, &workspace, &sink, &summarizer, &cancel, &registry,
+        );
+        ctx.max_refinement_iterations = 5;
+        ctx.max_delegation_depth = 7;
+
+        // Verify child inherits fields correctly
+        {
+            let child = ctx.child();
+            assert_eq!(child.max_refinement_iterations, 5, "child inherits refinement iters");
+            assert_eq!(child.max_delegation_depth, 7, "child inherits max delegation depth");
+            assert_eq!(child.delegation_depth, 1, "depth incremented once");
+            // child shares references with parent
+            assert!(std::ptr::eq(child.config, ctx.config));
+        }
+    }
+
+    #[test]
+    fn double_child_increments_twice() {
+        let config = AgentConfig::default();
+        let llm: Arc<dyn duga_llm::LlmClient> = Arc::new(DummyClient::default());
+        let tools = Arc::new(ToolDispatcher::new());
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let sink: Arc<dyn duga_events::EventSink> = Arc::new(NullSink);
+        let summarizer: Arc<dyn Summarizer> = Arc::new(NoopSummarizer);
+        let cancel = CancellationToken::new();
+        let registry = Arc::new(LoopRegistry::new());
+        let mut memory = crate::memory::Memory::new(
+            vec![Message::system("test")],
+            16_000,
+            0.8,
+            0,
+            16_000,
+        );
+
+        let mut ctx = make_test_ctx(
+            &config, &mut memory, &llm, &tools, &workspace, &sink, &summarizer, &cancel, &registry,
+        );
+
+        let child1 = ctx.child();
+        assert_eq!(child1.delegation_depth, 1);
+        drop(child1);
+        // After drop, can create another child with depth 1 again
+        let child2 = ctx.child();
+        assert_eq!(child2.delegation_depth, 1);
+    }
+
+    #[test]
+    fn default_delegation_depth_is_zero() {
+        let config = AgentConfig::default();
+        let llm: Arc<dyn duga_llm::LlmClient> = Arc::new(DummyClient::default());
+        let tools = Arc::new(ToolDispatcher::new());
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let sink: Arc<dyn duga_events::EventSink> = Arc::new(NullSink);
+        let summarizer: Arc<dyn Summarizer> = Arc::new(NoopSummarizer);
+        let cancel = CancellationToken::new();
+        let registry = Arc::new(LoopRegistry::new());
+        let mut memory = crate::memory::Memory::new(
+            vec![Message::system("test")],
+            16_000,
+            0.8,
+            0,
+            16_000,
+        );
+
+        let ctx = make_test_ctx(
+            &config, &mut memory, &llm, &tools, &workspace, &sink, &summarizer, &cancel, &registry,
+        );
+        assert_eq!(ctx.delegation_depth, 0, "root context starts at depth 0");
+    }
+}

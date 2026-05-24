@@ -91,3 +91,97 @@ fn sandbox_mode_from_config(mode: &ConfigSandboxMode) -> SandboxMode {
         ConfigSandboxMode::Docker => SandboxMode::Docker,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duga_config::SandboxMode as ConfigSandboxMode;
+    use duga_sandbox::executor::SandboxMode;
+
+    #[test]
+    fn sandbox_mode_host() {
+        assert_eq!(
+            sandbox_mode_from_config(&ConfigSandboxMode::Host),
+            SandboxMode::Host
+        );
+    }
+
+    #[test]
+    fn sandbox_mode_capability() {
+        assert_eq!(
+            sandbox_mode_from_config(&ConfigSandboxMode::Capability),
+            SandboxMode::Capability
+        );
+    }
+
+    #[test]
+    fn sandbox_mode_docker() {
+        assert_eq!(
+            sandbox_mode_from_config(&ConfigSandboxMode::Docker),
+            SandboxMode::Docker
+        );
+    }
+
+    #[test]
+    fn build_dispatcher_allow_all_binaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = format!(
+            r#"
+model: "dummy/test"
+agent:
+  limits:
+    max_steps: 5
+    max_tool_calls: 10
+    max_runtime: 60s
+    retry_on_error: 1
+  features:
+    streaming: false
+  output:
+    max_stdout_bytes: 4096
+    max_stderr_bytes: 4096
+    max_combined_bytes: 8192
+  think:
+    max_calls: 2
+    max_tokens: 128
+sandbox:
+  mode: host
+  allow_all_binaries: true
+  timeout: 30s
+workspace:
+  root: {root}
+environment:
+  allowed:
+    - HOME
+memory:
+  max_tokens: 4096
+  compress_at_ratio: 0.8
+  context_window_size: 50
+  max_context_tokens: 12000
+  summarizer: simple
+plugins:
+  dir: {plugin_dir}
+  modules: []
+"#,
+            root = dir.path().display(),
+            plugin_dir = dir.path().display(),
+        );
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, yaml).unwrap();
+        let config = duga_config::Config::load(&config_path).expect("test config must parse");
+
+        let ws_dir = tempfile::tempdir().unwrap();
+        let workspace = std::sync::Arc::new(
+            duga_sandbox::Workspace::open(ws_dir.path()).unwrap(),
+        );
+
+        let result = build_dispatcher(&config, workspace, vec![]);
+        assert!(result.is_ok(), "build_dispatcher should succeed: {:?}", result.err());
+        let dispatcher = result.unwrap();
+        let names = dispatcher.names();
+        assert!(names.contains(&"shell".to_string()), "should have shell tool");
+        assert!(names.contains(&"read".to_string()), "should have read tool");
+        assert!(names.contains(&"write".to_string()), "should have write tool");
+        assert!(names.contains(&"think".to_string()), "should have think tool");
+        assert!(names.contains(&"search".to_string()), "should have search tool");
+    }
+}

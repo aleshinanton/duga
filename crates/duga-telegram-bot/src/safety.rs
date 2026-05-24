@@ -58,6 +58,41 @@ impl TelegramConfirmationProvider {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duga_runtime::confirmation::ConfirmationRequest;
+
+    #[test]
+    fn confirmation_request_serialisation_roundtrip() {
+        let req = ConfirmationRequest {
+            confirmation_id: "abc-123".into(),
+            tool_name: "shell".into(),
+            label: "Run dangerous command".into(),
+            arguments: Some("rm -rf /".into()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: ConfirmationRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.confirmation_id, "abc-123");
+        assert_eq!(parsed.tool_name, "shell");
+        assert_eq!(parsed.label, "Run dangerous command");
+        assert_eq!(parsed.arguments, Some("rm -rf /".into()));
+    }
+
+    #[test]
+    fn confirmation_request_without_arguments() {
+        let req = ConfirmationRequest {
+            confirmation_id: "xyz".into(),
+            tool_name: "edit".into(),
+            label: "Edit file".into(),
+            arguments: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: ConfirmationRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.arguments, None);
+    }
+}
+
 #[async_trait::async_trait]
 impl ConfirmationProvider for TelegramConfirmationProvider {
     async fn confirm(

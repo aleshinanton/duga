@@ -182,3 +182,137 @@ impl Summarizer for RuntimeSummarizer {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duga_config::SandboxMode;
+    use std::io::Write;
+
+    fn make_config(mode: SandboxMode) -> duga_config::Config {
+        let mode_str = match mode {
+            SandboxMode::Host => "host",
+            SandboxMode::Capability => "capability",
+            SandboxMode::Docker => "docker",
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = format!(
+            r#"
+model: "dummy/test"
+agent:
+  limits:
+    max_steps: 5
+    max_tool_calls: 10
+    max_runtime: 60s
+    retry_on_error: 1
+  features:
+    streaming: false
+  output:
+    max_stdout_bytes: 4096
+    max_stderr_bytes: 4096
+    max_combined_bytes: 8192
+  think:
+    max_calls: 2
+    max_tokens: 128
+sandbox:
+  mode: {mode_str}
+  timeout: 30s
+  allowed_binaries:
+    - /bin/echo
+workspace:
+  root: {workspace_root}
+environment:
+  allowed:
+    - HOME
+memory:
+  max_tokens: 4096
+  compress_at_ratio: 0.8
+  context_window_size: 50
+  max_context_tokens: 12000
+  summarizer: simple
+plugins:
+  dir: {plugin_dir}
+  modules: []
+"#,
+            workspace_root = dir.path().display(),
+            plugin_dir = dir.path().display(),
+        );
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, yaml).unwrap();
+        duga_config::Config::load(&path).expect("test config must parse")
+    }
+
+    #[test]
+    fn sandbox_context_docker_mode() {
+        let config = make_config(SandboxMode::Docker);
+        let ctx = sandbox_environment_context(&config);
+        assert!(ctx.contains("sandboxed container"));
+        assert!(ctx.contains("apk") || ctx.contains("apt"));
+    }
+
+    #[test]
+    fn sandbox_context_host_mode() {
+        let config = make_config(SandboxMode::Host);
+        let ctx = sandbox_environment_context(&config);
+        assert!(ctx.contains("direct system access"));
+    }
+
+    #[test]
+    fn sandbox_context_capability_mode() {
+        let config = make_config(SandboxMode::Capability);
+        let ctx = sandbox_environment_context(&config);
+        assert!(ctx.contains("direct system access"));
+    }
+
+    #[test]
+    fn tool_guidance_includes_all_required_tools() {
+        let guidance = tool_guidance();
+        assert!(guidance.contains("think"), "should mention think");
+        assert!(guidance.contains("shell"), "should mention shell");
+        assert!(guidance.contains("read"), "should mention read");
+        assert!(guidance.contains("edit"), "should mention edit");
+        assert!(guidance.contains("write"), "should mention write");
+        assert!(guidance.contains("search"), "should mention search");
+    }
+
+    #[test]
+    fn tool_guidance_requires_non_empty_labels() {
+        let guidance = tool_guidance();
+        assert!(guidance.contains("label"), "should mention label requirement");
+        assert!(guidance.contains("non-empty"), "should require non-empty");
+    }
+
+    #[test]
+    fn tool_guidance_is_static_str() {
+        let a = tool_guidance();
+        let b = tool_guidance();
+        assert_eq!(a, b);
+        assert!(!a.is_empty());
+    }
+
+    #[tokio::test]
+    async fn runtime_summarizer_produces_role_labels() {
+        let summarizer = RuntimeSummarizer;
+        let messages = vec![
+            duga_types::message::Message::user("hello"),
+            duga_types::message::Message::assistant(Some("hi".into()), vec![], None),
+        ];
+        let summary = summarizer.summarize(&messages).await.unwrap();
+        assert!(summary.content.contains("Compressed context"));
+        assert!(summary.content.contains("user"));
+        assert!(summary.content.contains("assistant"));
+    }
+
+    #[tokio::test]
+    async fn runtime_summarizer_respects_limit_of_16() {
+        let summarizer = RuntimeSummarizer;
+        let mut messages = Vec::new();
+        for i in 0..20 {
+            messages.push(duga_types::message::Message::user(format!("msg {}", i)));
+        }
+        let summary = summarizer.summarize(&messages).await.unwrap();
+        // Only first 16 should be included
+        let role_count = summary.content.matches("user").count();
+        assert_eq!(role_count, 16, "should summarize at most 16 messages");
+    }
+}
