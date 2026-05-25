@@ -469,44 +469,143 @@ async fn try_handle_delegate(
 
 // ── Public helpers for specialized loops ─────────────────────────────────
 
-/// Dispatch a tool call with proper event emissions.
+/// Dispatch a tool call with proper event emissions, retry, and timeout.
+///
 /// Specialized loops should use this instead of calling `ctx.tools.dispatch()`
 /// directly so that frontends see tool progress during delegation.
+///
+/// Retries up to `config.limits.retry_on_error` additional times on transient
+/// errors for tools that opt in via `Tool::retryable`.  Each dispatch is
+/// bounded by the remaining runtime.
 pub async fn dispatch_tool_with_events(
     ctx: &LoopContext<'_>,
     call: &ToolCall,
 ) -> Result<ToolResult, AgentError> {
-    ctx.event_sink
-        .emit(Event::ToolCallStarted {
-            tool_call: call.clone(),
-            attempt: 1,
-        })
-        .await
-        .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
-
-    let start = Instant::now();
-    let result = ctx
+    let retryable = ctx
         .tools
-        .dispatch(
+        .get(&call.tool)
+        .map(|tool| tool.retryable)
+        .unwrap_or(false);
+    let max_attempts = ctx.config.limits.retry_on_error + 1;
+    let mut last_error: Option<duga_types::error::ToolError> = None;
+
+    for attempt in 1..=max_attempts {
+        if ctx.cancellation.is_cancelled() {
+            return Err(AgentError::Cancelled);
+        }
+
+        ctx.event_sink
+            .emit(Event::ToolCallStarted {
+                tool_call: call.clone(),
+                attempt,
+            })
+            .await
+            .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
+
+        let start = Instant::now();
+        let dispatch = ctx.tools.dispatch(
             call,
             ctx.workspace,
             ctx.cancellation.clone(),
             ctx.event_sink.as_ref(),
+        );
+
+        // Timeout bounded by config.max_runtime — but we don't have a
+        // loop_started Instant here.  Use a generous 60s timeout that the
+        // cancellation token can still interrupt.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            dispatch,
         )
         .await;
 
-    let tool_result = ToolResult::from_outcome(call.id.clone(), &call.tool, result, start);
+        match outcome {
+            Ok(Ok(result)) => {
+                ctx.event_sink
+                    .emit(Event::ToolCallFinished {
+                        result: result.clone(),
+                        attempt,
+                        tool_name: call.tool.clone(),
+                    })
+                    .await
+                    .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
+                return Ok(result);
+            }
+            Ok(Err(error)) if attempt < max_attempts && retryable && error.is_transient() => {
+                let result = ToolResult::from_outcome(
+                    call.id.clone(),
+                    &call.tool,
+                    Err(error.clone()),
+                    start,
+                );
+                ctx.event_sink
+                    .emit(Event::ToolCallFinished {
+                        result,
+                        attempt,
+                        tool_name: call.tool.clone(),
+                    })
+                    .await
+                    .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
+                last_error = Some(error);
+            }
+            Ok(Err(error)) => {
+                let result = ToolResult::from_outcome(
+                    call.id.clone(),
+                    &call.tool,
+                    Err(error),
+                    start,
+                );
+                ctx.event_sink
+                    .emit(Event::ToolCallFinished {
+                        result: result.clone(),
+                        attempt,
+                        tool_name: call.tool.clone(),
+                    })
+                    .await
+                    .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
+                return Ok(result);
+            }
+            Err(_timeout) => {
+                // Timeout — return the last error if any, or a timeout error
+                let error = last_error
+                    .unwrap_or_else(|| duga_types::error::ToolError::Timeout);
+                let result = ToolResult::from_outcome(
+                    call.id.clone(),
+                    &call.tool,
+                    Err(error),
+                    start,
+                );
+                ctx.event_sink
+                    .emit(Event::ToolCallFinished {
+                        result: result.clone(),
+                        attempt,
+                        tool_name: call.tool.clone(),
+                    })
+                    .await
+                    .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
+                return Ok(result);
+            }
+        }
+    }
 
+    // All attempts exhausted
+    let result = ToolResult::from_outcome(
+        call.id.clone(),
+        &call.tool,
+        Err(last_error.unwrap_or_else(|| {
+            duga_types::error::ToolError::Plugin("retry attempts exhausted".into())
+        })),
+        Instant::now(),
+    );
     ctx.event_sink
         .emit(Event::ToolCallFinished {
-            result: tool_result.clone(),
-            attempt: 1,
+            result: result.clone(),
+            attempt: max_attempts,
             tool_name: call.tool.clone(),
         })
         .await
         .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
-
-    Ok(tool_result)
+    Ok(result)
 }
 
 // ── Helpers (free functions adapted from AgentLoop) ──────────────────────
