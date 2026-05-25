@@ -79,8 +79,14 @@ async fn run_problem_solving(
         let audit = audit_phase(&plan, &output, &current_task, ctx).await?;
 
         if audit.is_complete {
+            // Prefer the audit's clean final_answer over the noisy
+            // accumulated_output (which contains LLM meta-commentary
+            // and tool execution logs mixed with substantive output).
+            let answer = audit
+                .final_answer
+                .unwrap_or_else(|| accumulated_output.trim().to_string());
             let msg = duga_types::message::AssistantMessage {
-                text: Some(audit.final_answer.unwrap_or(accumulated_output)),
+                text: Some(answer),
                 tool_calls: vec![],
                 reasoning_content: None,
             };
@@ -103,17 +109,22 @@ async fn run_problem_solving(
             });
         }
 
-        // Refine: append the gap analysis to the task for the next iteration.
+        // Refine: use the audit's clean final_answer (or accumulated output
+        // as fallback) for the next iteration's context — not the raw
+        // execute_plan output which contains LLM meta-commentary.
+        let previous = audit
+            .final_answer
+            .as_deref()
+            .unwrap_or(&accumulated_output);
         current_task = format!(
-            "{}\n\nPrevious attempt output:\n{}\n\nGaps found:\n{}",
-            task, output, audit.gaps.unwrap_or_default()
+            "{task}\n\nPrevious attempt result:\n{previous}\n\nGaps found:\n{gaps}",
+            gaps = audit.gaps.unwrap_or_default()
         );
     }
 
     let msg = duga_types::message::AssistantMessage {
         text: Some(format!(
-            "Reached {} refinement iterations. Best result:\n\n{}",
-            max_iterations, accumulated_output
+            "Reached {max_iterations} refinement iterations. Best result:\n\n{accumulated_output}"
         )),
         tool_calls: vec![],
         reasoning_content: None,

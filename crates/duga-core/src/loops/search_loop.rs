@@ -63,13 +63,22 @@ async fn run_search(
             SteerAction::Complete(_) | SteerAction::Reprompt | SteerAction::Continue => {}
         }
 
+        // Isolate each search cycle: checkpoint before execute_search,
+        // restore after.  This prevents tool call noise and intermediate
+        // LLM responses from cycle N polluting cycle N+1's context.
+        let checkpoint = ctx.memory.checkpoint();
+
         // Phase 2: Execute search + read
         let (new_findings, tc) = execute_search(&query, ctx).await?;
         total_tool_calls += tc;
         findings.push_str(&new_findings);
         findings.push('\n');
 
+        ctx.memory.restore(checkpoint);
+
         // Phase 3: Evaluate
+        // evaluate_results uses minimal context + accumulated findings,
+        // not the full noisy memory from execute_search.
         let evaluation = evaluate_results(&task, &query, &findings, ctx).await?;
 
         if evaluation.is_sufficient {

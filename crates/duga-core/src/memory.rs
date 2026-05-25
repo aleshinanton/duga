@@ -182,6 +182,26 @@ impl Memory {
         self.recent_messages.push_back(msg);
     }
 
+    /// Take a checkpoint — returns the current count of recent messages.
+    ///
+    /// Use with [`restore`] to isolate context between independent loop
+    /// iterations (e.g., verification answer attempts, decomposition subtasks,
+    /// search cycles).  Only `recent_messages` is affected; system messages,
+    /// task anchor, and summary are immutable from the loop's perspective.
+    ///
+    /// [`restore`]: Self::restore
+    pub fn checkpoint(&self) -> usize {
+        self.recent_messages.len()
+    }
+
+    /// Restore memory to a previous checkpoint by truncating recent messages.
+    ///
+    /// Only affects `recent_messages`; pinned/task-anchor/system/summary
+    /// messages are never touched.
+    pub fn restore(&mut self, checkpoint: usize) {
+        self.recent_messages.truncate(checkpoint);
+    }
+
     pub fn messages(&self) -> Vec<Message> {
         let mut messages = Vec::with_capacity(
             usize::from(self.task_anchor.is_some())
@@ -791,5 +811,64 @@ mod tests {
                 "tool messages must not be orphaned"
             );
         }
+    }
+
+    #[test]
+    fn checkpoint_restore_truncates_recent_messages() {
+        let mut memory = Memory::new(vec![Message::system("sys")], 1000, 0.8, 0, 0);
+        memory.push_user("msg1".into());
+        memory.push_user("msg2".into());
+
+        let cp = memory.checkpoint();
+        assert_eq!(cp, 2, "checkpoint should return message count");
+
+        memory.push_user("msg3".into());
+        memory.push_user("msg4".into());
+        assert_eq!(memory.recent_messages().len(), 4);
+
+        memory.restore(cp);
+        assert_eq!(memory.recent_messages().len(), 2, "should truncate to cp");
+
+        // Messages after restore should be msg1, msg2
+        let msgs = memory.messages();
+        // First is task anchor (if any), then system, then recent
+        let recent: Vec<_> = msgs.iter().filter(|m| m.role == Role::User).collect();
+        assert_eq!(recent.len(), 2);
+    }
+
+    #[test]
+    fn checkpoint_restore_preserves_system_and_pinned() {
+        let mut memory = Memory::new(
+            vec![Message::system("sys")],
+            1000, 0.8, 0, 0,
+        );
+        memory.set_task_anchor(Some("task".into()));
+
+        let cp = memory.checkpoint();
+        memory.push_user("temp".into());
+        memory.restore(cp);
+
+        let msgs = memory.messages();
+        // Should still have task anchor + system
+        assert!(msgs.iter().any(|m| m.role == Role::System),
+            "system messages must survive checkpoint/restore");
+        let anchor_text: String = msgs.iter()
+            .filter_map(|m| m.content.iter().find_map(|c| match c {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            }))
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(anchor_text.contains("CURRENT TASK"),
+            "task anchor must survive checkpoint/restore");
+    }
+
+    #[test]
+    fn restore_beyond_length_no_op() {
+        let mut memory = Memory::new(vec![], 1000, 0.8, 0, 0);
+        memory.push_user("msg1".into());
+        // Restore to a point beyond current length — no panic
+        memory.restore(5);
+        assert_eq!(memory.recent_messages().len(), 1);
     }
 }

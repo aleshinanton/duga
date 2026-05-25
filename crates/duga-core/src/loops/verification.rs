@@ -61,10 +61,18 @@ async fn run_verification(
             SteerAction::Complete(_) | SteerAction::Reprompt | SteerAction::Continue => {}
         }
 
+        // Isolate each answer attempt: save memory checkpoint before
+        // generating, restore after.  This ensures attempt N does not
+        // see the tool calls, LLM responses, or intermediate state
+        // from attempts 0..N-1.
+        let checkpoint = ctx.memory.checkpoint();
+
         tracing::info!(attempt = i + 1, total = answer_count, "Generating answer");
         let (answer, tool_calls) = generate_answer(&task, i + 1, answer_count, ctx).await?;
         total_tool_calls += tool_calls;
         answers.push(answer);
+
+        ctx.memory.restore(checkpoint);
     }
 
     // Phase 2: Vote / synthesize consensus

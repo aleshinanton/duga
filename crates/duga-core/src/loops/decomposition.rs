@@ -83,10 +83,17 @@ async fn run_decomposition(
             SteerAction::Complete(_) | SteerAction::Reprompt | SteerAction::Continue => {}
         }
 
+        // Isolate each subtask: checkpoint before, restore after.
+        // Subtasks should be solved independently — subtask N must not
+        // see tool results or LLM responses from subtasks 0..N-1.
+        let checkpoint = ctx.memory.checkpoint();
+
         tracing::info!(subtask = %subtask.title, "Solving subtask");
         let (output, tc) = solve_subtask(&subtask.description, ctx).await?;
         total_tool_calls += tc;
         results.push((subtask.title.clone(), output, true));
+
+        ctx.memory.restore(checkpoint);
     }
 
     // Phase 3: Merge results
