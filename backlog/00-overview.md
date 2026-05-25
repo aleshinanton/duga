@@ -2,7 +2,7 @@
 
 **Repository:** `aleshinanton/duga`  
 **Generated:** 2026-05-10  
-**Updated:** 2026-05-23 (added EPIC-29 core skills, EPIC-30 skills telegram)  
+**Updated:** 2026-05-25 (added EPIC-31 steering)  
 **Spec version:** 1.2  
 **Plan version:** Implementation-Grade Execution Plan  
 
@@ -42,7 +42,8 @@
 | EPIC-28 | File Attachment Sending | 7 | §5, §24, §11 | 21 |
 | EPIC-29 | Core Skills Infrastructure | 6 | §5, §32 | 12 |
 | EPIC-30 | Skills Tooling & Telegram Integration | 6 | §5, §11, §24 | 11 |
-| **Total** | | **209** | | **813.5** |
+| EPIC-31 | Steering — Dynamic Mid-Loop Guidance | 12 | §5 (new) | 53 |
+| **Total** | | **221** | | **866.5** |
 
 ---
 
@@ -437,7 +438,7 @@ epic/foundation, epic/security, epic/tools, epic/builtin-tools,
 epic/execution, epic/memory, epic/events, epic/llm, epic/validation,
 epic/loop, epic/core, epic/wasm, epic/cli, epic/observability, epic/testing,
 epic/build, epic/telegram, epic/tui, epic/frontend-runtime,
-epic/provider-compatibility
+epic/provider-compatibility, epic/steering
 
 # Layer
 layer/foundation, layer/security, layer/tools, layer/tools-builtin,
@@ -445,7 +446,7 @@ layer/sandbox, layer/memory, layer/events, layer/llm,
 layer/validation, layer/loop, layer/wasm, layer/cli,
 layer/observability, layer/testing, layer/build, layer/frontend,
 layer/telegram, layer/tui, layer/runtime, layer/config,
-layer/provider, layer/docs
+layer/provider, layer/docs, layer/steering
 
 # Priority
 priority/critical (MVP blocker, 52 tasks)
@@ -492,3 +493,4 @@ status/ready (unblocked, can be picked up)
 | `epic-26-loop-agnostic-core.md` | EPIC-26: Loop-Agnostic Core — Agent Loop System Redesign (15 tasks) |
 | `epic-27-markdown-html-formatting.md` | EPIC-27: Markdown → Telegram HTML Conversion (5 tasks) |
 | `epic-28-file-attachment-send.md` | EPIC-28: File Attachment Sending (7 tasks) |
+| `epic-31-steering.md` | EPIC-31: Steering — Dynamic Mid-Loop Guidance Injection (12 tasks) |
