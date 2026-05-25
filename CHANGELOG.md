@@ -55,6 +55,7 @@ This project has not published versioned releases yet. Entries below summarize t
 
 ### Fixed
 
+- **Telegram bot no longer leaks raw tool-call XML to users.** Added `sanitize_tool_call_syntax()` in the Telegram formatter that strips `</tool_calls>`, `<invoke>`, and `<parameter>` XML fragments from final answers. Some LLMs (especially DeepSeek when primed with tool-call examples in context) generate text containing literal tool-call syntax that Telegram HTML parse mode would interpret as tags, leaking partial artifacts.
 - **Malformed LLM JSON no longer kills the agent run.** Added `repair_json()` and `balance_json()` to fix common LLM-generated JSON errors (unescaped newlines, invalid escape sequences, truncated braces/brackets). As a last resort, falls back to an empty object `{}` so the tool's schema validation can catch missing fields and the LLM can retry — exactly like pi-mom's `parseStreamingJson()`.
 - **Think limits reset per agent run.** Added `reset_limits()` to the `Tool` trait (default no-op), propagated through `ErasedExecute` → `ErasedTool` → `ToolDispatcher`. The agent loop calls it at the start of every run. Fixes the bug where think call/token counters accumulated across all chats in a long-running bot process, eventually denying think to all users.
 - Added a project-wide changelog.

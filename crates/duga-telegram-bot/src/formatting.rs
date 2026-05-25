@@ -164,7 +164,62 @@ fn push_end_tag(output: &mut String, tag: TagEnd) {
 /// Delegates to `markdown_to_telegram_html` for full Markdown→HTML conversion
 /// that Telegram's `ParseMode::Html` can render.
 pub fn format_final_message(text: &str) -> String {
-    markdown_to_telegram_html(text)
+    markdown_to_telegram_html(&sanitize_tool_call_syntax(text))
+}
+
+/// Strip raw XML-like tool-call syntax that LLMs sometimes emit as prose.
+///
+/// Some LLMs (especially when primed with tool-call examples in context)
+/// generate text containing literal `<invoke name="...">` or
+/// `</tool_calls>` fragments.  These would be interpreted as Telegram HTML
+/// tags and stripped, leaking partial artifacts to the user.
+fn sanitize_tool_call_syntax(text: &str) -> String {
+    // Strip </tool_calls> fragments (naked closing tag)
+    let text = text.replace("</tool_calls>", "");
+
+    // Strip <invoke name="..."> ... </invoke> blocks (with or without content)
+    let text = strip_xml_tag(&text, "invoke", "[tool call removed]");
+
+    // Strip <parameter ...> ... </parameter> blocks
+    let text = strip_xml_tag(&text, "parameter", "");
+
+    text
+}
+
+/// Strip balanced `<tag ...>...</tag>` blocks from text.
+fn strip_xml_tag(text: &str, tag: &str, replacement: &str) -> String {
+    let open_start = format!("<{tag} ");
+    let open_simple = format!("<{tag}>");
+    let close = format!("</{tag}>");
+
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        // Find opening tag
+        let open_pos = rest.find(&open_start)
+            .or_else(|| rest.find(&open_simple));
+        match open_pos {
+            Some(pos) => {
+                result.push_str(&rest[..pos]);
+                let after_open = &rest[pos..];
+                // Find closing tag after the opening
+                if let Some(close_pos) = after_open.find(&close) {
+                    let skip_len = close_pos + close.len();
+                    result.push_str(replacement);
+                    rest = &after_open[skip_len..];
+                } else {
+                    // No closing tag — treat as literal text
+                    result.push_str(&rest[pos..pos + open_start.len()]);
+                    rest = &rest[pos + open_start.len()..];
+                }
+            }
+            None => {
+                result.push_str(rest);
+                break;
+            }
+        }
+    }
+    result
 }
 
 /// Chunk a message near Telegram's 4096 character limit.
@@ -286,5 +341,44 @@ mod tests {
             // Each should be under Telegram's limit.
             assert!(chunk.len() <= 4096);
         }
+    }
+
+    #[test]
+    fn sanitize_removes_tool_calls_closing_tag() {
+        let input = "Some text </tool_calls> more text";
+        let result = super::sanitize_tool_call_syntax(input);
+        assert_eq!(result, "Some text  more text");
+    }
+
+    #[test]
+    fn sanitize_removes_invoke_block() {
+        let input = "Before <invoke name=\"shell\">\n  <parameter name=\"cmd\">curl</parameter>\n</invoke> After";
+        let result = super::sanitize_tool_call_syntax(input);
+        assert_eq!(result, "Before [tool call removed] After");
+    }
+
+    #[test]
+    fn sanitize_removes_parameter_blocks() {
+        let input = "Text <parameter name=\"x\">value</parameter> end";
+        let result = super::sanitize_tool_call_syntax(input);
+        assert_eq!(result, "Text end");
+    }
+
+    #[test]
+    fn sanitize_preserves_normal_text() {
+        let input = "Normal text with < and > characters";
+        let result = super::sanitize_tool_call_syntax(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn sanitize_handles_nested_like_pattern() {
+        // Real-world case: LLM text with invoke pattern
+        let input = "Done. </tool_calls>\n<invoke name=\"shell\">\n<parameter name=\"command\" string=\"false\">[\"curl\",\"-s\"]</parameter>\n</invoke>";
+        let result = super::sanitize_tool_call_syntax(input);
+        assert!(!result.contains("</tool_calls>"), "closing tag should be removed");
+        assert!(!result.contains("<invoke"), "invoke block should be removed");
+        assert!(!result.contains("</invoke>"), "invoke closing should be removed");
+        assert!(!result.contains("<parameter"), "parameter should be removed");
     }
 }
