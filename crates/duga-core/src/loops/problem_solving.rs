@@ -13,6 +13,7 @@ use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
 use crate::loops::simple_react::dispatch_tool_with_events;
+use crate::steering::{check_steer, SteerAction};
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
@@ -58,6 +59,12 @@ async fn run_problem_solving(
     let mut accumulated_output = String::new();
 
     for iteration in 1..=max_iterations {
+        // Steering checkpoint (no-op when ctx.steer is None)
+        match check_steer(ctx, true).await? {
+            SteerAction::Cancel(_) => return Err(AgentError::Cancelled),
+            SteerAction::Complete(_) | SteerAction::Reprompt | SteerAction::Continue => {}
+        }
+
         tracing::info!(iteration, "Plan phase");
         let plan = plan_phase(&current_task, ctx).await?;
         tracing::info!(plan_steps = plan.steps.len(), "Plan created");
@@ -409,6 +416,8 @@ mod tests {
             max_refinement_iterations: 3,
             max_delegation_depth: 2,
             delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = ProblemSolvingLoop;
@@ -474,6 +483,8 @@ mod tests {
             max_refinement_iterations: 2,
             max_delegation_depth: 2,
             delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = ProblemSolvingLoop;

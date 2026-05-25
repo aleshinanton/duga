@@ -64,6 +64,8 @@ async fn run_test_agent(
         max_refinement_iterations: config.loop_config.max_refinement_iterations,
         max_delegation_depth: config.loop_config.max_delegation_depth,
         delegation_depth: 0,
+        steer: None,
+        steer_limits: None,
     };
 
     let loop_impl = SimpleReActLoop;

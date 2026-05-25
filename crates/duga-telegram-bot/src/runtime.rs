@@ -56,6 +56,7 @@ impl TelegramRuntime {
         _bot_logger: Arc<BotLogger>,
         session_manager: Arc<SessionManager>,
         cancellation: CancellationToken,
+        steering_rx: Option<duga_core::steering::SteeringReceiver>,
     ) -> Result<String> {
         let selection = resolve_provider(&self.config)?;
         let llm = build_llm(&selection.provider, &selection.model, &self.config)?;
@@ -256,7 +257,8 @@ impl TelegramRuntime {
                 max_refinement_iterations: loop_config.max_refinement_iterations,
                 max_delegation_depth: loop_config.max_delegation_depth,
                 delegation_depth: 0,
-            };
+                steer: steering_rx,
+                steer_limits: None,            };
 
             loop_impl.run(task.clone(), &mut ctx).await
         }; // ctx dropped here → borrows released

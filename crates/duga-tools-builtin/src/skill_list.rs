@@ -133,6 +133,7 @@ impl Tool for ListSkillsTool {
                 tool_call_id: CallId::new(),
                 success: true,
                 output: "(no skills installed)".into(),
+                steering_hint: None,
                 metadata: serde_json::json!({"count": 0}),
                 duration_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
                 stdout_bytes: 0,
@@ -205,6 +206,7 @@ impl Tool for ListSkillsTool {
             tool_call_id: CallId::new(),
             success: true,
             output: lines.join("\n"),
+            steering_hint: None,
             metadata: serde_json::json!({
                 "count": indexes.len(),
                 "global_count": global_count,

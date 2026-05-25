@@ -64,9 +64,20 @@ impl Tool for SearchTool {
             .await
             .map_err(|_| ToolError::Plugin("search panicked".into()))?;
 
+        // Count matches for steering hint
+        let match_count = output.lines().count();
+        let steering_hint = if match_count > 50 {
+            Some(format!(
+                "Search returned {match_count} results. Consider narrowing your query with more specific terms."
+            ))
+        } else {
+            None
+        };
+
         Ok(ToolResult {
             tool_call_id: CallId::new(),
             success: true,
+            steering_hint,
             output,
             metadata: serde_json::json!({}),
             duration_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,

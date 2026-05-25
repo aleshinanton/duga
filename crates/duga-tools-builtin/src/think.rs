@@ -99,6 +99,7 @@ impl Tool for ThinkTool {
             tool_call_id: CallId::new(),
             success: true,
             output: args.thought,
+            steering_hint: None,
             metadata: serde_json::json!({"estimated_tokens": est}),
             duration_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
             stdout_bytes: 0,

@@ -8,6 +8,17 @@ This project has not published versioned releases yet. Entries below summarize t
 
 ### Added
 
+- **EPIC-31: Steering — Dynamic mid-loop guidance injection.**  Allows human users, tools, config rules, and the loop itself to inject guidance, observations, or constraints into the LLM context *during* a loop run (not just at startup). Key additions:
+  - **Steering types** (`duga-core::steering`) — `SteeringContextEvent` (InjectGuidance, ResetTask, AdjustLimits, InjectToolResult), `SteeringControlEvent` (Cancel, ForceComplete, Reprompt), `SteeringSender`/`SteeringReceiver` async channel pair with two-pass priority drain (Cancel > ForceComplete > Reprompt).
+  - **Three injection points** in `SimpleReActLoop` — POINT 0 (before LLM call), POINT 2 (after tool result, Reprompt buffered), POINT 3 (end of step, flushes buffered).
+  - **`Event::SteeringApplied`** — emitted on every steering action with `source` (human, self-diagnosis, tool, policy) and `kind` (guidance, cancel, reprompt, reset, limit) for observability.
+  - **`LoopContext.steer`/`steer_limits`** — the receiving end of the steering channel (owned by the loop run), plus limit overrides from `AdjustLimits`. Child loops get `steer: None` but inherit `steer_limits`.
+  - **Self-steering** — after 3 consecutive tool failures, the loop injects system-level guidance telling the LLM to pivot approach (source: `"self-diagnosis"`).
+  - **Policy steer** — `agent.steering.rules` YAML config: rules with `guidance`, `as_system`, and `repeat` fields inject context events at POINT 0 (once or every iteration).
+  - **Tool steer** — `ToolResult.steering_hint` optional field; tools (e.g., `search` when results > 50) return hints the loop injects as `InjectGuidance` (source: `"tool"`).
+  - **Telegram integration** — `ChatSessionState.steer_tx` stores the sender; mid-run messages automatically inject `Reprompt` steering; `/steer <text>` command for explicit guidance; `/stop` still cancels via `CancellationToken` (priority over steer). Race condition (channel closed between `is_active()` and `send()`) handled gracefully by falling back to a new task.
+  - **Specialized loop checkpoints** — `check_steer()` calls added to ProblemSolving, Verification, Decomposition, and Search loops at natural cycle/phase boundaries (no-op when `steer: None`, but ready for future child-loop steering).
+
 - **EPIC-26: Loop-Agnostic Core — Agent Loop System Redesign.**  Complete architectural change: the core agent loop is now fully loop-agnostic.  Any loop type can be added without touching the dispatcher, bot, classifier prompt, or output validation.  Key changes:
   - **`Loop` trait** (`duga-core::Loop`) — defines the contract every loop implements: `id()`, `name()`, `description()`, and `run()`.  Object-safe via manual `LoopRunFuture` type alias (same pattern as `Summarizer`/`SummaryFuture`).
   - **`LoopContext`** — borrowed runtime context passed to every `Loop::run()` invocation.  Holds all dependencies (config, memory, LLM, tools, workspace, event sink, summarizer, cancellation, registry, delegation depth).

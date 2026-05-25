@@ -171,6 +171,20 @@ async fn handle_message(
         .log_message(chat_id_i64, &msg, 0, true)
         .await;
 
+    // ── Steering: if a loop is already running, inject the message as Reprompt ──
+    match session_manager.try_steer(chat_id_i64, &task) {
+        Some(Ok(())) => {
+            let _ = bot.send_message(chat_id, "🔄 Adjusting...").await;
+            return;
+        }
+        Some(Err(_)) => {
+            // Channel closed (race condition) — fall through to start new task.
+        }
+        None => {
+            // No active run with steering — start new task.
+        }
+    }
+
     // Run the agent.
     let request = RunRequest {
         chat_id: chat_id_i64,
@@ -230,6 +244,7 @@ async fn handle_command(
                    /start — Start the bot\n\
                    /help — Show this help\n\
                    /stop — Cancel the current task\n\
+                   /steer — Inject guidance into running task\n\
                    /status — Show current task status\n\
                    /memory — Show current memory\n\
                    /skills — List available skills\n\
@@ -238,6 +253,22 @@ async fn handle_command(
         "stop" => {
             session_manager.cancel(chat_id.0);
             "🛑 Cancelling current task…".to_string()
+        }
+        "steer" => {
+            let guidance = text
+                .split_whitespace()
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join(" ");
+            if guidance.is_empty() {
+                "Usage: /steer <guidance text>\nExample: /steer use axum instead of actix".to_string()
+            } else {
+                match session_manager.try_steer(chat_id.0, &guidance) {
+                    Some(Ok(())) => "🔄 Steering injected.".to_string(),
+                    Some(Err(_)) => "⚠️ Could not inject steering — the run may have just finished.".to_string(),
+                    None => "No active run to steer. Start a task first.".to_string(),
+                }
+            }
         }
         "status" => {
             let status = session_manager.status(chat_id.0);

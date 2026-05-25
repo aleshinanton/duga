@@ -79,6 +79,13 @@ pub enum Event {
         reason: String,
         depth: u32,
     },
+    /// Emitted when a steering event is applied to the running loop.
+    /// `source` identifies the origin ("human", "self-diagnosis", "tool", "policy").
+    /// `kind` identifies the action type ("guidance", "cancel", "reprompt", "limit").
+    SteeringApplied {
+        source: String,
+        kind: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -521,6 +528,38 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let decoded: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn steering_applied_roundtrip_cancel() {
+        let event = Event::SteeringApplied {
+            source: "human".into(),
+            kind: "cancel".into(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
+
+        // Verify the variant tag and field presence.
+        assert!(json.contains("steering_applied"));
+        assert!(json.contains("human"));
+        assert!(json.contains("cancel"));
+    }
+
+    #[test]
+    fn steering_applied_roundtrip_guidance() {
+        let event = Event::SteeringApplied {
+            source: "self-diagnosis".into(),
+            kind: "guidance".into(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
+
+        // Verify the variant tag.
+        assert!(json.contains("steering_applied"));
     }
 
     #[test]

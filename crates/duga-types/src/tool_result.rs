@@ -15,6 +15,10 @@ pub struct ToolResult {
     pub tool_call_id: CallId,
     pub success: bool,
     pub output: String,
+    /// Optional steering hint from the tool (e.g., "search returned 500 results — narrow your query").
+    /// Processed by the loop as a context event (source: "tool").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steering_hint: Option<String>,
     #[serde(flatten)]
     pub metadata: serde_json::Value,
     pub duration_ms: u64,
@@ -29,6 +33,7 @@ pub struct ToolResultBuilder {
     tool_call_id: Option<CallId>,
     success: bool,
     output: String,
+    steering_hint: Option<String>,
     metadata: serde_json::Value,
     duration_ms: u64,
     stdout_bytes: u64,
@@ -42,6 +47,7 @@ impl ToolResultBuilder {
             tool_call_id: None,
             success: false,
             output: String::new(),
+            steering_hint: None,
             metadata: serde_json::Value::Null,
             duration_ms: 0,
             stdout_bytes: 0,
@@ -90,11 +96,17 @@ impl ToolResultBuilder {
         self
     }
 
+    pub fn steering_hint(&mut self, hint: impl Into<String>) -> &mut Self {
+        self.steering_hint = Some(hint.into());
+        self
+    }
+
     pub fn build(&self) -> Option<ToolResult> {
         Some(ToolResult {
             tool_call_id: self.tool_call_id.clone()?,
             success: self.success,
             output: self.output.clone(),
+            steering_hint: self.steering_hint.clone(),
             metadata: self.metadata.clone(),
             duration_ms: self.duration_ms,
             stdout_bytes: self.stdout_bytes,

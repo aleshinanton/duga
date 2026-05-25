@@ -157,6 +157,8 @@ mod tests {
             max_refinement_iterations: 3,
             max_delegation_depth: 2,
             delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         // Verify trait basics.

@@ -39,6 +39,26 @@ impl Default for LoopConfig {
     }
 }
 
+/// A steering rule loaded from config — injects guidance every iteration (or once).
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SteeringRule {
+    /// The guidance text to inject.
+    pub guidance: String,
+    /// If true, push as a system message (higher LLM attention).
+    #[serde(default)]
+    pub as_system: bool,
+    /// If true, inject every iteration. If false, inject only on the first step.
+    #[serde(default)]
+    pub repeat: bool,
+}
+
+/// Config-driven steering rules.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct SteeringConfig {
+    #[serde(default)]
+    pub rules: Vec<SteeringRule>,
+}
+
 /// Top-level agent configuration composing all sub-configs.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AgentConfig {
@@ -48,6 +68,8 @@ pub struct AgentConfig {
     pub think: ThinkLimits,
     #[serde(default)]
     pub loop_config: LoopConfig,
+    #[serde(default)]
+    pub steering: SteeringConfig,
 }
 
 /// Controls loop and sandbox resource limits.
@@ -127,6 +149,7 @@ impl Default for AgentConfig {
             output: OutputLimits::default(),
             think: ThinkLimits::default(),
             loop_config: LoopConfig::default(),
+            steering: SteeringConfig::default(),
         }
     }
 }

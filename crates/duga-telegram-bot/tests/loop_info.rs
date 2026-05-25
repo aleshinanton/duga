@@ -228,7 +228,8 @@ async fn run_with_llm(
         max_refinement_iterations: max_refinement,
         max_delegation_depth: max_depth,
         delegation_depth: 0,
-    };
+        steer: None,
+        steer_limits: None,    };
 
     SimpleReActLoop.run(task.to_string(), &mut ctx).await.unwrap()
 }
@@ -279,7 +280,8 @@ async fn run_with_events(
         max_refinement_iterations: max_refinement,
         max_delegation_depth: max_depth,
         delegation_depth: 0,
-    };
+        steer: None,
+        steer_limits: None,    };
 
     let result = SimpleReActLoop.run(task.to_string(), &mut ctx).await.unwrap();
     (result, events_sink.events())

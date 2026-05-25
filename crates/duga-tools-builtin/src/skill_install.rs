@@ -257,6 +257,7 @@ impl Tool for InstallSkillTool {
             tool_call_id: CallId::new(),
             success: true,
             output: msg,
+            steering_hint: None,
             metadata: serde_json::json!({
                 "name": args.name,
                 "target": args.target,

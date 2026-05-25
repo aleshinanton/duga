@@ -167,7 +167,8 @@ fn map_event(event: Event) -> Option<FrontendEvent> {
         Event::StepStarted { .. }
         | Event::StepFinished { .. }
         | Event::LlmRequest { .. }
-        | Event::LlmResponse { .. } => None,
+        | Event::LlmResponse { .. }
+        | Event::SteeringApplied { .. } => None,
     }
 }
 

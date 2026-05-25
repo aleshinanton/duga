@@ -155,7 +155,8 @@ fn build_test_context(
         max_refinement_iterations: max_refinement,
         max_delegation_depth: max_depth,
         delegation_depth: 0,
-    };
+        steer: None,
+        steer_limits: None,    };
 
     TestContext {
         ctx,
@@ -596,7 +597,8 @@ async fn cancellation_before_delegation_is_fatal() {
         max_refinement_iterations: 3,
         max_delegation_depth: 2,
         delegation_depth: 0,
-    };
+        steer: None,
+        steer_limits: None,    };
 
     let loop_impl = SimpleReActLoop;
     let err = loop_impl.run("task".into(), &mut ctx).await.unwrap_err();

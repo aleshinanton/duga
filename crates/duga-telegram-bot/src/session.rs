@@ -7,6 +7,7 @@ use crate::safety::PendingConfirmation;
 use anyhow::Result;
 use dashmap::DashMap;
 use duga_config::TelegramConfig;
+use duga_core::steering::SteeringSender;
 use duga_sandbox::CancellationToken;
 use std::sync::Arc;
 use teloxide::prelude::*;
@@ -18,6 +19,7 @@ pub struct ChatSessionState {
     pub pending_confirmation: Option<PendingConfirmation>,
     pub cancellation: Option<CancellationToken>,
     pub cancelled: bool,
+    pub steer_tx: Option<SteeringSender>,
 }
 
 /// Manages per-chat sessions with one active run per chat.
@@ -43,6 +45,10 @@ impl SessionManager {
         bot_logger: Arc<BotLogger>,
     ) -> Result<()> {
         let cancellation = CancellationToken::new();
+        let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
+        let steer_sender = SteeringSender::new(steer_tx);
+        let steer_receiver = duga_core::steering::SteeringReceiver::new(steer_rx);
+
         let already_active = {
             let mut session = self.sessions.entry(chat_id).or_default();
             if session.active {
@@ -52,6 +58,7 @@ impl SessionManager {
                 session.pending_confirmation = None;
                 session.cancellation = Some(cancellation.clone());
                 session.cancelled = false;
+                session.steer_tx = Some(steer_sender);
                 false
             }
         };
@@ -80,6 +87,7 @@ impl SessionManager {
                     logger_clone.clone(),
                     manager.clone(),
                     cancellation,
+                    Some(steer_receiver),
                 )
                 .await;
 
@@ -99,6 +107,7 @@ impl SessionManager {
                 session.active = false;
                 session.pending_confirmation = None;
                 session.cancellation = None;
+                session.steer_tx = None;
             }
         });
 
@@ -163,6 +172,23 @@ impl SessionManager {
             let _ = pending.resolver.send(approved);
         }
         true
+    }
+
+    /// Try to inject a steering message into an active run.
+    ///
+    /// Returns `Some(Ok(()))` if the message was injected,
+    /// `Some(Err(msg))` if the channel was closed (race condition),
+    /// `None` if no active run has steering configured.
+    pub fn try_steer(&self, chat_id: i64, guidance: &str) -> Option<Result<(), String>> {
+        let session = self.sessions.get(&chat_id)?;
+        let steer_tx = session.steer_tx.as_ref()?;
+        if !steer_tx.is_active() {
+            return None;
+        }
+        match steer_tx.guide(guidance) {
+            Ok(()) => Some(Ok(())),
+            Err(e) => Some(Err(e.to_string())),
+        }
     }
 
     /// Get the current status of a chat's session.

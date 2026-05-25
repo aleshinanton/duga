@@ -6,6 +6,7 @@
 
 use crate::loop_registry::LoopRegistry;
 use crate::memory::Memory;
+use crate::steering::{SteerLimits, SteeringReceiver};
 use crate::summarizer::Summarizer;
 use duga_events::EventSink;
 use duga_llm::LlmClient;
@@ -50,6 +51,12 @@ pub struct LoopContext<'a> {
     /// Current nesting depth in the delegation chain.
     /// Starts at 0 and increments on each delegation.
     pub delegation_depth: u32,
+    /// Steering receiver — owned by the loop for one run.
+    /// `None` means no steering is configured (the default).
+    pub steer: Option<SteeringReceiver>,
+    /// Limit adjustments from steering events.
+    /// `None` means "no overrides — use config defaults".
+    pub steer_limits: Option<SteerLimits>,
 }
 
 impl<'a> LoopContext<'a> {
@@ -74,6 +81,8 @@ impl<'a> LoopContext<'a> {
             max_refinement_iterations: self.max_refinement_iterations,
             max_delegation_depth: self.max_delegation_depth,
             delegation_depth: self.delegation_depth + 1,
+            steer: None,
+            steer_limits: self.steer_limits.clone(),
         }
     }
 }
@@ -124,6 +133,8 @@ mod tests {
             max_refinement_iterations: 2,
             max_delegation_depth: 3,
             delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         }
     }
 

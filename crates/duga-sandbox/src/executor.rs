@@ -475,6 +475,7 @@ impl CommandExecutor for DockerExecutor {
             tool_call_id: CallId::new(),
             success: true,
             output,
+            steering_hint: None,
             metadata,
             duration_ms: 0,
             stdout_bytes,

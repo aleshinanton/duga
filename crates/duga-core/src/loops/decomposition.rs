@@ -8,6 +8,7 @@ use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
 use crate::loops::simple_react::dispatch_tool_with_events;
+use crate::steering::{check_steer, SteerAction};
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
@@ -76,6 +77,12 @@ async fn run_decomposition(
     // Phase 2: Solve each subtask
     let mut results: Vec<(String, String, bool)> = Vec::new(); // (title, output, success)
     for subtask in &subtasks {
+        // Steering checkpoint (no-op when ctx.steer is None)
+        match check_steer(ctx, true).await? {
+            SteerAction::Cancel(_) => return Err(AgentError::Cancelled),
+            SteerAction::Complete(_) | SteerAction::Reprompt | SteerAction::Continue => {}
+        }
+
         tracing::info!(subtask = %subtask.title, "Solving subtask");
         let (output, tc) = solve_subtask(&subtask.description, ctx).await?;
         total_tool_calls += tc;
@@ -304,6 +311,8 @@ mod tests {
             max_refinement_iterations: 3,
             max_delegation_depth: 2,
             delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = DecompositionLoop;
@@ -350,6 +359,8 @@ mod tests {
             max_refinement_iterations: 3,
             max_delegation_depth: 2,
             delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = DecompositionLoop;

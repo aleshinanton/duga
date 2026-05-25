@@ -224,6 +224,7 @@ impl Tool for EditTool {
                 Ok(()) => Ok(ToolResult {
                     tool_call_id: CallId::new(),
                     success: true,
+                    steering_hint: None,
                     output: format!(
                         "Edited {}: replaced {} bytes with {} bytes",
                         args.path,
@@ -307,6 +308,7 @@ impl Tool for EditTool {
                 Ok(()) => Ok(ToolResult {
                     tool_call_id: CallId::new(),
                     success: true,
+                    steering_hint: None,
                     output: format!(
                         "Edited {}: replaced {} bytes with {} bytes",
                         args.path,

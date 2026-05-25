@@ -104,6 +104,7 @@ impl WasmPluginAdapter {
         ToolResult {
             tool_call_id: CallId::new(),
             success: outcome.success,
+            steering_hint: None,
             stdout_bytes: output.len() as u64,
             stderr_bytes: 0,
             output,

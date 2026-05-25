@@ -11,6 +11,7 @@ use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
 use crate::loops::simple_react::dispatch_tool_with_events;
+use crate::steering::{check_steer, SteerAction};
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
@@ -54,6 +55,12 @@ async fn run_verification(
 
     // Phase 1: Generate N independent answers
     for i in 0..answer_count {
+        // Steering checkpoint (no-op when ctx.steer is None)
+        match check_steer(ctx, true).await? {
+            SteerAction::Cancel(_) => return Err(AgentError::Cancelled),
+            SteerAction::Complete(_) | SteerAction::Reprompt | SteerAction::Continue => {}
+        }
+
         tracing::info!(attempt = i + 1, total = answer_count, "Generating answer");
         let (answer, tool_calls) = generate_answer(&task, i + 1, answer_count, ctx).await?;
         total_tool_calls += tool_calls;
@@ -232,6 +239,7 @@ mod tests {
             workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
             cancellation: &cancel, registry: &registry,
             max_refinement_iterations: 1, max_delegation_depth: 2, delegation_depth: 0,
+            steer: None, steer_limits: None,
         };
 
         let loop_impl = VerificationLoop;
@@ -269,6 +277,7 @@ mod tests {
             workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
             cancellation: &cancel, registry: &registry,
             max_refinement_iterations: 3, max_delegation_depth: 2, delegation_depth: 0,
+            steer: None, steer_limits: None,
         };
 
         let loop_impl = VerificationLoop;
@@ -301,6 +310,7 @@ mod tests {
             workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
             cancellation: &cancel, registry: &registry,
             max_refinement_iterations: 0, max_delegation_depth: 2, delegation_depth: 0,
+            steer: None, steer_limits: None,
         };
 
         let loop_impl = VerificationLoop;

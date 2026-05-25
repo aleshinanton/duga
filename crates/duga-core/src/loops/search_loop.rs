@@ -8,6 +8,7 @@ use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
 use crate::loops::simple_react::dispatch_tool_with_events;
+use crate::steering::{check_steer, SteerAction};
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
@@ -55,6 +56,12 @@ async fn run_search(
 
     for cycle in 1..=max_cycles {
         tracing::info!(cycle, query = %query, "Search cycle");
+
+        // Steering checkpoint (no-op when ctx.steer is None)
+        match check_steer(ctx, true).await? {
+            SteerAction::Cancel(_) => return Err(AgentError::Cancelled),
+            SteerAction::Complete(_) | SteerAction::Reprompt | SteerAction::Continue => {}
+        }
 
         // Phase 2: Execute search + read
         let (new_findings, tc) = execute_search(&query, ctx).await?;
@@ -340,6 +347,7 @@ mod tests {
             workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
             cancellation: &cancel, registry: &registry,
             max_refinement_iterations: 2, max_delegation_depth: 2, delegation_depth: 0,
+            steer: None, steer_limits: None,
         };
 
         let loop_impl = SearchLoop;
@@ -370,6 +378,7 @@ mod tests {
             workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
             cancellation: &cancel, registry: &registry,
             max_refinement_iterations: 2, max_delegation_depth: 2, delegation_depth: 0,
+            steer: None, steer_limits: None,
         };
 
         let loop_impl = SearchLoop;
@@ -398,6 +407,7 @@ mod tests {
             workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
             cancellation: &cancel, registry: &registry,
             max_refinement_iterations: 1, max_delegation_depth: 2, delegation_depth: 0,
+            steer: None, steer_limits: None,
         };
 
         let loop_impl = SearchLoop;

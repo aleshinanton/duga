@@ -308,6 +308,7 @@ pub async fn run_captured(
         tool_call_id: CallId::new(),
         success: true, // Tool ran; non-zero exit is still a successful execution
         output,
+        steering_hint: None,
         metadata,
         duration_ms: 0, // Filled by caller via ToolResult::from_outcome if needed
         stdout_bytes,

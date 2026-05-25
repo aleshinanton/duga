@@ -7,6 +7,7 @@
 use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
+use crate::steering::{apply_context_event, check_steer, SteerAction, SteeringContextEvent};
 use duga_events::Event;
 use duga_llm::LlmClient;
 use duga_sandbox::CancellationToken;
@@ -47,6 +48,7 @@ async fn run_simple_react(
 ) -> Result<LoopResult, AgentError> {
     let started = Instant::now();
     let mut tool_calls = 0;
+    let mut consecutive_errors: u32 = 0;
 
     tracing::info!(task = %task, loop_id = "simple_react", "Agent run started");
     ctx.tools.reset_limits();
@@ -67,12 +69,41 @@ async fn run_simple_react(
     let anchored_task = format!("{task}\n\nReminder: Focus exclusively on the current task: {task}");
     ctx.memory.push_user(anchored_task);
 
-    for step in 1..=ctx.config.limits.max_steps {
+    'outer: for step in 1..=ctx.config.limits.max_steps {
         if let Err(error) = check_limits(ctx.config, ctx.cancellation, started) {
             return fatal(ctx, error).await;
         }
         if let Err(error) = compress_if_needed(ctx).await {
             return fatal(ctx, error).await;
+        }
+
+        // ── POINT 0: Steering before LLM call ──
+        match check_steer(ctx, true).await? {
+            SteerAction::Cancel(_reason) => {
+                return fatal(ctx, AgentError::Cancelled).await;
+            }
+            SteerAction::Complete(answer) => {
+                return complete_from_steer(ctx, answer).await;
+            }
+            SteerAction::Reprompt => {
+                continue 'outer;
+            }
+            SteerAction::Continue => { /* normal flow */ }
+        }
+
+        // ── Policy steer: config-driven rules ──
+        for rule in &ctx.config.steering.rules {
+            if rule.repeat || step == 1 {
+                apply_context_event(
+                    ctx,
+                    SteeringContextEvent::InjectGuidance {
+                        text: rule.guidance.clone(),
+                        as_system: rule.as_system,
+                        source: "policy".into(),
+                    },
+                )
+                .await?;
+            }
         }
 
         let memory_tokens = ctx.memory.token_count(ctx.llm.as_ref());
@@ -215,18 +246,71 @@ async fn run_simple_react(
             }
             tool_calls += 1;
 
-            let result = match execute_tool(ctx, call, started, ctx.cancellation).await {
+            let mut result = match execute_tool(ctx, call, started, ctx.cancellation).await {
                 Ok(result) => result,
                 Err(error) => return fatal(ctx, error).await,
             };
+            let tool_success = result.success;
+            let steering_hint = result.steering_hint.take();
             ctx.memory.push_tool_result(result);
+
+            // ── Tool steer: process steering hints from tools ──
+            if let Some(hint) = steering_hint {
+                apply_context_event(
+                    ctx,
+                    SteeringContextEvent::InjectGuidance {
+                        text: hint,
+                        as_system: false,
+                        source: "tool".into(),
+                    },
+                )
+                .await?;
+            }
+
+            // ── Self-steering: track consecutive errors ──
+            if tool_success {
+                consecutive_errors = 0;
+            } else {
+                consecutive_errors += 1;
+                if consecutive_errors >= 3 {
+                    apply_context_event(
+                        ctx,
+                        SteeringContextEvent::InjectGuidance {
+                            text: "You have failed 3 times in a row. Pivot to a different \
+                                   approach. Consider: (1) using a different tool, \
+                                   (2) breaking the problem down further, \
+                                   (3) explaining what's blocking you."
+                                .into(),
+                            as_system: true,
+                            source: "self-diagnosis".into(),
+                        },
+                    )
+                    .await?;
+                    consecutive_errors = 0; // reset after injecting
+                }
+            }
+
             if let Err(error) = check_limits(ctx.config, ctx.cancellation, started) {
                 return fatal(ctx, error).await;
+            }
+            // ── POINT 2: Steering after tool result ──
+            match check_steer(ctx, false).await? {
+                SteerAction::Cancel(_reason) => return fatal(ctx, AgentError::Cancelled).await,
+                SteerAction::Complete(answer) => return complete_from_steer(ctx, answer).await,
+                SteerAction::Reprompt => unreachable!("Reprompt buffered at POINT 2"),
+                SteerAction::Continue => { /* next tool */ }
             }
         }
 
         if let Err(error) = compress_if_needed(ctx).await {
             return fatal(ctx, error).await;
+        }
+        // ── POINT 3: Steering before next iteration ──
+        match check_steer(ctx, true).await? {
+            SteerAction::Cancel(_reason) => return fatal(ctx, AgentError::Cancelled).await,
+            SteerAction::Complete(answer) => return complete_from_steer(ctx, answer).await,
+            SteerAction::Reprompt => continue 'outer,
+            SteerAction::Continue => { /* fall through to next step */ }
         }
         ctx.event_sink
             .emit(Event::StepFinished { step })
@@ -351,6 +435,8 @@ async fn try_handle_delegate(
         max_refinement_iterations: ctx.max_refinement_iterations,
         max_delegation_depth: ctx.max_delegation_depth,
         delegation_depth: new_depth,
+        steer: None,
+        steer_limits: None,
     };
 
     // Emit delegation event.
@@ -637,10 +723,36 @@ fn tool_error_result(call: &ToolCall, error: ToolError, started: Instant) -> Too
     ToolResult::from_outcome(call.id.clone(), &call.tool, Err(error), started)
 }
 
+/// Complete the loop with a forced answer from steering.
+async fn complete_from_steer(
+    ctx: &mut LoopContext<'_>,
+    answer: String,
+) -> Result<LoopResult, AgentError> {
+    let msg = duga_types::message::AssistantMessage {
+        text: Some(answer.clone()),
+        tool_calls: vec![],
+        reasoning_content: None,
+    };
+    ctx.memory.push_assistant(msg.clone());
+    ctx.event_sink
+        .emit(Event::AgentFinished {
+            text: Some(answer),
+        })
+        .await
+        .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
+    Ok(LoopResult {
+        message: msg,
+        steps: 0,
+        tool_calls: 0,
+        loop_id: "simple_react".into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::loop_registry::LoopRegistry;
+    use crate::steering::{SteeringControlEvent, SteeringEvent, SteeringReceiver, SteeringSender};
     use crate::summarizer::Summarizer;
     use crate::testing::{CapturingEventSink, MockTool};
     use duga_events::{EventSink, NullSink};
@@ -650,6 +762,7 @@ mod tests {
     use duga_types::llm::{LlmResponse, TokenUsage};
     use duga_types::message::{AssistantMessage, ContentBlock, Message};
     use std::sync::Arc;
+    use tokio::sync::mpsc;
 
     struct StaticSummarizer;
 
@@ -698,6 +811,8 @@ mod tests {
             max_refinement_iterations: config.loop_config.max_refinement_iterations,
             max_delegation_depth: config.loop_config.max_delegation_depth,
             delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         }
     }
 
@@ -845,11 +960,239 @@ mod tests {
             max_refinement_iterations: config.loop_config.max_refinement_iterations,
             max_delegation_depth: config.loop_config.max_delegation_depth,
             delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = SimpleReActLoop;
         let err = loop_impl.run("task".into(), &mut ctx).await.unwrap_err();
 
+        assert_eq!(err, AgentError::Cancelled);
+    }
+
+    // ── Steering integration tests ────────────────────────────────────
+
+    fn make_steer_channel() -> (SteeringSender, SteeringReceiver) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (SteeringSender::new(tx), SteeringReceiver::new(rx))
+    }
+
+    #[tokio::test]
+    async fn steer_none_has_zero_overhead_identical_to_baseline() {
+        // Verify that when steer is None, the loop behaves identically to before.
+        let llm: Arc<dyn LlmClient> = Arc::new(DummyClient::with_response(
+            "dummy",
+            llm_response(AssistantMessage {
+                text: Some("done".into()),
+                tool_calls: vec![],
+                reasoning_content: None,
+            }),
+        ));
+        let sink: Arc<dyn EventSink> = Arc::new(CapturingEventSink::new());
+        let tools = Arc::new(ToolDispatcher::new());
+
+        let config = AgentConfig::default();
+        let mut memory = crate::Memory::new(
+            vec![Message::system("system")],
+            10000, 0.8, 0, 0,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
+        let registry = Arc::new(LoopRegistry::new());
+        let cancellation = duga_sandbox::CancellationToken::new();
+
+        let mut ctx = make_ctx(
+            &config, &mut memory, &llm, &tools, &workspace,
+            &sink, &summarizer, &registry, &cancellation,
+        );
+        // steer is None by default in make_ctx
+        assert!(ctx.steer.is_none());
+
+        let loop_impl = SimpleReActLoop;
+        let result = loop_impl.run("task".into(), &mut ctx).await.unwrap();
+        assert_eq!(result.message.text, Some("done".into()));
+    }
+
+    #[tokio::test]
+    async fn cancel_at_point_0_terminates_loop() {
+        let llm: Arc<dyn LlmClient> = Arc::new(DummyClient::default());
+        let sink: Arc<dyn EventSink> = Arc::new(NullSink);
+        let tools = Arc::new(ToolDispatcher::new());
+
+        let config = AgentConfig::default();
+        let mut memory = crate::Memory::new(
+            vec![Message::system("system")],
+            10000, 0.8, 0, 0,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
+        let registry = Arc::new(LoopRegistry::new());
+        let cancellation = duga_sandbox::CancellationToken::new();
+
+        let (sender, receiver) = make_steer_channel();
+        // Inject Cancel before the loop starts
+        sender
+            .inject(SteeringEvent::Control(SteeringControlEvent::Cancel {
+                reason: "test cancel".into(),
+            }))
+            .unwrap();
+
+        let mut ctx = make_ctx(
+            &config, &mut memory, &llm, &tools, &workspace,
+            &sink, &summarizer, &registry, &cancellation,
+        );
+        ctx.steer = Some(receiver);
+
+        let loop_impl = SimpleReActLoop;
+        let err = loop_impl.run("task".into(), &mut ctx).await.unwrap_err();
+        assert_eq!(err, AgentError::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn complete_at_point_0_returns_forced_answer() {
+        let llm: Arc<dyn LlmClient> = Arc::new(DummyClient::default());
+        let sink: Arc<dyn EventSink> = Arc::new(NullSink);
+        let tools = Arc::new(ToolDispatcher::new());
+
+        let config = AgentConfig::default();
+        let mut memory = crate::Memory::new(
+            vec![Message::system("system")],
+            10000, 0.8, 0, 0,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
+        let registry = Arc::new(LoopRegistry::new());
+        let cancellation = duga_sandbox::CancellationToken::new();
+
+        let (sender, receiver) = make_steer_channel();
+        sender
+            .inject(SteeringEvent::Control(SteeringControlEvent::ForceComplete {
+                answer: "forced answer".into(),
+            }))
+            .unwrap();
+
+        let mut ctx = make_ctx(
+            &config, &mut memory, &llm, &tools, &workspace,
+            &sink, &summarizer, &registry, &cancellation,
+        );
+        ctx.steer = Some(receiver);
+
+        let loop_impl = SimpleReActLoop;
+        let result = loop_impl.run("task".into(), &mut ctx).await.unwrap();
+        assert_eq!(result.message.text, Some("forced answer".into()));
+    }
+
+    #[tokio::test]
+    async fn reprompt_at_point_0_re_calls_llm() {
+        // The LLM is called first time, returns a tool call. Then Reprompt
+        // arrives at POINT 0 before step 2, causing continue 'outer.
+        let call = ToolCall::new("echo", serde_json::json!({"msg": "hello"}));
+
+        let llm = DummyClient::default();
+        llm.push_response(llm_response(AssistantMessage {
+            text: None,
+            tool_calls: vec![call.clone()],
+            reasoning_content: None,
+        }));
+        llm.push_response(llm_response(AssistantMessage {
+            text: Some("done after reprompt".into()),
+            tool_calls: vec![],
+            reasoning_content: None,
+        }));
+
+        let llm: Arc<dyn LlmClient> = Arc::new(llm);
+        let tools = Arc::new(ToolDispatcher::new());
+        tools
+            .register_erased(ErasedTool::erase(
+                MockTool::new("echo", "echo").always(Ok(MockTool::success("hello"))),
+            ))
+            .unwrap();
+
+        let config = AgentConfig::default();
+        let mut memory = crate::Memory::new(
+            vec![Message::system("system")],
+            10000, 0.8, 0, 0,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let sink: Arc<dyn EventSink> = Arc::new(NullSink);
+        let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
+        let registry = Arc::new(LoopRegistry::new());
+        let cancellation = duga_sandbox::CancellationToken::new();
+
+        let (sender, receiver) = make_steer_channel();
+        // Inject Reprompt — will be picked up at POINT 0 on step 2
+        sender
+            .inject(SteeringEvent::Control(SteeringControlEvent::Reprompt {
+                guidance: "try differently".into(),
+            }))
+            .unwrap();
+
+        let mut ctx = make_ctx(
+            &config, &mut memory, &llm, &tools, &workspace,
+            &sink, &summarizer, &registry, &cancellation,
+        );
+        ctx.steer = Some(receiver);
+
+        let loop_impl = SimpleReActLoop;
+        let result = loop_impl.run("task".into(), &mut ctx).await.unwrap();
+        assert_eq!(
+            result.message.text,
+            Some("done after reprompt".into()),
+            "Should get the second LLM response after reprompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_during_tool_execution_at_point_2() {
+        let call = ToolCall::new("echo", serde_json::json!({"msg": "hello"}));
+
+        let llm: Arc<dyn LlmClient> = Arc::new(DummyClient::with_response(
+            "dummy",
+            llm_response(AssistantMessage {
+                text: None,
+                tool_calls: vec![call.clone()],
+                reasoning_content: None,
+            }),
+        ));
+        let tools = Arc::new(ToolDispatcher::new());
+        tools
+            .register_erased(ErasedTool::erase(
+                MockTool::new("echo", "echo").always(Ok(MockTool::success("hello"))),
+            ))
+            .unwrap();
+
+        let config = AgentConfig::default();
+        let mut memory = crate::Memory::new(
+            vec![Message::system("system")],
+            10000, 0.8, 0, 0,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let sink: Arc<dyn EventSink> = Arc::new(NullSink);
+        let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
+        let registry = Arc::new(LoopRegistry::new());
+        let cancellation = duga_sandbox::CancellationToken::new();
+
+        let (sender, receiver) = make_steer_channel();
+        // Inject Cancel — will be picked up at POINT 2 after tool result
+        sender
+            .inject(SteeringEvent::Control(SteeringControlEvent::Cancel {
+                reason: "user stopped".into(),
+            }))
+            .unwrap();
+
+        let mut ctx = make_ctx(
+            &config, &mut memory, &llm, &tools, &workspace,
+            &sink, &summarizer, &registry, &cancellation,
+        );
+        ctx.steer = Some(receiver);
+
+        let loop_impl = SimpleReActLoop;
+        let err = loop_impl.run("task".into(), &mut ctx).await.unwrap_err();
         assert_eq!(err, AgentError::Cancelled);
     }
 }

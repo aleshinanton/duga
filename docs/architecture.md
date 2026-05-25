@@ -227,6 +227,48 @@ When `features.streaming` is `true`:
 
 -----
 
+## 5.3 Steering — Dynamic Mid-Loop Guidance
+
+Steering allows external actors (human users, tools, config, or the loop itself)
+to inject guidance or control actions *during* a loop run, not just at startup.
+
+**Architecture:**
+```text
+LLM → Response → Execute Tools → Push Results → [STEER] → LLM → ...
+```
+
+**Injection points:**
+- **POINT 0** — Before each LLM call (after budget check + compression).
+  `allow_reprompt = true`.  On `Reprompt`, `continue` to re-call LLM with
+  updated context.
+- **POINT 2** — After each tool result push (inside the tool loop).
+  `allow_reprompt = false`.  `Reprompt` is buffered to avoid inconsistent
+  message history (assistant with N tool_calls but only k < N results).
+- **POINT 3** — End of iteration, before next step.  `allow_reprompt = true`.
+  Flushes any buffered `Reprompt` from POINT 2.
+
+**Channel design:**
+- `SteeringSender` (mpsc unbounded, clonable) — stored in session state for
+  external injection (e.g., Telegram bot handler).
+- `SteeringReceiver` — owned by `LoopContext`, matching the loop's lifetime.
+- `check_steer()` drains the receiver with two-pass priority:
+  Cancel > ForceComplete > Reprompt.  All context events are applied;
+  exactly one highest-priority control event is returned.
+
+**Steering types:**
+| Source | Mechanism | Example |
+|--------|-----------|--------|
+| Human (Telegram) | Mid-run message → `Reprompt` | "use axum instead of actix" |
+| Human (command) | `/steer <text>` → `Reprompt` | "/steer try a different approach" |
+| Tool | `ToolResult.steering_hint` → `InjectGuidance` | "search returned 500 results — narrow query" |
+| Self-diagnosis | 3 consecutive errors → `InjectGuidance` | "Pivot to a different approach" |
+| Policy (config) | `agent.steering.rules[]` → `InjectGuidance` | "prefer axum over actix-web" |
+
+**Zero overhead default:** `ctx.steer = None` makes `check_steer()` return
+`Continue` immediately with no side effects.
+
+-----
+
 # 6. ToolCall
 
 ```rust

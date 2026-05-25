@@ -78,7 +78,8 @@ async fn main() -> Result<()> {
         max_refinement_iterations: loop_config.max_refinement_iterations,
         max_delegation_depth: loop_config.max_delegation_depth,
         delegation_depth: 0,
-    };
+        steer: None,
+        steer_limits: None,    };
 
     let result = loop_impl.run(task, &mut ctx).await;
     signal_handle.abort();
