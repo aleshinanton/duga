@@ -173,7 +173,7 @@ pub fn format_final_message(text: &str) -> String {
 /// generate text containing literal `<invoke name="...">` or
 /// `</tool_calls>` fragments.  These would be interpreted as Telegram HTML
 /// tags and stripped, leaking partial artifacts to the user.
-fn sanitize_tool_call_syntax(text: &str) -> String {
+pub(crate) fn sanitize_tool_call_syntax(text: &str) -> String {
     // Strip </tool_calls> fragments (naked closing tag)
     let text = text.replace("</tool_calls>", "");
 

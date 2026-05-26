@@ -6,7 +6,7 @@
 
 use crate::formatting::{
     chunk_message, escape_html, escape_telegram_plain_text, format_final_message,
-    markdown_to_telegram_html,
+    markdown_to_telegram_html, sanitize_tool_call_syntax,
 };
 use duga_runtime::events::FrontendEvent;
 use std::collections::HashMap;
@@ -272,7 +272,7 @@ impl TelegramEventRenderer {
                 // boundaries so Markdown structure is preserved.
                 let text_chunks = chunk_message(&text);
                 for chunk in text_chunks {
-                    let html = markdown_to_telegram_html(&chunk);
+                    let html = markdown_to_telegram_html(&sanitize_tool_call_syntax(&chunk));
                     let collapsed = format!(
                         "<blockquote expandable>{}</blockquote>",
                         html
