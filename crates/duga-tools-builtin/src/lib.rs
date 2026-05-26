@@ -11,6 +11,7 @@ pub mod search;
 pub mod shell;
 pub mod skill_install;
 pub mod skill_list;
+pub mod skill_remove;
 pub mod think;
 pub mod write;
 

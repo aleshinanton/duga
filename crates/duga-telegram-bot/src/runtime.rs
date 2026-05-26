@@ -17,6 +17,7 @@ use duga_events::{Event, JsonlSink, RedactingSink, StoredEvent};
 use duga_tools::ErasedTool;
 use duga_tools_builtin::skill_install::InstallSkillTool;
 use duga_tools_builtin::skill_list::ListSkillsTool;
+use duga_tools_builtin::skill_remove::RemoveSkillTool;
 use duga_runtime::events::FrontendEventBridge;
 use duga_runtime::memory_context::{format_memory_for_prompt, load_persistent_memory};
 use duga_runtime::skills::{discover_skills, format_skills_index_for_prompt};
@@ -92,9 +93,15 @@ impl TelegramRuntime {
         dispatcher
             .register_erased(ErasedTool::erase(ListSkillsTool::new(
                 global_skills_dir.clone(),
-                channel_skills_base,
+                channel_skills_base.clone(),
             )))
             .context("registering list-skills tool")?;
+        dispatcher
+            .register_erased(ErasedTool::erase(RemoveSkillTool::new(
+                global_skills_dir.clone(),
+                channel_skills_base,
+            )))
+            .context("registering remove-skill tool")?;
 
         // When allow_all_binaries is enabled, shell confirmations are redundant —
         // the operator has already accepted the risk of arbitrary command execution.
@@ -202,6 +209,7 @@ impl TelegramRuntime {
              Skills provide specialized instructions for recurring tasks.\n\
              - View installed skills: use `list-skills` tool or /skills command\n\
              - Install new skills: use `install-skill` tool\n\
+             - Remove skills: use `remove-skill` tool\n\
              - Use a skill: `read skills/<name>/SKILL.md` to load its full instructions\n\
              Global skills are in `skills/`. Chat-specific skills in `<chat_id>/skills/`.\n\n\
              {extras}\

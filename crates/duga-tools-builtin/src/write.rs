@@ -94,26 +94,61 @@ impl WriteTool {
             None
         };
 
+        /// Resolve a tie between workspace and aux for the same relative path.
+        /// When both are valid targets (e.g. root-level paths where the workspace
+        /// root and aux root both exist), prefer workspace if the file already
+        /// exists in aux (to avoid overwriting aux content), otherwise prefer aux.
+        fn resolve_tie(
+            raw: &Path,
+            ws_resolved: PathBuf,
+            aux_rel: PathBuf,
+            aux_roots: &[PathBuf],
+        ) -> (PathBuf, bool) {
+            // Check if the file actually exists in any aux root.
+            let exists_in_aux = aux_roots.iter().any(|aux| aux.join(raw).exists());
+            if exists_in_aux {
+                // File exists in aux — don't overwrite it; write to workspace instead.
+                (ws_resolved, false)
+            } else {
+                // File does not exist in aux — prefer aux for new files.
+                (aux_rel, true)
+            }
+        }
+
         // Relative path: workspace first, then aux_roots.
         if !raw.is_absolute() {
-            if let Some(resolved) = try_workspace(&raw) {
-                return Ok((resolved, false));
+            let ws_match = try_workspace(&raw);
+            let aux_match = try_aux(&raw);
+            match (ws_match, aux_match) {
+                (Some(ws), Some(aux)) => {
+                    let (path, is_aux) = resolve_tie(&raw, ws, aux, &self.aux_roots);
+                    return Ok((path, is_aux));
+                }
+                (Some(resolved), None) => return Ok((resolved, false)),
+                (None, Some(rel)) => return Ok((rel, true)),
+                (None, None) => {
+                    return Err(ToolError::Denied(format!(
+                        "path not in workspace or auxiliary roots: {}",
+                        path_str
+                    )));
+                }
             }
-            if let Some(rel) = try_aux(&raw) {
-                return Ok((rel, true));
-            }
-            return Err(ToolError::Denied(format!("path not in workspace or auxiliary roots: {}", path_str)));
         }
 
         // Absolute path: try multiple strategies.
         // 1. Strip workspace root prefix.
         if let Ok(relative) = raw.strip_prefix(ctx.workspace.root_path()) {
             let rel = PathBuf::from(relative);
-            if let Some(resolved) = try_workspace(&rel) {
-                return Ok((resolved, false));
-            }
-            if let Some(found) = try_aux(Path::new(relative)) {
-                return Ok((found, true));
+            let ws_match = try_workspace(&rel);
+            let aux_match = try_aux(Path::new(relative));
+            match (ws_match, aux_match) {
+                (Some(ws), Some(aux)) => {
+                    let (path, is_aux) = resolve_tie(Path::new(relative), ws, aux, &self.aux_roots);
+                    return Ok((path, is_aux));
+                }
+                (Some(resolved), None) => return Ok((resolved, false)),
+                (None, Some(found)) => return Ok((found, true)),
+                (None, None) => {}
             }
         }
 
@@ -122,11 +157,16 @@ impl WriteTool {
         for prefix in KNOWN_MOUNT_PREFIXES {
             if let Ok(relative) = raw.strip_prefix(prefix) {
                 let rel = PathBuf::from(relative);
-                if let Some(resolved) = try_workspace(&rel) {
-                    return Ok((resolved, false));
-                }
-                if let Some(found) = try_aux(Path::new(relative)) {
-                    return Ok((found, true));
+                let ws_match = try_workspace(&rel);
+                let aux_match = try_aux(Path::new(relative));
+                match (ws_match, aux_match) {
+                    (Some(ws), Some(aux)) => {
+                        let (path, is_aux) = resolve_tie(Path::new(relative), ws, aux, &self.aux_roots);
+                        return Ok((path, is_aux));
+                    }
+                    (Some(resolved), None) => return Ok((resolved, false)),
+                    (None, Some(found)) => return Ok((found, true)),
+                    (None, None) => {}
                 }
             }
         }

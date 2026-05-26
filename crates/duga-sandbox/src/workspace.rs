@@ -108,6 +108,12 @@ impl Workspace {
         self.root_dir.remove_file(&resolved).map_err(Into::into)
     }
 
+    /// Remove a directory and all of its contents recursively.
+    pub fn remove_dir_all(&self, path: &Path) -> Result<(), WorkspaceError> {
+        let resolved = self.resolve(path)?;
+        self.root_dir.remove_dir_all(&resolved).map_err(Into::into)
+    }
+
     /// Check whether a path exists within the workspace.
     pub fn exists(&self, path: &Path) -> bool {
         match self.resolve(path) {
@@ -306,6 +312,47 @@ mod tests {
         let dir = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let result = ws.create_dir_all(Path::new("../../evil"));
+        assert!(matches!(
+            result,
+            Err(crate::error::WorkspaceError::PathEscapesWorkspace(_))
+        ));
+    }
+
+    #[test]
+    fn test_remove_dir_all() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+
+        // Create nested directories with files
+        ws.create_dir_all(Path::new("a/b/c")).unwrap();
+        let f1 = ws.root_dir().create("a/b/c/file.txt").unwrap();
+        drop(f1);
+        let f2 = ws.root_dir().create("a/file2.txt").unwrap();
+        drop(f2);
+
+        assert!(ws.exists(Path::new("a")));
+        assert!(ws.is_dir(Path::new("a")));
+        assert!(ws.is_file(Path::new("a/b/c/file.txt")));
+
+        // Remove recursively
+        ws.remove_dir_all(Path::new("a")).unwrap();
+        assert!(!ws.exists(Path::new("a")));
+    }
+
+    #[test]
+    fn test_remove_dir_all_idempotent_on_missing() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        // Removing a non-existent directory should not panic — it returns an error.
+        let result = ws.remove_dir_all(Path::new("does-not-exist"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_dir_all_escaping_path_rejected() {
+        let dir = tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let result = ws.remove_dir_all(Path::new("../evil"));
         assert!(matches!(
             result,
             Err(crate::error::WorkspaceError::PathEscapesWorkspace(_))

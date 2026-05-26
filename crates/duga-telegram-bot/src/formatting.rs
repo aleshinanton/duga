@@ -205,8 +205,23 @@ fn strip_xml_tag(text: &str, tag: &str, replacement: &str) -> String {
                 // Find closing tag after the opening
                 if let Some(close_pos) = after_open.find(&close) {
                     let skip_len = close_pos + close.len();
-                    result.push_str(replacement);
-                    rest = &after_open[skip_len..];
+                    // When replacement is empty, avoid double spaces by trimming
+                    // one space from the result or from the following text.
+                    if replacement.is_empty() {
+                        let result_ends_with_space = result.ends_with(' ');
+                        let rest_starts_with_space = after_open[skip_len..].starts_with(' ');
+                        if result_ends_with_space && rest_starts_with_space {
+                            // Both sides have a space — skip the leading space in rest.
+                            result.push_str(replacement);
+                            rest = &after_open[skip_len + 1..];
+                        } else {
+                            result.push_str(replacement);
+                            rest = &after_open[skip_len..];
+                        }
+                    } else {
+                        result.push_str(replacement);
+                        rest = &after_open[skip_len..];
+                    }
                 } else {
                     // No closing tag — treat as literal text
                     result.push_str(&rest[pos..pos + open_start.len()]);
