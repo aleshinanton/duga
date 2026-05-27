@@ -187,6 +187,7 @@ mod tests {
                 stdout_bytes: 0,
                 stderr_bytes: 0,
                 truncated: false,
+                steering_hint: None,
             })
         }
     }
@@ -343,6 +344,7 @@ mod tests {
                 stdout_bytes: 0,
                 stderr_bytes: 0,
                 truncated: false,
+                steering_hint: None,
             })
         }
     }
