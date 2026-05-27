@@ -212,6 +212,7 @@ mod tests {
                 modules: vec![],
             },
             frontend: FrontendConfig::default(),
+            tui: None,
             telegram: None,
         }
     }

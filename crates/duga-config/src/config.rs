@@ -80,6 +80,111 @@ impl Default for FrontendConfig {
     }
 }
 
+// ── TUI config ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TuiConfig {
+    #[serde(default = "default_true")]
+    pub ime_support: bool,
+    #[serde(default = "default_true")]
+    pub protocol_detection: bool,
+    #[serde(default)]
+    pub tool_event_format: ToolEventFormat,
+    #[serde(default)]
+    pub theme: ThemeConfig,
+    #[serde(default)]
+    pub keybindings: KeybindingsConfig,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            ime_support: true,
+            protocol_detection: true,
+            tool_event_format: ToolEventFormat::default(),
+            theme: ThemeConfig::default(),
+            keybindings: KeybindingsConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolEventFormat {
+    /// Always show expanded tool call blocks.
+    Full,
+    /// Tool calls are collapsed by default; expand to see details.
+    Collapsed,
+    /// Only show tool names after completion (no running state visible).
+    FinalOnly,
+}
+
+impl Default for ToolEventFormat {
+    fn default() -> Self {
+        Self::Collapsed
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ThemeConfig {
+    #[serde(default = "default_theme_name")]
+    pub name: String,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            name: default_theme_name(),
+        }
+    }
+}
+
+fn default_theme_name() -> String {
+    "default".into()
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct KeybindingsConfig {
+    #[serde(default = "default_submit_key")]
+    pub submit: String,
+    #[serde(default = "default_cancel_key")]
+    pub cancel: String,
+    #[serde(default = "default_quit_key")]
+    pub quit: String,
+    #[serde(default = "default_help_key")]
+    pub help: String,
+    #[serde(default = "default_search_key")]
+    pub search: String,
+}
+
+impl Default for KeybindingsConfig {
+    fn default() -> Self {
+        Self {
+            submit: default_submit_key(),
+            cancel: default_cancel_key(),
+            quit: default_quit_key(),
+            help: default_help_key(),
+            search: default_search_key(),
+        }
+    }
+}
+
+fn default_submit_key() -> String {
+    "enter".into()
+}
+fn default_cancel_key() -> String {
+    "ctrl-c".into()
+}
+fn default_quit_key() -> String {
+    "q".into()
+}
+fn default_help_key() -> String {
+    "f1".into()
+}
+fn default_search_key() -> String {
+    "ctrl-f".into()
+}
+
 fn default_confirmation_timeout() -> Duration {
     Duration::from_secs(60)
 }
@@ -226,6 +331,8 @@ pub struct Config {
     #[serde(default)]
     pub frontend: FrontendConfig,
     #[serde(default)]
+    pub tui: Option<TuiConfig>,
+    #[serde(default)]
     pub telegram: Option<TelegramConfig>,
 }
 
@@ -250,6 +357,7 @@ impl std::fmt::Debug for Config {
             .field("memory", &self.memory)
             .field("plugins", &self.plugins)
             .field("frontend", &self.frontend)
+            .field("tui", &self.tui)
             .field("telegram", &self.telegram)
             .finish()
     }
