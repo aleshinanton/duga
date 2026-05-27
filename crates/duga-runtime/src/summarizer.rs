@@ -106,8 +106,7 @@ impl Summarizer for SemanticSummarizer {
 
 /// Build a single string from a message slice for the summarization prompt.
 ///
-/// Each message is prefixed with its role. Very long messages (>500 chars)
-/// are truncated to keep the prompt manageable.
+/// Each message is prefixed with its role.
 fn format_messages_for_summarization(messages: &[Message]) -> String {
     let mut out = String::new();
     for msg in messages {
@@ -116,12 +115,7 @@ fn format_messages_for_summarization(messages: &[Message]) -> String {
         if text.is_empty() {
             continue;
         }
-        let truncated = if text.len() > 500 {
-            format!("{}...(truncated)", &text[..500])
-        } else {
-            text
-        };
-        out.push_str(&format!("[{}]: {}\n", role, truncated));
+        out.push_str(&format!("[{}]: {}\n", role, text));
     }
     out
 }
@@ -234,12 +228,43 @@ mod tests {
     }
 
     #[test]
-    fn format_messages_truncates_long() {
+    fn format_messages_preserves_multibyte_utf8() {
+        // Regression: slicing at byte boundary used to panic on Cyrillic chars.
+        let text = "Я хочу чтобы ты сделал глубокое исследование как здесь устроен TUI и проанализировал как этот функционал возможно реализовать в duga";
+        let messages = vec![text_msg(Role::User, text)];
+        let result = format_messages_for_summarization(&messages);
+        assert!(result.contains(text), "multibyte text must survive intact");
+    }
+
+    #[test]
+    fn format_messages_preserves_long_messages() {
+        // Long messages are no longer truncated — pass through verbatim.
         let long = "A".repeat(600);
         let messages = vec![text_msg(Role::User, &long)];
         let result = format_messages_for_summarization(&messages);
-        assert!(result.contains("...(truncated)"));
-        assert!(result.len() < 600 + 50); // prefix + truncation suffix
+        assert!(result.contains(&long), "long messages must not be truncated");
+        assert!(!result.contains("truncated"));
+    }
+
+    #[test]
+    fn format_messages_with_multiple_content_blocks() {
+        let msg = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "part one".into(),
+                },
+                ContentBlock::Text {
+                    text: "part two".into(),
+                },
+            ],
+            name: None,
+            pinned: false,
+            reasoning_content: None,
+        };
+        let result = format_messages_for_summarization(&[msg]);
+        // Text blocks joined with newline.
+        assert!(result.contains("part one\npart two"));
     }
 
     #[test]
@@ -264,9 +289,96 @@ mod tests {
     }
 
     #[test]
+    fn find_existing_summary_detects_key_facts_prefix() {
+        let messages = vec![text_msg(Role::User, "Key facts:\n- fact one\n- fact two")];
+        let result = find_existing_summary(&messages);
+        assert!(result.is_some());
+        let summary = result.unwrap();
+        assert!(summary.contains("fact one"));
+    }
+
+    #[test]
+    fn find_existing_summary_extracts_after_summary_marker() {
+        // "Summary:" mid-text — extract from that point onward.
+        let messages = vec![text_msg(
+            Role::Assistant,
+            "blah blah Summary:\n- key point\n- another",
+        )];
+        let result = find_existing_summary(&messages);
+        assert!(result.is_some());
+        let summary = result.unwrap();
+        assert!(summary.starts_with("Summary:"));
+        assert!(summary.contains("key point"));
+        assert!(!summary.contains("blah blah"));
+    }
+
+    #[test]
     fn find_existing_summary_returns_none_when_absent() {
         let messages = vec![text_msg(Role::User, "hello")];
         assert!(find_existing_summary(&messages).is_none());
+    }
+
+    #[test]
+    fn extract_message_text_basic() {
+        let msg = text_msg(Role::User, "hello world");
+        assert_eq!(extract_message_text(&msg), "hello world");
+    }
+
+    #[test]
+    fn extract_message_text_skips_non_text_blocks() {
+        let msg = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "using tool".into(),
+                },
+                ContentBlock::ToolCall(duga_types::tool_call::ToolCall::new(
+                    "bash",
+                    serde_json::json!({}),
+                )),
+            ],
+            name: None,
+            pinned: false,
+            reasoning_content: None,
+        };
+        assert_eq!(extract_message_text(&msg), "using tool");
+    }
+
+    #[test]
+    fn extract_message_text_empty_on_no_text() {
+        let msg = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(duga_types::tool_call::ToolCall::new(
+                "bash",
+                serde_json::json!({}),
+            ))],
+            name: None,
+            pinned: false,
+            reasoning_content: None,
+        };
+        assert!(extract_message_text(&msg).is_empty());
+    }
+
+    #[test]
+    fn format_role_all_variants() {
+        assert_eq!(format_role(&text_msg(Role::System, "x")), "system");
+        assert_eq!(format_role(&text_msg(Role::User, "x")), "user");
+        assert_eq!(
+            format_role(&text_msg(Role::Assistant, "x")),
+            "assistant"
+        );
+    }
+
+    #[test]
+    fn format_role_tool_anonymous() {
+        let msg = Message {
+            role: Role::Tool,
+            content: vec![],
+            name: None,
+            pinned: false,
+            reasoning_content: None,
+        };
+        assert_eq!(format_role(&msg), "tool");
     }
 
     #[test]
@@ -293,5 +405,16 @@ mod tests {
         assert!(summary.content.contains("Compressed context:"));
         assert!(summary.content.contains("user"));
         assert!(summary.content.contains("assistant"));
+    }
+
+    #[test]
+    fn fallback_summary_caps_at_16_messages() {
+        let messages: Vec<_> = (0..20)
+            .map(|i| text_msg(Role::User, &format!("msg {i}")))
+            .collect();
+        let summary = fallback_summary(&messages);
+        // Should only contain 16 lines (one per message, capped)
+        let line_count = summary.content.lines().count();
+        assert_eq!(line_count, 17); // "Compressed context:" + 16 messages
     }
 }
