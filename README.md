@@ -72,6 +72,50 @@ export TELEGRAM_BOT_TOKEN="your-bot-token"
 
 See [docs/telegram-bot.md](docs/telegram-bot.md) for full configuration, triggers, commands, safety model, and scheduled events.
 
+### Terminal UI
+
+```bash
+# Build and run the interactive terminal UI
+cargo build --release -p duga-tui
+./target/release/duga-tui --config duga.yaml
+```
+
+**Keybindings:**
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Submit input |
+| `Ctrl+C` | Cancel current run |
+| `q` / `Ctrl+Q` | Quit (when idle) |
+| `F1` | Toggle help overlay |
+| `Ctrl+F` | Search transcript |
+| `Ctrl+L` | Clear transcript |
+| `Escape` | Close overlay / cancel run |
+| `Shift+Enter` | New line (multi-line input) |
+| `Up` / `Down` | Navigate input history |
+| `PageUp` / `PageDown` | Scroll transcript |
+| `Tab` | Toggle tool call expansion |
+
+**TUI-specific config** (optional, in `duga.yaml`):
+
+```yaml
+tui:
+  ime_support: true
+  protocol_detection: true
+  tool_event_format: "collapsed"  # full, collapsed, final_only
+  theme:
+    name: "default"
+  keybindings:
+    submit: "enter"
+    cancel: "ctrl-c"
+    quit: "q"
+    help: "f1"
+    search: "ctrl-f"
+```
+
+- **`tool_event_format`**: `full` always shows expanded tool blocks; `collapsed` (default) shows them collapsed; `final_only` only reveals tool names after completion.
+- **Keybindings** accept `ctrl-`, `alt-`, and `shift-` modifiers (e.g. `ctrl-shift-c`).
+
 ### Docker + Allow-All Mode
 
 For environments where the agent runs inside a Docker container with full

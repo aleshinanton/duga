@@ -1,21 +1,30 @@
 //! Central application state for the duga TUI.
 //!
-//! Owns the runtime, transcript, editor, overlays, and event bridges.
+//! Owns the transcript, editor, overlays, event bridge, and agent runtime.
 //! Rendered by `terminal.rs` on each tick.
 
+use std::sync::Arc;
+use std::time::Instant;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duga_config::{Config, TuiConfig};
-use duga_core::loop_context::LoopContext;
-use duga_core::loops::SimpleReActLoop;
-use duga_runtime::{FrontendEvent, FrontendEventBridge, FrontendEventSink};
+use duga_core::LoopResult;
+use duga_runtime::{
+    BuiltRuntime, FrontendEvent, FrontendEventBridge, FrontendEventSink,
+};
 use duga_sandbox::CancellationToken;
 use duga_types::error::AgentError;
-use std::sync::Arc;
 use tokio::sync::mpsc;
+
+use crate::editor::{Editor, EditorAction};
+use crate::keybindings::{GlobalAction, Keybindings};
+use crate::overlay::{self, OverlayManager};
+use crate::transcript::{SystemLevel, Transcript, TranscriptItem};
 
 // ── App state machine ──────────────────────────────────────────────────────
 
 /// High-level application state driving the rendering loop.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum AppState {
     /// No agent run active. The editor is accepting input.
     Idle,
@@ -24,15 +33,11 @@ pub enum AppState {
         run_id: u64,
         cancel_requested: bool,
     },
-    /// Cancellation is in progress (debounce period between cancel request
-    /// and the loop actually stopping).
-    Cancelling,
 }
 
 // ── Internal events ────────────────────────────────────────────────────────
 
-/// Events produced by the crossterm reader thread, frontend bridge,
-/// or spawned tasks.
+/// Events produced by the crossterm reader, frontend bridge, or spawned tasks.
 #[derive(Clone, Debug)]
 pub enum AppEvent {
     Crossterm(crossterm::event::Event),
@@ -41,7 +46,7 @@ pub enum AppEvent {
     /// An agent run has completed (or errored).
     RunFinished {
         run_id: u64,
-        result: Result<duga_core::LoopResult, AgentError>,
+        result: Result<LoopResult, AgentError>,
     },
 }
 
@@ -52,18 +57,35 @@ pub struct App {
     pub config: Config,
     pub tui_config: TuiConfig,
 
-    /// Sender for AppEvent — used by spawned tasks to push events into the
-    /// main event loop.
-    pub event_tx: mpsc::UnboundedSender<AppEvent>,
+    /// Transcript of the conversation.
+    pub transcript: Transcript,
+    /// Multi-line input editor.
+    pub editor: Editor,
+    /// Overlay manager for modals.
+    pub overlays: OverlayManager,
+    /// Parsed keybindings.
+    pub keybindings: Keybindings,
+    /// Tool event format from config.
+    pub tool_event_format: duga_config::ToolEventFormat,
 
-    /// Frontend bridge for receiving agent progress events.
+    /// Sender for AppEvent — used by spawned tasks.
+    pub event_tx: mpsc::UnboundedSender<AppEvent>,
+    /// Frontend bridge for receiving agent progress.
     pub fe_bridge: FrontendEventBridge,
+
+    /// Pre-built runtime (reused across runs).
+    pub runtime: Option<BuiltRuntime>,
+    /// Frontend event sink.
+    pub fe_sink: Arc<FrontendEventSink>,
 
     /// Next run id counter.
     next_run_id: u64,
-
-    // Owned runtime — built at startup.
-    // Will be wired up in a follow-up task (TASK-17.3 full impl).
+    /// Whether the app should quit.
+    should_quit: bool,
+    /// Track the currently-streaming tool call ID to map to TranscriptItem.
+    current_tool_call_id: Option<String>,
+    /// Active cancellation token (set when run starts).
+    active_cancel_token: Option<CancellationToken>,
 }
 
 impl App {
@@ -72,16 +94,37 @@ impl App {
         tui_config: TuiConfig,
         event_tx: mpsc::UnboundedSender<AppEvent>,
         fe_bridge: FrontendEventBridge,
+        fe_sink: Arc<FrontendEventSink>,
     ) -> Self {
+        let keybindings = Keybindings::from_config(&tui_config.keybindings);
+        let tool_event_format = tui_config.tool_event_format.clone();
+
         Self {
             state: AppState::Idle,
             config,
             tui_config,
+            transcript: Transcript::new(),
+            editor: Editor::new(),
+            overlays: OverlayManager::new(),
+            keybindings,
+            tool_event_format,
             event_tx,
             fe_bridge,
+            runtime: None,
+            fe_sink,
             next_run_id: 0,
+            should_quit: false,
+            current_tool_call_id: None,
+            active_cancel_token: None,
         }
     }
+
+    /// Store the pre-built runtime for run spawning.
+    pub fn set_runtime(&mut self, runtime: BuiltRuntime) {
+        self.runtime = Some(runtime);
+    }
+
+    // ── Event handling ──────────────────────────────────────────────────
 
     /// Handle a single `AppEvent` and update internal state.
     pub fn update(&mut self, event: AppEvent) {
@@ -90,65 +133,700 @@ impl App {
             AppEvent::Frontend(fe) => self.handle_frontend_event(fe),
             AppEvent::Tick => self.handle_tick(),
             AppEvent::RunFinished { run_id, result } => {
-                // Only handle if it matches the active run
-                if let AppState::Running {
-                    run_id: active_id, ..
-                } = &self.state
-                {
-                    if *active_id == run_id {
-                        tracing::info!(run_id, "run finished");
-                        self.state = AppState::Idle;
-                    }
-                }
-                let _ = result; // Will be rendered in transcript in a follow-up
+                self.handle_run_finished(run_id, result);
             }
         }
     }
 
-    fn handle_crossterm(&mut self, _event: crossterm::event::Event) {
-        // Stub — full key routing implemented in TASK-17.3
+    fn handle_crossterm(&mut self, event: crossterm::event::Event) {
+        match event {
+            crossterm::event::Event::Key(key) => self.handle_key(&key),
+            crossterm::event::Event::Resize(_w, _h) => {
+                // Terminal resize — render will use new size on next draw
+            }
+            crossterm::event::Event::Paste(text) => {
+                self.editor.insert_text(&text);
+            }
+            crossterm::event::Event::FocusGained => {
+                // Cursor visibility handled by terminal
+            }
+            crossterm::event::Event::FocusLost => {
+                // Cursor visibility handled by terminal
+            }
+            _ => {}
+        }
+    }
+
+    pub fn handle_key(&mut self, key: &KeyEvent) {
+        // 1. Overlays get first crack
+        if self.overlays.has_overlay() {
+            if self.overlays.handle_key(key) {
+                return;
+            }
+            // Escape always closes overlays
+            if key.code == KeyCode::Esc {
+                self.overlays.pop();
+                return;
+            }
+        }
+
+        // 2. Global keybindings
+        let action = self.keybindings.match_key(key);
+        match action {
+            GlobalAction::Submit => {
+                self.submit_prompt();
+                return;
+            }
+            GlobalAction::Cancel => {
+                self.cancel_run();
+                return;
+            }
+            GlobalAction::Quit => {
+                if matches!(self.state, AppState::Idle) {
+                    self.should_quit = true;
+                }
+                return;
+            }
+            GlobalAction::Help => {
+                self.overlays.push(Box::new(overlay::help::HelpOverlay::new(
+                    &self.keybindings,
+                )));
+                return;
+            }
+            GlobalAction::Search => {
+                let mut search = overlay::search::SearchOverlay::new();
+                search.search(&self.transcript);
+                self.overlays.push(Box::new(search));
+                return;
+            }
+            GlobalAction::ScrollUp => {
+                self.transcript.scroll_mut().scroll_up(5);
+                return;
+            }
+            GlobalAction::ScrollDown => {
+                self.transcript.scroll_mut().scroll_down(5);
+                return;
+            }
+            GlobalAction::ToggleTool => {
+                // Toggle expansion of the currently selected tool block
+                // For simplicity, toggle the last tool block in the transcript
+                for (idx, item) in self.transcript.items().iter().enumerate().rev() {
+                    if matches!(item, TranscriptItem::ToolCallBlock { .. }) {
+                        self.transcript.toggle_tool_expand(idx);
+                        break;
+                    }
+                }
+                return;
+            }
+            GlobalAction::None => {}
+        }
+
+        // 3. Additional global keys not in config
+        match key {
+            // Ctrl+L: clear transcript
+            KeyEvent {
+                code: KeyCode::Char('l'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.transcript.clear();
+                self.transcript.push(TranscriptItem::SystemMessage {
+                    text: "Transcript cleared.".into(),
+                    level: SystemLevel::Info,
+                    timestamp: Instant::now(),
+                });
+                return;
+            }
+            // Ctrl+Q: quit
+            KeyEvent {
+                code: KeyCode::Char('q'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.should_quit = true;
+                return;
+            }
+            // Escape: close overlays / cancel when running
+            KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                if let AppState::Running { .. } = &self.state {
+                    self.cancel_run();
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        // 4. Pass key to editor
+        if !self.overlays.has_overlay() {
+            match self.editor.handle_key(key) {
+                EditorAction::Submit => {
+                    self.submit_prompt();
+                }
+                EditorAction::Ignored => {
+                    // If running and user types text, could inject as steering
+                    // But for now, just ignore
+                }
+                EditorAction::Consumed => {}
+            }
+        }
     }
 
     fn handle_frontend_event(&mut self, event: FrontendEvent) {
         match event {
-            FrontendEvent::RunStarted { task: _ } => {
-                // Stub — TASK-17.3
+            FrontendEvent::RunStarted { task } => {
+                self.transcript.push(TranscriptItem::UserMessage {
+                    text: task,
+                    timestamp: Instant::now(),
+                });
+                // Initialize streaming state for the assistant
+                // (streaming tokens will arrive via LlmTokenDelta)
             }
-            FrontendEvent::RunFinished { text: _ } => {
-                // Stub — TASK-17.3
+            FrontendEvent::RunFinished { text } => {
+                // Finish any active streaming
+                self.transcript.finish_streaming();
+                // If no streaming was happening, add the final text as a message
+                if let Some(text) = text {
+                    if self.transcript.streaming_index().is_none() {
+                        self.transcript.push(TranscriptItem::AssistantMessage {
+                            text,
+                            timestamp: Instant::now(),
+                            is_streaming: false,
+                        });
+                    }
+                }
             }
-            FrontendEvent::ToolCallStarted { .. } => {
-                // Stub — TASK-17.5
+            FrontendEvent::ToolCallStarted {
+                tool_name,
+                tool_call_id,
+                description,
+                ..
+            } => {
+                let is_expanded = match self.tool_event_format {
+                    duga_config::ToolEventFormat::Full => true,
+                    duga_config::ToolEventFormat::Collapsed => false,
+                    duga_config::ToolEventFormat::FinalOnly => false, // Hide until finished
+                };
+                self.current_tool_call_id = Some(tool_call_id.clone());
+                if self.tool_event_format != duga_config::ToolEventFormat::FinalOnly {
+                    self.transcript.push(TranscriptItem::ToolCallBlock {
+                        tool_call_id,
+                        tool_name,
+                        description,
+                        is_running: true,
+                        is_success: None,
+                        is_expanded,
+                        timestamp: Instant::now(),
+                    });
+                }
             }
-            FrontendEvent::ToolCallFinished { .. } => {
-                // Stub — TASK-17.5
+            FrontendEvent::ToolCallFinished {
+                tool_name,
+                tool_call_id,
+                success,
+                description,
+                ..
+            } => {
+                // Update existing tool block if found
+                self.transcript.update_tool_call(&tool_call_id, success);
+                // If FinalOnly mode and tool wasn't shown during running, show now
+                if self.tool_event_format == duga_config::ToolEventFormat::FinalOnly {
+                    // Check if this tool was added during ToolCallStarted
+                    let found = self.transcript.find_tool_call(&tool_call_id);
+                    if found.is_none() {
+                        self.transcript.push(TranscriptItem::ToolCallBlock {
+                            tool_call_id,
+                            tool_name,
+                            description,
+                            is_running: false,
+                            is_success: Some(success),
+                            is_expanded: !success, // Expand on failure
+                            timestamp: Instant::now(),
+                        });
+                    }
+                }
+                self.current_tool_call_id = None;
             }
-            FrontendEvent::LlmTokenDelta { delta: _, model: _ } => {
-                // Stub — TASK-17.5
+            FrontendEvent::LlmTokenDelta { delta, .. } => {
+                self.transcript.append_to_streaming(&delta);
             }
-            FrontendEvent::Error { message: _ } => {
-                // Stub — TASK-17.5
+            FrontendEvent::Error { message } => {
+                self.transcript.push(TranscriptItem::SystemMessage {
+                    text: message,
+                    level: SystemLevel::Error,
+                    timestamp: Instant::now(),
+                });
             }
-            FrontendEvent::LoopDelegated { .. } => {
-                // Stub — TASK-17.5
+            FrontendEvent::LoopDelegated {
+                from,
+                to,
+                reason,
+                depth,
+            } => {
+                self.transcript.push(TranscriptItem::DelegationNotice {
+                    from,
+                    to,
+                    reason,
+                    depth,
+                    timestamp: Instant::now(),
+                });
             }
-            FrontendEvent::MemoryCompressed { .. } => {
-                // Stub — TASK-17.5
+            FrontendEvent::MemoryCompressed {
+                before_tokens,
+                after_tokens,
+            } => {
+                self.transcript.push(TranscriptItem::MemoryNotice {
+                    before_tokens,
+                    after_tokens,
+                    timestamp: Instant::now(),
+                });
             }
         }
     }
 
     fn handle_tick(&mut self) {
-        // Tick-driven updates: cursor blink, loader animation, debounced re-renders.
+        // Periodic updates: nothing needed right now beyond re-rendering.
+        // Could add loader animation ticks, cursor blink, etc.
+    }
+
+    fn handle_run_finished(&mut self, run_id: u64, result: Result<LoopResult, AgentError>) {
+        if let AppState::Running {
+            run_id: active_id, ..
+        } = &self.state
+        {
+            if *active_id != run_id {
+                return;
+            }
+        }
+        match result {
+            Ok(loop_result) => {
+                if self.transcript.streaming_index().is_none() {
+                    if let Some(text) = &loop_result.message.text {
+                        self.transcript.push(TranscriptItem::AssistantMessage {
+                            text: text.clone(),
+                            timestamp: Instant::now(),
+                            is_streaming: false,
+                        });
+                    }
+                }
+                self.transcript.finish_streaming();
+            }
+            Err(err) => {
+                self.transcript.finish_streaming();
+                self.transcript.push(TranscriptItem::SystemMessage {
+                    text: format!("Agent error: {err}"),
+                    level: SystemLevel::Error,
+                    timestamp: Instant::now(),
+                });
+            }
+        }
+        self.state = AppState::Idle;
+        self.editor.set_disabled(false);
+        self.active_cancel_token = None;
+    }
+
+    // ── Run management ──────────────────────────────────────────────────
+
+    /// Submit the current prompt and start an agent run.
+    pub fn submit_prompt(&mut self) {
+        let task = self.editor.take_text();
+        if task.trim().is_empty() {
+            return;
+        }
+
+        // Add user message to transcript
+        self.transcript.push(TranscriptItem::UserMessage {
+            text: task.clone(),
+            timestamp: Instant::now(),
+        });
+
+        let cancellation = CancellationToken::new();
+        let _cancel_clone = cancellation.clone();
+        self.active_cancel_token = Some(cancellation.clone());
+
+        let run_id = self.next_run_id;
+        self.next_run_id += 1;
+
+        self.state = AppState::Running {
+            run_id,
+            cancel_requested: false,
+        };
+        self.editor.set_disabled(true);
+
+        // Spawn the agent loop in a tokio task.
+        let _app_tx = self.event_tx.clone();
+
+        // We need to check if runtime is available
+        if self.runtime.is_none() {
+            self.transcript.push(TranscriptItem::SystemMessage {
+                text: "Runtime not initialized. Load a config first.".into(),
+                level: SystemLevel::Error,
+                timestamp: Instant::now(),
+            });
+            self.state = AppState::Idle;
+            self.editor.set_disabled(false);
+            self.active_cancel_token = None;
+            return;
+        }
+
+        // Build a LoopContext from the runtime.
+        // Since we need &mut to runtime fields, we run the loop inline
+        // using the pre-built runtime's components.
+        // For now, use a simplified approach: spawn the loop via build_and_run
+        let config = self.config.clone();
+        let fe_sink = self.fe_sink.clone();
+        let event_tx = self.event_tx.clone();
+
+        tokio::spawn(async move {
+            let result = crate::runtime::run_agent(
+                &config,
+                task,
+                fe_sink,
+                cancellation,
+            )
+            .await;
+
+            let _ = event_tx.send(AppEvent::RunFinished {
+                run_id,
+                result,
+            });
+        });
+    }
+
+    /// Cancel the currently running agent.
+    pub fn cancel_run(&mut self) {
+        if let AppState::Running {
+            cancel_requested, ..
+        } = &self.state
+        {
+            if !cancel_requested {
+                if let Some(ref token) = self.active_cancel_token {
+                    token.cancel();
+                }
+                self.transcript.push(TranscriptItem::SystemMessage {
+                    text: "Cancelling…".into(),
+                    level: SystemLevel::Warn,
+                    timestamp: Instant::now(),
+                });
+                let run_id = if let AppState::Running { run_id, .. } = &self.state {
+                    *run_id
+                } else {
+                    return;
+                };
+                self.state = AppState::Running {
+                    run_id,
+                    cancel_requested: true,
+                };
+            }
+        }
     }
 
     /// Check if the app should exit.
     pub fn should_quit(&self) -> bool {
-        false // Stub — full quit logic in TASK-17.3
+        self.should_quit
+    }
+
+    // ── Rendering ───────────────────────────────────────────────────────
+
+    /// Render the entire TUI.
+    pub fn render(&self, frame: &mut ratatui::Frame) {
+        use ratatui::layout::{Constraint, Direction, Layout};
+        use ratatui::style::{Color, Style};
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::Paragraph;
+
+        let area = frame.area();
+
+        // Layout: [Status bar] [Transcript area] [Separator] [Editor area]
+        let main_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),  // Status bar
+                Constraint::Min(5),     // Transcript (fills remaining)
+                Constraint::Length(1),  // Separator
+                Constraint::Length(3),  // Editor area (min 3 lines)
+            ])
+            .split(area);
+
+        // ── Status bar ────────────────────────────────────────────────
+        let status_text = match &self.state {
+            AppState::Idle => Span::styled(
+                " duga-tui | Idle ",
+                Style::default().fg(Color::Black).bg(Color::Green),
+            ),
+            AppState::Running {
+                run_id,
+                cancel_requested,
+                ..
+            } => {
+                let label = if *cancel_requested {
+                    format!(" duga-tui | Cancelling… [run #{run_id}] ")
+                } else {
+                    format!(" duga-tui | Running… [run #{run_id}] ")
+                };
+                Span::styled(
+                    label,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow),
+                )
+            }
+        };
+
+        let status = Paragraph::new(Line::from(status_text))
+            .style(Style::default().bg(Color::Rgb(40, 40, 40)));
+        frame.render_widget(status, main_layout[0]);
+
+        // ── Transcript ────────────────────────────────────────────────
+        self.render_transcript(frame, main_layout[1]);
+
+        // ── Separator ─────────────────────────────────────────────────
+        let sep = Paragraph::new(Line::from(
+            Span::styled(
+                "─".repeat(main_layout[2].width as usize),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ));
+        frame.render_widget(sep, main_layout[2]);
+
+        // ── Editor ────────────────────────────────────────────────────
+        self.render_editor(frame, main_layout[3]);
+
+        // ── Overlays ──────────────────────────────────────────────────
+        if self.overlays.has_overlay() {
+            self.overlays.render_all(frame.buffer_mut(), area);
+        }
+    }
+
+    fn render_transcript(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        use ratatui::style::{Color, Modifier, Style};
+        use ratatui::text::{Line, Span, Text};
+        use ratatui::widgets::{Block, Paragraph, Wrap};
+
+        let items = self.transcript.items();
+        let scroll = self.transcript.scroll();
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let available_width = area.width as usize;
+
+        // If empty, show welcome message
+        if items.is_empty() {
+            lines.push(Line::from(
+                Span::styled(
+                    "Welcome to duga TUI! Type a task or question below and press Enter.",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                Span::styled(
+                    "F1: help  |  Ctrl+F: search  |  Ctrl+C: cancel  |  q: quit",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ));
+        } else {
+            for item in items {
+                match item {
+                    TranscriptItem::SystemMessage { text, level, .. } => {
+                        let color = match level {
+                            SystemLevel::Info => Color::Gray,
+                            SystemLevel::Warn => Color::Yellow,
+                            SystemLevel::Error => Color::Red,
+                        };
+                        lines.push(Line::from(
+                            Span::styled(
+                                format!("── {text}"),
+                                Style::default().fg(color),
+                            ),
+                        ));
+                    }
+                    TranscriptItem::UserMessage { text, .. } => {
+                        lines.push(Line::from(
+                            Span::styled("You:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                        ));
+                        for wrapped in crate::text::wrap_text(text, available_width.saturating_sub(2)) {
+                            lines.push(Line::from(
+                                Span::styled(wrapped, Style::default().fg(Color::White)),
+                            ));
+                        }
+                    }
+                    TranscriptItem::AssistantMessage {
+                        text,
+                        is_streaming,
+                        ..
+                    } => {
+                        let prefix = if *is_streaming { "⟳ " } else { "🤖" };
+                        lines.push(Line::from(
+                            Span::styled(
+                                format!("{prefix} Assistant:"),
+                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                            ),
+                        ));
+                        // Render as markdown
+                        let md = crate::markdown::render_markdown(
+                            text,
+                            available_width.saturating_sub(2),
+                        );
+                        for md_line in md.lines {
+                            lines.push(md_line.clone());
+                        }
+                    }
+                    TranscriptItem::ToolCallBlock {
+                        tool_name,
+                        description,
+                        is_running,
+                        is_success,
+                        is_expanded,
+                        ..
+                    } => {
+                        let icon = if *is_running {
+                            "⟳"
+                        } else {
+                            match is_success {
+                                Some(true) => "✓",
+                                Some(false) => "✗",
+                                None => "?",
+                            }
+                        };
+                        let status_color = if *is_running {
+                            Color::Yellow
+                        } else {
+                            match is_success {
+                                Some(true) => Color::Green,
+                                Some(false) => Color::Red,
+                                None => Color::Gray,
+                            }
+                        };
+
+                        lines.push(Line::from(
+                            Span::styled(
+                                format!("{icon} {tool_name} — {description}"),
+                                Style::default()
+                                    .fg(status_color)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        ));
+
+                        if *is_expanded && !*is_running {
+                            lines.push(Line::from(
+                                Span::styled(
+                                    format!("   result: {}",
+                                        match is_success {
+                                            Some(true) => "Success",
+                                            Some(false) => "Failed",
+                                            None => "Unknown",
+                                        }
+                                    ),
+                                    Style::default().fg(Color::DarkGray),
+                                ),
+                            ));
+                        }
+                        if *is_running {
+                            lines.push(Line::from(
+                                Span::styled("   Running…", Style::default().fg(Color::Yellow)),
+                            ));
+                        }
+                    }
+                    TranscriptItem::DelegationNotice {
+                        from,
+                        to,
+                        reason,
+                        ..
+                    } => {
+                        lines.push(Line::from(
+                            Span::styled(
+                                format!("🔄 {from} → {to}: {reason}"),
+                                Style::default().fg(Color::Magenta),
+                            ),
+                        ));
+                    }
+                    TranscriptItem::MemoryNotice {
+                        before_tokens,
+                        after_tokens,
+                        ..
+                    } => {
+                        lines.push(Line::from(
+                            Span::styled(
+                                format!("💾 Memory: {before_tokens} → {after_tokens} tokens"),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ));
+                    }
+                }
+                // Blank line between items
+                lines.push(Line::from(""));
+            }
+        }
+
+        // Apply scroll offset
+        let total_lines = lines.len();
+        let visible_lines = area.height as usize;
+        let max_offset = total_lines.saturating_sub(visible_lines);
+
+        // Auto-scroll to bottom if not manually scrolled
+        let offset = if scroll.manual_scroll {
+            scroll.offset.min(max_offset)
+        } else {
+            // Auto-follow: show last N lines
+            max_offset
+        };
+
+        let visible_lines: Vec<Line> = lines
+            .into_iter()
+            .skip(offset)
+            .take(visible_lines)
+            .collect();
+
+        let transcript_widget = Paragraph::new(Text::from(visible_lines))
+            .block(Block::default().style(Style::default().bg(Color::Rgb(20, 20, 20))))
+            .wrap(Wrap { trim: false });
+
+        frame.render_widget(transcript_widget, area);
+    }
+
+    fn render_editor(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        use ratatui::style::{Color, Style};
+        use ratatui::widgets::{Block, Borders, Paragraph};
+
+        let is_disabled = self.editor.is_disabled();
+
+        let text = if self.editor.text().is_empty() {
+            format!("> {}", self.editor.placeholder())
+        } else {
+            format!("> {}", self.editor.text())
+        };
+
+        let style = if is_disabled {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let title = if is_disabled {
+            " Input (disabled — agent running) "
+        } else {
+            " Input "
+        };
+
+        let editor_widget = Paragraph::new(text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(if is_disabled {
+                        Style::default().fg(Color::DarkGray)
+                    } else {
+                        Style::default().fg(Color::Cyan)
+                    }),
+            )
+            .style(style);
+
+        frame.render_widget(editor_widget, area);
     }
 }
-
-// ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -157,9 +835,15 @@ mod tests {
     fn make_app() -> App {
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
         let (fe_tx, fe_bridge) = FrontendEventBridge::new(16);
-        drop(fe_tx); // Not used in these tests
+        let fe_sink = Arc::new(FrontendEventSink::new(fe_tx));
         let (_config_dir, config) = test_config();
-        App::new(config, TuiConfig::default(), event_tx, fe_bridge)
+        App::new(
+            config,
+            TuiConfig::default(),
+            event_tx,
+            fe_bridge,
+            fe_sink,
+        )
     }
 
     fn test_config() -> (tempfile::TempDir, Config) {
@@ -213,17 +897,16 @@ plugins:
     #[test]
     fn app_starts_in_idle_state() {
         let app = make_app();
-        assert_eq!(app.state, AppState::Idle);
+        assert!(matches!(app.state, AppState::Idle));
         assert!(!app.should_quit());
     }
 
     #[test]
     fn app_ignores_run_finished_with_wrong_id() {
         let mut app = make_app();
-        // RunFinished without a matching active run should not change state.
         app.update(AppEvent::RunFinished {
             run_id: 99,
-            result: Ok(duga_core::LoopResult {
+            result: Ok(LoopResult {
                 loop_id: "simple_react".into(),
                 message: duga_types::message::AssistantMessage {
                     text: Some("ok".into()),
@@ -234,6 +917,84 @@ plugins:
                 tool_calls: 0,
             }),
         });
-        assert_eq!(app.state, AppState::Idle);
+        assert!(matches!(app.state, AppState::Idle));
+    }
+
+    #[test]
+    fn editor_submits_prompt() {
+        let mut app = make_app();
+        app.editor.insert_text("hello world");
+        let action = app.editor.handle_key(&KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(action, EditorAction::Submit);
+    }
+
+    #[test]
+    fn global_quit_when_idle() {
+        let mut app = make_app();
+        app.handle_key(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.should_quit());
+    }
+
+    #[test]
+    fn help_overlay_toggles() {
+        let mut app = make_app();
+        assert!(!app.overlays.has_overlay());
+        app.handle_key(&KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert!(app.overlays.has_overlay());
+        // Escape closes
+        app.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.overlays.has_overlay());
+    }
+
+    #[test]
+    fn frontend_event_tool_call_creates_block() {
+        let mut app = make_app();
+        app.update(AppEvent::Frontend(FrontendEvent::ToolCallStarted {
+            tool_name: "shell".into(),
+            tool_call_id: "tc1".into(),
+            attempt: 1,
+            description: "ls -la".into(),
+        }));
+        assert_eq!(app.transcript.len(), 1);
+        let items = app.transcript.items();
+        assert!(matches!(items[0], TranscriptItem::ToolCallBlock { .. }));
+    }
+
+    #[test]
+    fn frontend_event_streaming_tokens() {
+        let mut app = make_app();
+        app.update(AppEvent::Frontend(FrontendEvent::LlmTokenDelta {
+            model: "test".into(),
+            delta: "Hello".into(),
+        }));
+        app.update(AppEvent::Frontend(FrontendEvent::LlmTokenDelta {
+            model: "test".into(),
+            delta: " world".into(),
+        }));
+        assert_eq!(app.transcript.len(), 1);
+        if let TranscriptItem::AssistantMessage { text, .. } = &app.transcript.items()[0] {
+            assert_eq!(text, "Hello world");
+        } else {
+            panic!("expected AssistantMessage");
+        }
+    }
+
+    #[test]
+    fn clear_transcript() {
+        let mut app = make_app();
+        app.transcript.push(TranscriptItem::SystemMessage {
+            text: "test".into(),
+            level: SystemLevel::Info,
+            timestamp: Instant::now(),
+        });
+        assert_eq!(app.transcript.len(), 1);
+        app.handle_key(&KeyEvent::new(
+            KeyCode::Char('l'),
+            KeyModifiers::CONTROL,
+        ));
+        assert!(app.transcript.len() > 0); // Has the "cleared" message
     }
 }

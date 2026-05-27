@@ -2,16 +2,14 @@
 //!
 //! Launches an interactive ratatui-based terminal interface that connects
 //! to the shared duga runtime, provides live agent progress, tool-call
-//! visibility, cancellation, replay browsing, and confirmation UX.
-
-mod app;
-mod terminal;
+//! visibility, cancellation, search, and confirmation UX.
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use duga_config::Config;
-use duga_runtime::providers::{build_llm, resolve_provider};
 use std::path::PathBuf;
+
+// All modules are declared in lib.rs
 
 #[derive(Debug, Parser)]
 #[command(
@@ -41,8 +39,6 @@ async fn main() -> Result<()> {
     let config = Config::load(&cli.config)
         .with_context(|| format!("loading config {}", cli.config.display()))?;
 
-    let _selection = resolve_provider(&config)?;
-
     tracing::info!(
         "duga-tui starting: model={} workspace={}",
         config.model,
@@ -50,7 +46,7 @@ async fn main() -> Result<()> {
     );
 
     // Enter the TUI event loop — this blocks until the user quits.
-    terminal::run_tui(config, &cli.replay_dir).await
+    duga_tui::terminal::run_tui(config, &cli.replay_dir).await
 }
 
 fn init_tracing(verbose: bool) -> Result<()> {

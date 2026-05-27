@@ -8,6 +8,24 @@ This project has not published versioned releases yet. Entries below summarize t
 
 ### Added
 
+- **EPIC-17: Terminal UI Frontend — Interactive ratatui-based TUI.**  A full terminal-based interface for the duga agent, connecting to the shared runtime without duplicating any harness wiring.  Key additions:
+  - **`duga-tui` crate** — ratatui + crossterm binary with async event loop, raw mode / alternate screen lifecycle, bracketed paste, and focus tracking.
+  - **App state machine** — `Idle → Running → Idle` with cancellation token support.  Event loop merges crossterm input (spawn_blocking thread), frontend bridge events, and 50ms ticks via `tokio::select!`.
+  - **Transcript pane** — conversation history with `TranscriptItem` variants (UserMessage, AssistantMessage, ToolCallBlock, DelegationNotice, MemoryNotice, SystemMessage).  Marks streaming text as `is_streaming` until `RunFinished` arrives.  Auto-scrolls to bottom; manual scroll disables auto-follow.
+  - **Multi-line editor** — cursor movement, word jump (Ctrl+Left/Right), history navigation (Up/Down), Shift+Enter newlines, paste, placeholder text, and disabled-submit mode while agent is running.
+  - **Markdown rendering** — `pulldown-cmark` → ratatui `Text` adapter supporting headings, bold, italic, code spans, code blocks, blockquotes, lists, links, and horizontal rules.  Word-wraps to terminal width.  User/assistant messages styled differently.
+  - **Collapsible tool call blocks** — tool calls render as labeled blocks (e.g. `⟳ shell — ls -la`).  Running blocks are always expanded with a spinner.  Completed blocks collapse (success) or auto-expand (failure).  Three display modes: `Full` (always expanded), `Collapsed` (default), `FinalOnly` (hidden until completion).
+  - **Overlay system** — stack-based `OverlayManager` with `Overlay` trait.  Topmost overlay captures all keyboard events.
+  - **Help overlay** (`F1`) — lists all keybindings dynamically from config.  Scrollable with Up/Down/PageUp/PageDown.
+  - **Search overlay** (`Ctrl+F`) — real-time transcript search with highlighted matches, Enter/Shift+Enter to cycle through results, match count display.
+  - **Confirmation dialogs** — centered modals with Yes/No/Cancel options, arrow-key selection, quick `y`/`n` keys, Escape dismiss.  Implements `Overlay` trait, ready for `ConfirmationMiddleware` integration.
+  - **Keybinding customization** — human-readable patterns (`ctrl-c`, `shift-enter`, `f1`, `page-up`) parsed from `tui.keybindings` YAML config.  `KeybindingsConfig` in `duga-config` with sensible defaults.
+  - **Tool event format config** — `tui.tool_event_format` controls tool block rendering: `full`, `collapsed`, or `final_only`.
+  - **FrontendEventBridge integration** — properly maps all `FrontendEvent` variants to transcript updates (RunStarted, RunFinished, ToolCallStarted, ToolCallFinished, LlmTokenDelta, Error, LoopDelegated, MemoryCompressed).  Tool descriptions cached transitively through `FrontendEventSink`.
+  - **Cancellation** — `Ctrl+C` / `q` during a run cancels via `CancellationToken`.  Editor re-enables on run completion.
+  - **TuiConfig** added to `duga-config::Config` (`ime_support`, `protocol_detection`, `tool_event_format`, `theme`, `keybindings`).
+  - **Integration tests** — 32 e2e tests covering app state, transcript lifecycle, frontend event mapping, key routing, overlay lifecycle, tool event formats, confirmation dialogs, search, and editor behavior.  No live terminal or LLM required.
+
 - **EPIC-31: Steering — Dynamic mid-loop guidance injection.**  Allows human users, tools, config rules, and the loop itself to inject guidance, observations, or constraints into the LLM context *during* a loop run (not just at startup). Key additions:
   - **Steering types** (`duga-core::steering`) — `SteeringContextEvent` (InjectGuidance, ResetTask, AdjustLimits, InjectToolResult), `SteeringControlEvent` (Cancel, ForceComplete, Reprompt), `SteeringSender`/`SteeringReceiver` async channel pair with two-pass priority drain (Cancel > ForceComplete > Reprompt).
   - **Three injection points** in `SimpleReActLoop` — POINT 0 (before LLM call), POINT 2 (after tool result, Reprompt buffered), POINT 3 (end of step, flushes buffered).

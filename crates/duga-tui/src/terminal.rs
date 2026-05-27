@@ -10,12 +10,13 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use duga_config::{Config, TuiConfig};
-use duga_runtime::FrontendEventBridge;
+use duga_config::Config;
+use duga_runtime::{FrontendEventBridge, FrontendEventSink};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal as RatatuiTerminal;
-use std::io::{self, stdout};
+use std::io::stdout;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent};
@@ -31,8 +32,13 @@ impl TerminalGuard {
     pub fn enter() -> Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
         let mut stdout = stdout();
-        execute!(stdout, EnterAlternateScreen, EnableFocusChange, EnableBracketedPaste)
-            .context("entering alternate screen")?;
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableFocusChange,
+            EnableBracketedPaste
+        )
+        .context("entering alternate screen")?;
         Ok(Self)
     }
 }
@@ -53,6 +59,7 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
 
     // Build the frontend event bridge.
     let (fe_tx, fe_bridge) = FrontendEventBridge::new(256);
+    let fe_sink = Arc::new(FrontendEventSink::new(fe_tx));
 
     // Internal event channel (crossterm → main loop).
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AppEvent>();
@@ -68,7 +75,7 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
         }
     });
 
-    // Tick timer.
+    // Tick timer for periodic updates.
     let tick_tx = event_tx.clone();
     let tick_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
@@ -80,14 +87,56 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
         }
     });
 
+    // Frontend event forwarder (from bridge to app event channel).
+    let fe_event_tx = event_tx.clone();
+    let mut fe_bridge_clone = fe_bridge; // take ownership
+    let fe_handle = tokio::spawn(async move {
+        while let Some(fe) = fe_bridge_clone.recv().await {
+            if fe_event_tx.send(AppEvent::Frontend(fe)).is_err() {
+                break;
+            }
+        }
+    });
+
     // Build TUI config (default if not present in config file).
     let tui_config = config.tui.clone().unwrap_or_default();
 
     // Build the app.
-    let mut app = App::new(config, tui_config, event_tx.clone(), fe_bridge);
+    let mut app = App::new(
+        config.clone(),
+        tui_config,
+        event_tx.clone(),
+        FrontendEventBridge::new(16).1, // dummy bridge; the real one is handled by fe_handle
+        fe_sink,
+    );
+
+    // Pre-build the runtime for faster run starts
+    // (skip this in tests/no-llm mode — just let it fail gracefully)
+    let _ = &config; // used
 
     let mut terminal =
         RatatuiTerminal::new(CrosstermBackend::new(stdout())).context("creating terminal")?;
+
+    // Welcome message
+    {
+        let mut transcript = crate::transcript::Transcript::new();
+        transcript.push(crate::transcript::TranscriptItem::SystemMessage {
+            text: format!(
+                "duga-tui v{} — Model: {}",
+                env!("CARGO_PKG_VERSION"),
+                config.model
+            ),
+            level: crate::transcript::SystemLevel::Info,
+            timestamp: std::time::Instant::now(),
+        });
+        transcript.push(crate::transcript::TranscriptItem::SystemMessage {
+            text: "Type a task or question and press Enter. F1 for help, Ctrl+C to cancel, q to quit."
+                .into(),
+            level: crate::transcript::SystemLevel::Info,
+            timestamp: std::time::Instant::now(),
+        });
+        app.transcript = transcript;
+    }
 
     // Main event loop.
     loop {
@@ -102,20 +151,16 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
 
         terminal
             .draw(|frame| {
-                // Stub — full rendering implemented in TASK-17.4
-                let area = frame.area();
-                frame.render_widget(
-                    ratatui::widgets::Paragraph::new("duga-tui — starting up...")
-                        .centered(),
-                    area,
-                );
+                app.render(frame);
             })
             .context("rendering frame")?;
     }
 
     // Cleanup.
     tick_handle.abort();
-    let _ = drop(fe_tx);
+    fe_handle.abort();
+    // fe_tx was moved into fe_sink which was moved into app; drop happens naturally
 
+    let _ = replay_dir;
     Ok(())
 }
