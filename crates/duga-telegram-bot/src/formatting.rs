@@ -256,11 +256,17 @@ pub fn chunk_message(text: &str) -> Vec<String> {
             break;
         }
 
+        // Clamp MAX_LEN to a valid UTF-8 char boundary.
+        let mut max = MAX_LEN.min(remaining.len());
+        while max > 0 && !remaining.is_char_boundary(max) {
+            max -= 1;
+        }
+
         // Find a natural break point.
-        let mut split_at = MAX_LEN;
-        if let Some(pos) = remaining[..MAX_LEN].rfind('\n') {
+        let mut split_at = max;
+        if let Some(pos) = remaining[..max].rfind('\n') {
             split_at = pos;
-        } else if let Some(pos) = remaining[..MAX_LEN].rfind(' ') {
+        } else if let Some(pos) = remaining[..max].rfind(' ') {
             split_at = pos;
         }
 
@@ -307,6 +313,30 @@ mod tests {
         let chunks = chunk_message(&text);
         for chunk in &chunks {
             assert!(chunk.len() <= 4000);
+        }
+    }
+
+    #[test]
+    fn test_chunk_message_multibyte_utf8() {
+        // Regression: slicing at byte 4000 used to panic on multi-byte chars.
+        // Build a string where a 2-byte Cyrillic char straddles byte 4000.
+        let mut text = String::with_capacity(4010);
+        // Fill with single-byte chars up to byte 3999.
+        for _ in 0..3999 {
+            text.push('a');
+        }
+        // Add a 2-byte Cyrillic char that spans bytes 3999..4001.
+        text.push('й'); // Cyrillic short i
+        // Fill the rest.
+        for _ in 0..100 {
+            text.push('b');
+        }
+        let chunks = chunk_message(&text);
+        assert!(chunks.len() >= 2);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 4000);
+            // Each chunk must be valid UTF-8.
+            assert!(std::str::from_utf8(chunk.as_bytes()).is_ok());
         }
     }
 
