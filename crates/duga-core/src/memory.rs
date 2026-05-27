@@ -95,11 +95,21 @@ impl Memory {
 
     /// Restore conversation history into memory (for persistent chat context).
     ///
+    /// All messages are stored as evictable regardless of their previous
+    /// `pinned` status — only the *current* run's messages should be
+    /// protected from eviction.  This prevents pinned messages from
+    /// accumulating across runs and blocking the sliding window.
+    ///
     /// The sliding window and token budget from the memory config are applied
     /// after loading to prevent irrelevant history from saturating context.
     pub fn restore_history(&mut self, messages: Vec<Message>) {
         let before = self.recent_messages.len();
-        for msg in messages {
+        for mut msg in messages {
+            // Drop cross-run pin accumulation: only the current run's
+            // push_user decides what stays pinned.  Without this, every
+            // run's first user message would remain pinned forever and
+            // enforce_window can't evict them.
+            msg.pinned = false;
             self.push_msg(msg);
         }
         let after = self.recent_messages.len();
@@ -116,7 +126,9 @@ impl Memory {
     ///
     /// Called after `restore_history` to limit how many messages from
     /// previous sessions are kept in the active context.  Pinned messages
-    /// (including the first user task) are never removed.
+    /// from the *current* run (first user task, system prompts) are never
+    /// removed.  Restored history messages are unpinned by `restore_history`
+    /// and are eligible for eviction.
     pub fn enforce_window(&mut self) {
         let window_size = self.context_window_size;
         let max_tokens = self.max_context_tokens;
@@ -870,5 +882,152 @@ mod tests {
         // Restore to a point beyond current length — no panic
         memory.restore(5);
         assert_eq!(memory.recent_messages().len(), 1);
+    }
+
+    // ── restore_history pin-clearing tests ────────────────────────────
+
+    #[test]
+    fn restore_history_clears_pinned_on_all_messages() {
+        let mut memory = Memory::new(vec![], 1000, 0.8, 50, 24000);
+
+        // Simulate restoring history from a previous run where
+        // several messages were pinned (as happens when each run's
+        // first push_user sets pinned=true).
+        let mut pinned_user = Message::user("old task 1");
+        pinned_user.pinned = true;
+        let mut pinned_user2 = Message::user("old task 2");
+        pinned_user2.pinned = true;
+        let assistant = Message::assistant(Some("old reply".into()), vec![], None);
+        // assistant is not pinned by default — verify it stays that way
+
+        memory.restore_history(vec![
+            pinned_user,
+            assistant.clone(),
+            pinned_user2,
+        ]);
+
+        // All three messages should be present.
+        assert_eq!(memory.recent_messages().len(), 3);
+
+        // None of the restored messages should be pinned.
+        for msg in memory.recent_messages().iter() {
+            assert!(
+                !msg.pinned,
+                "restored messages must not be pinned; role={}, text={:?}",
+                msg.role,
+                msg.content.first().and_then(|c| match c {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn current_run_push_user_still_pins_after_restore() {
+        // The current run's first push_user must still produce a pinned
+        // message even after history has been restored.
+        let mut memory = Memory::new(vec![], 1000, 0.8, 50, 24000);
+
+        // Restore some history first.
+        let mut old = Message::user("old task");
+        old.pinned = true;
+        memory.restore_history(vec![old]);
+
+        assert!(!memory.recent_messages()[0].pinned,
+            "restored message should be unpinned");
+
+        // Now push the current run's task — this should be pinned.
+        memory.push_user("current task".into());
+
+        let recent = memory.recent_messages();
+        assert_eq!(recent.len(), 2);
+        assert!(!recent[0].pinned, "restored message still unpinned");
+        assert!(recent[1].pinned, "current-run push_user must pin");
+        assert_eq!(memory.pinned_task(), Some("current task"));
+    }
+
+    #[test]
+    fn enforce_window_evicts_restored_messages_when_over_limit() {
+        // With a tight window and restored (now-unpinned) messages,
+        // enforce_window must be able to evict the excess.  Before
+        // the fix, restored messages carried their old pinned=true
+        // and enforce_window would break out early.
+        let mut memory = Memory::new(vec![], 1000, 0.8, 3, 0);
+
+        // Restore 5 messages — all would have been pinned in the
+        // previous run's capture.
+        let mut restored: Vec<Message> = (0..5)
+            .map(|i| {
+                let mut m = Message::user(format!("old msg {i}"));
+                m.pinned = true; // as they would come from previous LlmRequest
+                m
+            })
+            .collect();
+        memory.restore_history(restored);
+
+        // Window size is 3, so 2 should have been evicted.
+        assert_eq!(
+            memory.recent_messages().len(),
+            3,
+            "window of 3 must evict 2 excess messages"
+        );
+    }
+
+    #[test]
+    fn multi_run_does_not_accumulate_pinned_user_messages() {
+        // Simulate 3 consecutive runs where each run's first message
+        // was pinned.  After restoring history from the captured
+        // LlmRequest, only the *last* run's push_user should remain
+        // pinned.
+        let mut memory = Memory::new(vec![], 1000, 0.8, 50, 24000);
+
+        // Run 1: first user message gets pinned.
+        memory.push_user("run 1 task".into());
+        memory.push_assistant(AssistantMessage {
+            text: Some("run 1 reply".into()),
+            tool_calls: vec![],
+            reasoning_content: None,
+        });
+        assert!(memory.recent_messages()[0].pinned);
+
+        // Capture what would be in the LlmRequest.
+        let run1_snapshot: Vec<Message> = memory
+            .recent_messages()
+            .iter()
+            .cloned()
+            .collect();
+
+        // Run 2: fresh memory, restore run 1, add run 2.
+        let mut memory2 = Memory::new(vec![], 1000, 0.8, 50, 24000);
+        memory2.restore_history(run1_snapshot);
+        memory2.push_user("run 2 task".into());
+        memory2.push_assistant(AssistantMessage {
+            text: Some("run 2 reply".into()),
+            tool_calls: vec![],
+            reasoning_content: None,
+        });
+
+        // Only the last push_user (run 2) should be pinned.
+        let pinned_count = memory2
+            .recent_messages()
+            .iter()
+            .filter(|m| m.pinned)
+            .count();
+        assert_eq!(
+            pinned_count, 1,
+            "only the current run's task should be pinned after restore, got {}",
+            pinned_count
+        );
+        let last_user = memory2
+            .recent_messages()
+            .iter()
+            .rev()
+            .find(|m| m.role == Role::User)
+            .unwrap();
+        assert!(
+            last_user.pinned,
+            "current run's user message must be pinned"
+        );
     }
 }
