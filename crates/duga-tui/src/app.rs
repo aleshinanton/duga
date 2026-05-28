@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duga_config::{Config, TuiConfig};
 use duga_core::LoopResult;
 use duga_runtime::{
-    BuiltRuntime, FrontendEvent, FrontendEventBridge, FrontendEventSink,
+    FrontendEvent, FrontendEventBridge, FrontendEventSink,
 };
 use duga_sandbox::CancellationToken;
 use duga_types::error::AgentError;
@@ -73,8 +73,6 @@ pub struct App {
     /// Frontend bridge for receiving agent progress.
     pub fe_bridge: FrontendEventBridge,
 
-    /// Pre-built runtime (reused across runs).
-    pub runtime: Option<BuiltRuntime>,
     /// Frontend event sink.
     pub fe_sink: Arc<FrontendEventSink>,
 
@@ -110,18 +108,12 @@ impl App {
             tool_event_format,
             event_tx,
             fe_bridge,
-            runtime: None,
             fe_sink,
             next_run_id: 0,
             should_quit: false,
             current_tool_call_id: None,
             active_cancel_token: None,
         }
-    }
-
-    /// Store the pre-built runtime for run spawning.
-    pub fn set_runtime(&mut self, runtime: BuiltRuntime) {
-        self.runtime = Some(runtime);
     }
 
     // ── Event handling ──────────────────────────────────────────────────
@@ -456,26 +448,7 @@ impl App {
         };
         self.editor.set_disabled(true);
 
-        // Spawn the agent loop in a tokio task.
-        let _app_tx = self.event_tx.clone();
-
-        // We need to check if runtime is available
-        if self.runtime.is_none() {
-            self.transcript.push(TranscriptItem::SystemMessage {
-                text: "Runtime not initialized. Load a config first.".into(),
-                level: SystemLevel::Error,
-                timestamp: Instant::now(),
-            });
-            self.state = AppState::Idle;
-            self.editor.set_disabled(false);
-            self.active_cancel_token = None;
-            return;
-        }
-
-        // Build a LoopContext from the runtime.
-        // Since we need &mut to runtime fields, we run the loop inline
-        // using the pre-built runtime's components.
-        // For now, use a simplified approach: spawn the loop via build_and_run
+        // Build the runtime and run the agent in a tokio task.
         let config = self.config.clone();
         let fe_sink = self.fe_sink.clone();
         let event_tx = self.event_tx.clone();
