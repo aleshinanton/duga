@@ -175,13 +175,16 @@ impl App {
 
     fn handle_mouse(&mut self, event: &crossterm::event::MouseEvent) {
         use crossterm::event::MouseEventKind;
-        let amount = self.scroll_page_amount();
+        // Small fixed step: trackpads fire many events per second (30+),
+        // so 3 lines per tick yields smooth, fast scrolling naturally.
+        // Mouse wheels fire fewer events and feel best with PageUp/PageDown.
+        const MOUSE_SCROLL_LINES: usize = 3;
         match event.kind {
             MouseEventKind::ScrollUp => {
-                self.transcript.scroll_mut().scroll_up(amount);
+                self.transcript.scroll_mut().scroll_up(MOUSE_SCROLL_LINES);
             }
             MouseEventKind::ScrollDown => {
-                self.transcript.scroll_mut().scroll_down(amount);
+                self.transcript.scroll_mut().scroll_down(MOUSE_SCROLL_LINES);
             }
             _ => {}
         }
