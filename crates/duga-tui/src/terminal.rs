@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use crossterm::event::{EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, DisableMouseCapture};
 use crossterm::execute;
+use crossterm::style::Print;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -37,7 +38,8 @@ impl TerminalGuard {
             EnterAlternateScreen,
             EnableFocusChange,
             EnableBracketedPaste,
-            EnableMouseCapture
+            EnableMouseCapture,
+            Print("\x1b[?1003h")  // any-event tracking — required for Mac trackpad scroll
         )
         .context("entering alternate screen")?;
         Ok(Self)
@@ -47,7 +49,7 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut stdout = stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture, Print("\x1b[?1003l"));
         let _ = disable_raw_mode();
     }
 }
