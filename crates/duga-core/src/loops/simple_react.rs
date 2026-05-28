@@ -481,6 +481,14 @@ pub async fn dispatch_tool_with_events(
     ctx: &LoopContext<'_>,
     call: &ToolCall,
 ) -> Result<ToolResult, AgentError> {
+    // Delegate calls are handled by SimpleReActLoop's try_handle_delegate —
+    // they must never reach the tool dispatcher (the DelegateTool always errors).
+    if call.tool == "delegate" {
+        return Err(AgentError::EventSinkFailed(
+            "delegate tool called outside SimpleReActLoop".into(),
+        ));
+    }
+
     let retryable = ctx
         .tools
         .get(&call.tool)
