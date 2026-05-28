@@ -230,13 +230,9 @@ fn test_frontend_event_run_started() {
     app.update(AppEvent::Frontend(FrontendEvent::RunStarted {
         task: "do something".into(),
     }));
-    assert_ne!(app.transcript.len(), 0);
-    // Should have a UserMessage with the task
-    if let TranscriptItem::UserMessage { text, .. } = &app.transcript.items()[0] {
-        assert_eq!(text, "do something");
-    } else {
-        panic!("expected UserMessage");
-    }
+    // RunStarted no longer pushes a UserMessage — that's done by submit_prompt().
+    // The event is a no-op for the transcript.
+    assert_eq!(app.transcript.len(), 0);
 }
 
 #[test]

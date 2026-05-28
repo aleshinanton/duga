@@ -269,25 +269,26 @@ impl App {
 
     fn handle_frontend_event(&mut self, event: FrontendEvent) {
         match event {
-            FrontendEvent::RunStarted { task } => {
-                self.transcript.push(TranscriptItem::UserMessage {
-                    text: task,
-                    timestamp: Instant::now(),
-                });
-                // Initialize streaming state for the assistant
-                // (streaming tokens will arrive via LlmTokenDelta)
+            FrontendEvent::RunStarted { .. } => {
+                // User message already added by submit_prompt().
+                // Streaming tokens will arrive via LlmTokenDelta.
             }
             FrontendEvent::RunFinished { text } => {
-                // Finish any active streaming
+                // Check if we had streaming output before clearing it.
+                let had_streaming = self.transcript.streaming_index().is_some();
                 self.transcript.finish_streaming();
-                // If no streaming was happening, add the final text as a message
-                if let Some(text) = text {
-                    if self.transcript.streaming_index().is_none() {
-                        self.transcript.push(TranscriptItem::AssistantMessage {
-                            text,
-                            timestamp: Instant::now(),
-                            is_streaming: false,
-                        });
+
+                // If no streaming tokens were produced (non-streaming mode),
+                // push the final answer text now.
+                if !had_streaming {
+                    if let Some(t) = text {
+                        if !t.is_empty() {
+                            self.transcript.push(TranscriptItem::AssistantMessage {
+                                text: t,
+                                timestamp: Instant::now(),
+                                is_streaming: false,
+                            });
+                        }
                     }
                 }
             }
@@ -393,27 +394,16 @@ impl App {
                 return;
             }
         }
-        match result {
-            Ok(loop_result) => {
-                if self.transcript.streaming_index().is_none() {
-                    if let Some(text) = &loop_result.message.text {
-                        self.transcript.push(TranscriptItem::AssistantMessage {
-                            text: text.clone(),
-                            timestamp: Instant::now(),
-                            is_streaming: false,
-                        });
-                    }
-                }
-                self.transcript.finish_streaming();
-            }
-            Err(err) => {
-                self.transcript.finish_streaming();
-                self.transcript.push(TranscriptItem::SystemMessage {
-                    text: format!("Agent error: {err}"),
-                    level: SystemLevel::Error,
-                    timestamp: Instant::now(),
-                });
-            }
+
+        // Frontend events (LlmTokenDelta, RunFinished) already handled
+        // transcript updates. Only push an error notice here if needed.
+        if let Err(err) = &result {
+            // Error notice only if RunFinished didn't already show one
+            self.transcript.push(TranscriptItem::SystemMessage {
+                text: format!("Agent error: {err}"),
+                level: SystemLevel::Error,
+                timestamp: Instant::now(),
+            });
         }
         self.state = AppState::Idle;
         self.editor.set_disabled(false);
