@@ -227,21 +227,31 @@ impl App {
                 return;
             }
             GlobalAction::ToggleTool => {
-                // Toggle expansion of all tool blocks in the transcript
-                let tool_indices: Vec<usize> = self
+                // Collapse or expand all tool blocks to a consistent state.
+                // If any block is expanded, collapse all; otherwise expand all.
+                let any_expanded = self
+                    .transcript
+                    .items()
+                    .iter()
+                    .any(|item| {
+                        matches!(item, TranscriptItem::ToolCallBlock { is_expanded: true, .. })
+                    });
+                let target = !any_expanded;
+                let to_toggle: Vec<usize> = self
                     .transcript
                     .items()
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, item)| {
-                        if matches!(item, TranscriptItem::ToolCallBlock { .. }) {
-                            Some(idx)
-                        } else {
-                            None
+                        if let TranscriptItem::ToolCallBlock { is_expanded, .. } = item {
+                            if *is_expanded != target {
+                                return Some(idx);
+                            }
                         }
+                        None
                     })
                     .collect();
-                for idx in tool_indices {
+                for idx in to_toggle {
                     self.transcript.toggle_tool_expand(idx);
                 }
                 return;
