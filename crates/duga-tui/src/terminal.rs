@@ -5,7 +5,7 @@
 //! and periodic ticks.
 
 use anyhow::{Context, Result};
-use crossterm::event::{EnableBracketedPaste, EnableFocusChange};
+use crossterm::event::{EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, DisableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -36,7 +36,8 @@ impl TerminalGuard {
             stdout,
             EnterAlternateScreen,
             EnableFocusChange,
-            EnableBracketedPaste
+            EnableBracketedPaste,
+            EnableMouseCapture
         )
         .context("entering alternate screen")?;
         Ok(Self)
@@ -46,7 +47,7 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut stdout = stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen);
+        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
         let _ = disable_raw_mode();
     }
 }

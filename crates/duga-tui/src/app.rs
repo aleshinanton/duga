@@ -157,11 +157,24 @@ impl App {
             crossterm::event::Event::Paste(text) => {
                 self.editor.insert_text(&text);
             }
+            crossterm::event::Event::Mouse(mouse) => self.handle_mouse(&mouse),
             crossterm::event::Event::FocusGained => {
                 // Cursor visibility handled by terminal
             }
             crossterm::event::Event::FocusLost => {
                 // Cursor visibility handled by terminal
+            }
+        }
+    }
+
+    fn handle_mouse(&mut self, event: &crossterm::event::MouseEvent) {
+        use crossterm::event::MouseEventKind;
+        match event.kind {
+            MouseEventKind::ScrollUp => {
+                self.transcript.scroll_mut().scroll_up(3);
+            }
+            MouseEventKind::ScrollDown => {
+                self.transcript.scroll_mut().scroll_down(3);
             }
             _ => {}
         }
