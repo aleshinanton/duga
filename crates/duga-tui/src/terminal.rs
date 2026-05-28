@@ -32,24 +32,34 @@ impl TerminalGuard {
     /// Enter raw mode and alternate screen.
     pub fn enter() -> Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
-        let mut stdout = stdout();
+        let mut out = stdout();
         execute!(
-            stdout,
+            out,
             EnterAlternateScreen,
             EnableFocusChange,
             EnableBracketedPaste,
-            EnableMouseCapture,
-            Print("\x1b[?1003h")  // any-event tracking — required for Mac trackpad scroll
+            EnableMouseCapture
         )
         .context("entering alternate screen")?;
+        // any-event tracking — required for Mac trackpad scroll.
+        // Windows Console API handles this via EnableMouseCapture already.
+        #[cfg(unix)]
+        {
+            execute!(out, Print("\x1b[?1003h"))
+                .context("enabling any-event mouse tracking")?;
+        }
         Ok(Self)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let mut stdout = stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture, Print("\x1b[?1003l"));
+        let mut out = stdout();
+        let _ = execute!(out, LeaveAlternateScreen, DisableMouseCapture);
+        #[cfg(unix)]
+        {
+            let _ = execute!(out, Print("\x1b[?1003l"));
+        }
         let _ = disable_raw_mode();
     }
 }
