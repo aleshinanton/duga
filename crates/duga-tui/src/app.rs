@@ -95,6 +95,9 @@ pub struct App {
     active_confirm_dialog: Option<crate::overlay::confirmation::ConfirmationDialog>,
     /// Oneshot sender to respond to the active confirmation.
     pending_confirm_tx: Option<oneshot::Sender<ConfirmationDecision>>,
+    /// Last known terminal dimensions.
+    term_width: u16,
+    term_height: u16,
 }
 
 impl App {
@@ -128,6 +131,8 @@ impl App {
             confirmation_rx: None,
             active_confirm_dialog: None,
             pending_confirm_tx: None,
+            term_width: 80,
+            term_height: 24,
         }
     }
 
@@ -151,8 +156,9 @@ impl App {
     fn handle_crossterm(&mut self, event: crossterm::event::Event) {
         match event {
             crossterm::event::Event::Key(key) => self.handle_key(&key),
-            crossterm::event::Event::Resize(_w, _h) => {
-                // Terminal resize — render will use new size on next draw
+            crossterm::event::Event::Resize(w, h) => {
+                self.term_width = w;
+                self.term_height = h;
             }
             crossterm::event::Event::Paste(text) => {
                 self.editor.insert_text(&text);
@@ -169,15 +175,22 @@ impl App {
 
     fn handle_mouse(&mut self, event: &crossterm::event::MouseEvent) {
         use crossterm::event::MouseEventKind;
+        let amount = self.scroll_page_amount();
         match event.kind {
             MouseEventKind::ScrollUp => {
-                self.transcript.scroll_mut().scroll_up(3);
+                self.transcript.scroll_mut().scroll_up(amount);
             }
             MouseEventKind::ScrollDown => {
-                self.transcript.scroll_mut().scroll_down(3);
+                self.transcript.scroll_mut().scroll_down(amount);
             }
             _ => {}
         }
+    }
+
+    /// Half a transcript page, with a floor of 1.
+    fn scroll_page_amount(&self) -> usize {
+        let transcript_height = (self.term_height.saturating_sub(5) as usize).max(1);
+        (transcript_height / 2).max(1)
     }
 
     pub fn handle_key(&mut self, key: &KeyEvent) {
@@ -232,11 +245,13 @@ impl App {
                 return;
             }
             GlobalAction::ScrollUp => {
-                self.transcript.scroll_mut().scroll_up(5);
+                let amount = self.scroll_page_amount();
+                self.transcript.scroll_mut().scroll_up(amount);
                 return;
             }
             GlobalAction::ScrollDown => {
-                self.transcript.scroll_mut().scroll_down(5);
+                let amount = self.scroll_page_amount();
+                self.transcript.scroll_mut().scroll_down(amount);
                 return;
             }
             GlobalAction::ToggleTool => {
