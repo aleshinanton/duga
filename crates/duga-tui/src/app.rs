@@ -33,6 +33,8 @@ pub enum AppState {
     Running {
         run_id: u64,
         cancel_requested: bool,
+        /// Name of the active loop (e.g. "simple_react", "problem_solving").
+        loop_name: String,
     },
 }
 
@@ -473,9 +475,13 @@ impl App {
         let run_id = self.next_run_id;
         self.next_run_id += 1;
 
+        // Determine loop name for the status bar.
+        let loop_name = self.tui_config.default_loop.clone();
+
         self.state = AppState::Running {
             run_id,
             cancel_requested: false,
+            loop_name,
         };
         // Create steering channel for mid-run guidance.
         let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -523,14 +529,15 @@ impl App {
                     level: SystemLevel::Warn,
                     timestamp: Instant::now(),
                 });
-                let run_id = if let AppState::Running { run_id, .. } = &self.state {
-                    *run_id
+                let (run_id, loop_name) = if let AppState::Running { run_id, loop_name, .. } = &self.state {
+                    (*run_id, loop_name.clone())
                 } else {
                     return;
                 };
                 self.state = AppState::Running {
                     run_id,
                     cancel_requested: true,
+                    loop_name,
                 };
             }
         }
@@ -644,12 +651,12 @@ impl App {
             AppState::Running {
                 run_id,
                 cancel_requested,
-                ..
+                loop_name,
             } => {
                 let label = if *cancel_requested {
-                    format!(" duga-tui | Cancelling… [run #{run_id}] ")
+                    format!(" duga-tui | Cancelling… [{loop_name}] [run #{run_id}] ")
                 } else {
-                    format!(" duga-tui | Running… [run #{run_id}] ")
+                    format!(" duga-tui | Running… [{loop_name}] [run #{run_id}] ")
                 };
                 Span::styled(
                     label,

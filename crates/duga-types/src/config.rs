@@ -11,7 +11,7 @@ use std::time::Duration;
 pub struct LoopConfig {
     /// Loop ids that are available for delegation (e.g. `["problem_solving"]`).
     /// Empty means only `simple_react` is usable — delegation always fails.
-    #[serde(default)]
+    #[serde(default = "default_enabled_loops")]
     pub enabled_loops: Vec<String>,
     /// Maximum refinement iterations used by advanced loops.
     #[serde(default = "default_max_refinement_iterations")]
@@ -29,10 +29,19 @@ fn default_max_delegation_depth() -> u32 {
     2
 }
 
+fn default_enabled_loops() -> Vec<String> {
+    vec![
+        "problem_solving".into(),
+        "search".into(),
+        "decomposition".into(),
+        "verification".into(),
+    ]
+}
+
 impl Default for LoopConfig {
     fn default() -> Self {
         Self {
-            enabled_loops: Vec::new(),
+            enabled_loops: default_enabled_loops(),
             max_refinement_iterations: default_max_refinement_iterations(),
             max_delegation_depth: default_max_delegation_depth(),
         }
