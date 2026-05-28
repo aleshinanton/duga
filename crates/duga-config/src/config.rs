@@ -94,6 +94,10 @@ pub struct TuiConfig {
     pub theme: ThemeConfig,
     #[serde(default)]
     pub keybindings: KeybindingsConfig,
+    /// Tool names that require user confirmation before execution
+    /// (e.g. ["shell", "write", "edit"]).
+    #[serde(default)]
+    pub require_confirmation_for: Vec<String>,
 }
 
 impl Default for TuiConfig {
@@ -104,6 +108,7 @@ impl Default for TuiConfig {
             tool_event_format: ToolEventFormat::default(),
             theme: ThemeConfig::default(),
             keybindings: KeybindingsConfig::default(),
+            require_confirmation_for: Vec::new(),
         }
     }
 }

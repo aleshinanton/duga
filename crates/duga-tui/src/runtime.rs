@@ -12,16 +12,21 @@ use duga_core::LoopResult;
 use duga_events::EventSink;
 use duga_llm::dummy::DummyClient;
 use duga_llm::LlmClient;
-use duga_runtime::{FrontendEventSink, build_agent, BuiltRuntime};
+use duga_runtime::{
+    ConfirmationMiddleware, ConfirmationPolicy, FrontendEventSink, build_agent, BuiltRuntime,
+};
 use duga_core::steering::SteeringReceiver;
 use duga_sandbox::{CancellationToken, Workspace};
 use duga_types::error::AgentError;
 use std::sync::Arc;
 
+use crate::confirmation::{PendingConfirmation, TuiConfirmationProvider};
+
 /// Build and return a `BuiltRuntime` from config.
 pub async fn build_runtime(
     config: &Config,
     fe_sink: Arc<FrontendEventSink>,
+    confirmation_tx: Option<tokio::sync::mpsc::UnboundedSender<PendingConfirmation>>,
 ) -> Result<BuiltRuntime> {
     let llm: Arc<dyn LlmClient> = match duga_runtime::providers::build_llm(
         config.provider.as_deref().unwrap_or("dummy"),
@@ -42,6 +47,22 @@ pub async fn build_runtime(
         vec![],
     )?;
 
+    // Wire up confirmation middleware if tools are configured for it.
+    if let Some(confirm_tx) = confirmation_tx {
+        let tui_cfg = config.tui.as_ref();
+        let require: Vec<String> = tui_cfg
+            .map(|c| c.require_confirmation_for.clone())
+            .unwrap_or_default();
+        if !require.is_empty() {
+            let policy = ConfirmationPolicy::new(
+                require,
+                config.frontend.confirmation_timeout,
+            );
+            let provider = Arc::new(TuiConfirmationProvider::new(confirm_tx));
+            dispatcher.set_confirmation(ConfirmationMiddleware::new(policy, provider));
+        }
+    }
+
     let sinks: Vec<Arc<dyn EventSink>> = vec![fe_sink];
     let runtime = build_agent(config, llm, dispatcher, workspace, sinks, None)?;
 
@@ -55,8 +76,9 @@ pub async fn run_agent(
     fe_sink: Arc<FrontendEventSink>,
     cancellation: CancellationToken,
     steer_rx: Option<SteeringReceiver>,
+    confirmation_tx: Option<tokio::sync::mpsc::UnboundedSender<PendingConfirmation>>,
 ) -> Result<LoopResult, AgentError> {
-    let mut runtime = build_runtime(config, fe_sink)
+    let mut runtime = build_runtime(config, fe_sink, confirmation_tx)
         .await
         .map_err(|e| AgentError::EventSinkFailed(format!("failed to build runtime: {e}")))?;
 

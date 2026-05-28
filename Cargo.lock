@@ -843,6 +843,7 @@ name = "duga-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "crossterm",
  "duga-config",

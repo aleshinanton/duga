@@ -3,6 +3,7 @@
 //! Binary entrypoint lives in `main.rs`.
 
 pub mod app;
+pub mod confirmation;
 pub mod editor;
 pub mod keybindings;
 pub mod markdown;

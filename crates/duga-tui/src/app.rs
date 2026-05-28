@@ -11,15 +11,15 @@ use duga_config::{Config, TuiConfig};
 use duga_core::steering::{SteeringReceiver, SteeringSender};
 use duga_core::LoopResult;
 use duga_runtime::{
-    FrontendEvent, FrontendEventBridge, FrontendEventSink,
+    ConfirmationDecision, FrontendEvent, FrontendEventBridge, FrontendEventSink,
 };
 use duga_sandbox::CancellationToken;
 use duga_types::error::AgentError;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::editor::{Editor, EditorAction};
 use crate::keybindings::{GlobalAction, Keybindings};
-use crate::overlay::{self, OverlayManager};
+use crate::overlay::{self, Overlay, OverlayManager};
 use crate::transcript::{SystemLevel, Transcript, TranscriptItem};
 
 // ── App state machine ──────────────────────────────────────────────────────
@@ -87,6 +87,12 @@ pub struct App {
     active_cancel_token: Option<CancellationToken>,
     /// Steering sender for injecting guidance mid-run.
     active_steer: Option<SteeringSender>,
+    /// Receiver for pending confirmation requests from the agent.
+    confirmation_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::confirmation::PendingConfirmation>>,
+    /// Currently active confirmation dialog (handled outside overlay manager).
+    active_confirm_dialog: Option<crate::overlay::confirmation::ConfirmationDialog>,
+    /// Oneshot sender to respond to the active confirmation.
+    pending_confirm_tx: Option<oneshot::Sender<ConfirmationDecision>>,
 }
 
 impl App {
@@ -117,6 +123,9 @@ impl App {
             current_tool_call_id: None,
             active_cancel_token: None,
             active_steer: None,
+            confirmation_rx: None,
+            active_confirm_dialog: None,
+            pending_confirm_tx: None,
         }
     }
 
@@ -124,6 +133,9 @@ impl App {
 
     /// Handle a single `AppEvent` and update internal state.
     pub fn update(&mut self, event: AppEvent) {
+        // Poll for pending confirmation requests before processing events.
+        self.poll_confirmations();
+
         match event {
             AppEvent::Crossterm(ct_event) => self.handle_crossterm(ct_event),
             AppEvent::Frontend(fe) => self.handle_frontend_event(fe),
@@ -154,6 +166,15 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: &KeyEvent) {
+        // 0. Confirmation dialog takes priority over everything.
+        if let Some(ref mut dialog) = self.active_confirm_dialog {
+            let action = dialog.handle_key(key);
+            if matches!(action, overlay::OverlayAction::Close | overlay::OverlayAction::Consumed) {
+                self.process_confirm_result();
+                return;
+            }
+        }
+
         // 1. Overlays get first crack
         if self.overlays.has_overlay() {
             if self.overlays.handle_key(key) {
@@ -419,6 +440,9 @@ impl App {
         self.state = AppState::Idle;
         self.active_cancel_token = None;
         self.active_steer = None;
+        self.confirmation_rx = None;
+        self.active_confirm_dialog = None;
+        self.pending_confirm_tx = None;
     }
 
     // ── Run management ──────────────────────────────────────────────────
@@ -451,6 +475,10 @@ impl App {
         let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
         self.active_steer = Some(SteeringSender::new(steer_tx));
 
+        // Create confirmation channel for tool execution approval.
+        let (confirm_tx, confirm_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.confirmation_rx = Some(confirm_rx);
+
         // Build the runtime and run the agent in a tokio task.
         let config = self.config.clone();
         let fe_sink = self.fe_sink.clone();
@@ -463,6 +491,7 @@ impl App {
                 fe_sink,
                 cancellation,
                 Some(SteeringReceiver::new(steer_rx)),
+                Some(confirm_tx),
             )
             .await;
 
@@ -532,6 +561,44 @@ impl App {
                 level: SystemLevel::Warn,
                 timestamp: Instant::now(),
             });
+        }
+    }
+
+    /// Poll for pending confirmation requests and show the dialog.
+    fn poll_confirmations(&mut self) {
+        // Don't show a new confirmation if one is already active.
+        if self.active_confirm_dialog.is_some() {
+            return;
+        }
+
+        if let Some(ref mut rx) = self.confirmation_rx {
+            while let Ok(pending) = rx.try_recv() {
+                use crate::overlay::confirmation::ConfirmationDialog;
+                let dialog = ConfirmationDialog::yes_no(
+                    "Confirm Tool Execution",
+                    pending.request.label.clone(),
+                );
+                self.active_confirm_dialog = Some(dialog);
+                self.pending_confirm_tx = Some(pending.response_tx);
+                break; // Only handle one at a time
+            }
+        }
+    }
+
+    /// Check if the confirmation dialog was dismissed and send the response.
+    fn process_confirm_result(&mut self) {
+        if let Some(ref mut dialog) = self.active_confirm_dialog {
+            if let Some(result) = dialog.take_result() {
+                use crate::overlay::confirmation::ConfirmationResult;
+                let decision = match result {
+                    ConfirmationResult::Confirmed(idx) if idx == 0 => ConfirmationDecision::Approved,
+                    _ => ConfirmationDecision::Denied,
+                };
+                if let Some(tx) = self.pending_confirm_tx.take() {
+                    let _ = tx.send(decision);
+                }
+                self.active_confirm_dialog = None;
+            }
         }
     }
 
@@ -605,6 +672,11 @@ impl App {
 
         // ── Editor ────────────────────────────────────────────────────
         self.render_editor(frame, main_layout[3]);
+
+        // ── Confirmation dialog ──────────────────────────────────────
+        if let Some(ref dialog) = self.active_confirm_dialog {
+            dialog.render(area, frame.buffer_mut());
+        }
 
         // ── Overlays ──────────────────────────────────────────────────
         if self.overlays.has_overlay() {
