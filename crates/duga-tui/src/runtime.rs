@@ -13,6 +13,7 @@ use duga_events::EventSink;
 use duga_llm::dummy::DummyClient;
 use duga_llm::LlmClient;
 use duga_runtime::{FrontendEventSink, build_agent, BuiltRuntime};
+use duga_core::steering::SteeringReceiver;
 use duga_sandbox::{CancellationToken, Workspace};
 use duga_types::error::AgentError;
 use std::sync::Arc;
@@ -53,6 +54,7 @@ pub async fn run_agent(
     task: String,
     fe_sink: Arc<FrontendEventSink>,
     cancellation: CancellationToken,
+    steer_rx: Option<SteeringReceiver>,
 ) -> Result<LoopResult, AgentError> {
     let mut runtime = build_runtime(config, fe_sink)
         .await
@@ -71,7 +73,7 @@ pub async fn run_agent(
         max_refinement_iterations: runtime.config.agent.loop_config.max_refinement_iterations,
         max_delegation_depth: runtime.config.agent.loop_config.max_delegation_depth,
         delegation_depth: 0,
-        steer: None,
+        steer: steer_rx,
         steer_limits: None,
     };
 

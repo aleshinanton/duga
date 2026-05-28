@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duga_config::{Config, TuiConfig};
+use duga_core::steering::{SteeringReceiver, SteeringSender};
 use duga_core::LoopResult;
 use duga_runtime::{
     FrontendEvent, FrontendEventBridge, FrontendEventSink,
@@ -28,7 +29,7 @@ use crate::transcript::{SystemLevel, Transcript, TranscriptItem};
 pub enum AppState {
     /// No agent run active. The editor is accepting input.
     Idle,
-    /// Agent is executing. The editor is disabled; a loader is shown.
+    /// Agent is executing. Editor stays active for steering input.
     Running {
         run_id: u64,
         cancel_requested: bool,
@@ -84,6 +85,8 @@ pub struct App {
     current_tool_call_id: Option<String>,
     /// Active cancellation token (set when run starts).
     active_cancel_token: Option<CancellationToken>,
+    /// Steering sender for injecting guidance mid-run.
+    active_steer: Option<SteeringSender>,
 }
 
 impl App {
@@ -113,6 +116,7 @@ impl App {
             should_quit: false,
             current_tool_call_id: None,
             active_cancel_token: None,
+            active_steer: None,
         }
     }
 
@@ -210,6 +214,12 @@ impl App {
                 }
                 return;
             }
+            GlobalAction::Steer => {
+                if matches!(self.state, AppState::Running { .. }) {
+                    self.send_steering();
+                }
+                return;
+            }
             GlobalAction::None => {}
         }
 
@@ -256,12 +266,13 @@ impl App {
         if !self.overlays.has_overlay() {
             match self.editor.handle_key(key) {
                 EditorAction::Submit => {
-                    self.submit_prompt();
+                    if matches!(self.state, AppState::Running { .. }) {
+                        self.send_steering();
+                    } else {
+                        self.submit_prompt();
+                    }
                 }
-                EditorAction::Ignored => {
-                    // If running and user types text, could inject as steering
-                    // But for now, just ignore
-                }
+                EditorAction::Ignored => {}
                 EditorAction::Consumed => {}
             }
         }
@@ -406,8 +417,8 @@ impl App {
             });
         }
         self.state = AppState::Idle;
-        self.editor.set_disabled(false);
         self.active_cancel_token = None;
+        self.active_steer = None;
     }
 
     // ── Run management ──────────────────────────────────────────────────
@@ -436,7 +447,9 @@ impl App {
             run_id,
             cancel_requested: false,
         };
-        self.editor.set_disabled(true);
+        // Create steering channel for mid-run guidance.
+        let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.active_steer = Some(SteeringSender::new(steer_tx));
 
         // Build the runtime and run the agent in a tokio task.
         let config = self.config.clone();
@@ -449,6 +462,7 @@ impl App {
                 task,
                 fe_sink,
                 cancellation,
+                Some(SteeringReceiver::new(steer_rx)),
             )
             .await;
 
@@ -484,6 +498,40 @@ impl App {
                     cancel_requested: true,
                 };
             }
+        }
+    }
+
+    /// Send the current editor text as a steering guidance message.
+    fn send_steering(&mut self) {
+        let text = self.editor.take_text();
+        if text.trim().is_empty() {
+            return;
+        }
+
+        if let Some(ref steer) = self.active_steer {
+            match steer.guide(&text) {
+                Ok(()) => {
+                    self.transcript.push(TranscriptItem::SystemMessage {
+                        text: format!("Steering sent: {text}"),
+                        level: SystemLevel::Info,
+                        timestamp: Instant::now(),
+                    });
+                }
+                Err(e) => {
+                    self.transcript.push(TranscriptItem::SystemMessage {
+                        text: format!("Steering failed: {e}"),
+                        level: SystemLevel::Error,
+                        timestamp: Instant::now(),
+                    });
+                }
+            }
+        } else {
+            // No active steering channel — this shouldn't happen.
+            self.transcript.push(TranscriptItem::SystemMessage {
+                text: "No active run to steer.".into(),
+                level: SystemLevel::Warn,
+                timestamp: Instant::now(),
+            });
         }
     }
 
@@ -754,7 +802,7 @@ impl App {
         use ratatui::style::{Color, Style};
         use ratatui::widgets::{Block, Borders, Paragraph};
 
-        let is_disabled = self.editor.is_disabled();
+        let is_running = matches!(self.state, AppState::Running { .. });
 
         let text = if self.editor.text().is_empty() {
             format!("> {}", self.editor.placeholder())
@@ -762,14 +810,14 @@ impl App {
             format!("> {}", self.editor.text())
         };
 
-        let style = if is_disabled {
-            Style::default().fg(Color::DarkGray)
+        let style = if is_running {
+            Style::default().fg(Color::Yellow)
         } else {
             Style::default().fg(Color::White)
         };
 
-        let title = if is_disabled {
-            " Input (disabled — agent running) "
+        let title = if is_running {
+            " Input (steer: type + Enter to guide agent) "
         } else {
             " Input "
         };
@@ -779,8 +827,8 @@ impl App {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(title)
-                    .border_style(if is_disabled {
-                        Style::default().fg(Color::DarkGray)
+                    .border_style(if is_running {
+                        Style::default().fg(Color::Yellow)
                     } else {
                         Style::default().fg(Color::Cyan)
                     }),

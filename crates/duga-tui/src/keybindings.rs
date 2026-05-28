@@ -107,6 +107,7 @@ pub struct Keybindings {
     pub quit: KeyPattern,
     pub help: KeyPattern,
     pub search: KeyPattern,
+    pub steer: KeyPattern,
     pub scroll_up: KeyPattern,
     pub scroll_down: KeyPattern,
     pub toggle_tool: KeyPattern,
@@ -121,6 +122,7 @@ impl Keybindings {
             quit: Self::parse_or_default(&config.quit, "q"),
             help: Self::parse_or_default(&config.help, "f1"),
             search: Self::parse_or_default(&config.search, "ctrl-f"),
+            steer: Self::parse_or_default(&config.steer, "ctrl-g"),
             scroll_up: KeyPattern::parse("page-up").unwrap(),
             scroll_down: KeyPattern::parse("page-down").unwrap(),
             toggle_tool: KeyPattern::parse("tab").unwrap(),
@@ -150,6 +152,7 @@ pub enum GlobalAction {
     Quit,
     Help,
     Search,
+    Steer,
     ScrollUp,
     ScrollDown,
     ToggleTool,
@@ -170,6 +173,8 @@ impl Keybindings {
             GlobalAction::Help
         } else if self.search.matches(event) {
             GlobalAction::Search
+        } else if self.steer.matches(event) {
+            GlobalAction::Steer
         } else if self.scroll_up.matches(event) {
             GlobalAction::ScrollUp
         } else if self.scroll_down.matches(event) {

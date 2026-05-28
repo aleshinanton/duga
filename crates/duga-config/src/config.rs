@@ -155,6 +155,8 @@ pub struct KeybindingsConfig {
     pub help: String,
     #[serde(default = "default_search_key")]
     pub search: String,
+    #[serde(default = "default_steer_key")]
+    pub steer: String,
 }
 
 impl Default for KeybindingsConfig {
@@ -165,6 +167,7 @@ impl Default for KeybindingsConfig {
             quit: default_quit_key(),
             help: default_help_key(),
             search: default_search_key(),
+            steer: default_steer_key(),
         }
     }
 }
@@ -183,6 +186,9 @@ fn default_help_key() -> String {
 }
 fn default_search_key() -> String {
     "ctrl-f".into()
+}
+fn default_steer_key() -> String {
+    "ctrl-g".into()
 }
 
 fn default_confirmation_timeout() -> Duration {

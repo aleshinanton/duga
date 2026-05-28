@@ -2,7 +2,7 @@
 //!
 //! Supports: multi-line input with word-wrap, cursor movement,
 //! history navigation (Up/Down), paste, placeholder text,
-//! and disabled-submit mode when the agent is running.
+//! history navigation (Up/Down), paste, and placeholder text.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -21,8 +21,6 @@ pub struct Editor {
     history_index: Option<usize>,
     /// Placeholder text shown when buffer is empty.
     placeholder: String,
-    /// When true, Enter does not submit (agent is running).
-    disabled: bool,
 }
 
 impl Editor {
@@ -34,7 +32,6 @@ impl Editor {
             history: Vec::new(),
             history_index: None,
             placeholder: "Type a task or question…".into(),
-            disabled: false,
         }
     }
 
@@ -59,16 +56,6 @@ impl Editor {
         self.scroll_offset
     }
 
-    /// Whether the editor is disabled (agent running).
-    pub fn is_disabled(&self) -> bool {
-        self.disabled
-    }
-
-    /// Enable/disable the editor.
-    pub fn set_disabled(&mut self, disabled: bool) {
-        self.disabled = disabled;
-    }
-
     /// Returns the placeholder text.
     pub fn placeholder(&self) -> &str {
         &self.placeholder
@@ -88,9 +75,6 @@ impl Editor {
 
     /// Insert text at cursor position (for paste, character input).
     pub fn insert_text(&mut self, text: &str) {
-        if self.disabled {
-            return;
-        }
         self.buffer.insert_str(self.cursor, text);
         self.cursor += text.len();
         self.history_index = None;
@@ -98,9 +82,6 @@ impl Editor {
 
     /// Insert a character at cursor position.
     pub fn insert_char(&mut self, ch: char) {
-        if self.disabled {
-            return;
-        }
         self.buffer.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
         self.history_index = None;
@@ -108,25 +89,11 @@ impl Editor {
 
     /// Insert a newline at cursor position.
     pub fn insert_newline(&mut self) {
-        if self.disabled {
-            return;
-        }
         self.insert_char('\n');
     }
 
     /// Handle a key event. Returns true if the key was consumed.
     pub fn handle_key(&mut self, key: &KeyEvent) -> EditorAction {
-        if self.disabled {
-            // When disabled, only allow navigation keys, not text input.
-            match key.code {
-                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
-                    // Can still scroll transcript
-                    return EditorAction::Ignored;
-                }
-                _ => return EditorAction::Ignored,
-            }
-        }
-
         match key {
             // Enter: submit (or newline with Shift).
             KeyEvent {
@@ -516,14 +483,6 @@ mod tests {
 
         editor.handle_key(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(editor.text(), "first");
-    }
-
-    #[test]
-    fn disabled_editor_ignores_text_input() {
-        let mut editor = Editor::new();
-        editor.set_disabled(true);
-        let action = editor.handle_key(&KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
-        assert_eq!(action, EditorAction::Ignored);
     }
 
     #[test]

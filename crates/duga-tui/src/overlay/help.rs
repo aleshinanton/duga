@@ -37,7 +37,7 @@ impl HelpOverlay {
             HelpSection {
                 title: "Session",
                 items: vec![
-                    HelpItem { key: "Enter".into(), description: "Submit input" },
+                    HelpItem { key: "Enter".into(), description: "Submit prompt / Send steering (while running)" },
                     HelpItem { key: cancel_str, description: "Cancel current run" },
                     HelpItem { key: "Ctrl+L".into(), description: "Clear transcript" },
                     HelpItem { key: quit_str, description: "Quit (when idle)" },
@@ -60,10 +60,15 @@ impl HelpOverlay {
                 ],
             },
             HelpSection {
+                title: "Collapse / Expand",
+                items: vec![
+                    HelpItem { key: "Tab".into(), description: "Collapse or expand tool output" },
+                ],
+            },
+            HelpSection {
                 title: "Editor",
                 items: vec![
                     HelpItem { key: "Shift+Enter".into(), description: "New line" },
-                    HelpItem { key: "Tab".into(), description: "Toggle tool call expansion" },
                     HelpItem { key: "Ctrl+Left / Ctrl+Right".into(), description: "Word jump" },
                     HelpItem { key: "Backspace / Delete".into(), description: "Character deletion" },
                 ],

@@ -472,15 +472,15 @@ fn test_editor_history_navigation() {
 }
 
 #[test]
-fn test_editor_disabled_during_run() {
+fn test_editor_accepts_input_during_run() {
     let (mut app, _rx) = make_test_app();
-    app.editor.set_disabled(true);
+    // Editor stays active during runs for steering input.
     let action = app.editor.handle_key(&KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     ));
-    assert_eq!(action, EditorAction::Ignored);
-    assert_eq!(app.editor.text(), "");
+    assert_eq!(action, EditorAction::Consumed);
+    assert_eq!(app.editor.text(), "a");
 }
 
 // ── Run Lifecycle Tests ────────────────────────────────────────────────────
