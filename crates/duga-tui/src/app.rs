@@ -312,11 +312,19 @@ impl App {
                 let had_streaming = self.transcript.streaming_index().is_some();
                 self.transcript.finish_streaming();
 
-                // If no streaming tokens were produced (non-streaming mode),
-                // push the final answer text now.
-                if !had_streaming {
-                    if let Some(t) = text {
-                        if !t.is_empty() {
+                // Push the final answer unless it's a duplicate of the
+                // just-finished streaming output (non-delegation case).
+                // Delegation produces a different final text that must be shown.
+                if let Some(t) = text {
+                    if !t.is_empty() {
+                        let is_duplicate = had_streaming
+                            && self.transcript.items().last()
+                                .map(|item| matches!(item,
+                                    TranscriptItem::AssistantMessage { text: existing, .. }
+                                    if existing == &t))
+                                .unwrap_or(false);
+
+                        if !is_duplicate {
                             self.transcript.push(TranscriptItem::AssistantMessage {
                                 text: t,
                                 timestamp: Instant::now(),
