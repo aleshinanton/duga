@@ -477,6 +477,16 @@ async fn try_handle_delegate(
 /// Retries up to `config.limits.retry_on_error` additional times on transient
 /// errors for tools that opt in via `Tool::retryable`.  Each dispatch is
 /// bounded by the remaining runtime.
+/// Filter `delegate` from tool schemas — specialized loops should not
+/// offer delegation since only `SimpleReActLoop` handles it.
+pub fn schemas_without_delegate(schemas: &[duga_types::tool_schema::ToolSchema]) -> Vec<duga_types::tool_schema::ToolSchema> {
+    schemas
+        .iter()
+        .filter(|s| s.name != "delegate")
+        .cloned()
+        .collect()
+}
+
 pub async fn dispatch_tool_with_events(
     ctx: &LoopContext<'_>,
     call: &ToolCall,
@@ -1301,5 +1311,112 @@ mod tests {
         let loop_impl = SimpleReActLoop;
         let err = loop_impl.run("task".into(), &mut ctx).await.unwrap_err();
         assert_eq!(err, AgentError::Cancelled);
+    }
+
+    // ── schemas_without_delegate ────────────────────────────────────
+
+    #[test]
+    fn schemas_without_delegate_removes_delegate() {
+        let schemas = vec![
+            duga_types::tool_schema::ToolSchema {
+                name: "shell".into(),
+                description: "run shell".into(),
+                args_schema: serde_json::json!({}),
+            },
+            duga_types::tool_schema::ToolSchema {
+                name: "delegate".into(),
+                description: "delegate to loop".into(),
+                args_schema: serde_json::json!({}),
+            },
+            duga_types::tool_schema::ToolSchema {
+                name: "read".into(),
+                description: "read file".into(),
+                args_schema: serde_json::json!({}),
+            },
+        ];
+
+        let filtered = schemas_without_delegate(&schemas);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].name, "shell");
+        assert_eq!(filtered[1].name, "read");
+    }
+
+    #[test]
+    fn schemas_without_delegate_empty_when_only_delegate() {
+        let schemas = vec![duga_types::tool_schema::ToolSchema {
+            name: "delegate".into(),
+            description: "delegate to loop".into(),
+            args_schema: serde_json::json!({}),
+        }];
+
+        let filtered = schemas_without_delegate(&schemas);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn schemas_without_delegate_unchanged_when_no_delegate() {
+        let schemas = vec![
+            duga_types::tool_schema::ToolSchema {
+                name: "shell".into(),
+                description: "run shell".into(),
+                args_schema: serde_json::json!({}),
+            },
+            duga_types::tool_schema::ToolSchema {
+                name: "read".into(),
+                description: "read file".into(),
+                args_schema: serde_json::json!({}),
+            },
+        ];
+
+        let filtered = schemas_without_delegate(&schemas);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].name, "shell");
+        assert_eq!(filtered[1].name, "read");
+    }
+
+    #[test]
+    fn schemas_without_delegate_handles_empty() {
+        let schemas: Vec<duga_types::tool_schema::ToolSchema> = vec![];
+        let filtered = schemas_without_delegate(&schemas);
+        assert!(filtered.is_empty());
+    }
+
+    // ── dispatch_tool_with_events rejects delegate ──────────────────
+
+    #[tokio::test]
+    async fn dispatch_tool_with_events_rejects_delegate() {
+        let config = AgentConfig::default();
+        let mut memory = crate::Memory::new(vec![], 4096, 0.5, 8192, 4096);
+        let llm: Arc<dyn LlmClient> = Arc::new(DummyClient::default());
+        let tools = Arc::new(ToolDispatcher::new());
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(temp.path()).unwrap();
+        let sink: Arc<dyn EventSink> = Arc::new(NullSink);
+        let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
+        let registry = Arc::new(LoopRegistry::new());
+        let cancellation = duga_sandbox::CancellationToken::new();
+
+        let ctx = LoopContext {
+            config: &config,
+            memory: &mut memory,
+            llm: &llm,
+            tools: &tools,
+            workspace: &workspace,
+            event_sink: &sink,
+            summarizer: &summarizer,
+            cancellation: &cancellation,
+            registry: &registry,
+            max_refinement_iterations: 3,
+            max_delegation_depth: 2,
+            delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
+        };
+
+        let call = ToolCall::new("delegate", serde_json::json!({"loop": "search", "reason": "test"}));
+        let result = dispatch_tool_with_events(&ctx, &call).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("delegate tool called outside SimpleReActLoop"));
     }
 }

@@ -12,7 +12,7 @@
 use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
-use crate::loops::simple_react::dispatch_tool_with_events;
+use crate::loops::simple_react::{dispatch_tool_with_events, schemas_without_delegate};
 use crate::steering::{check_steer, SteerAction};
 use duga_events::Event;
 use duga_types::error::AgentError;
@@ -234,7 +234,7 @@ async fn execute_plan(
         }
 
         let messages = ctx.memory.messages();
-        let schemas = ctx.tools.schemas();
+        let schemas = schemas_without_delegate(&ctx.tools.schemas());
 
         let response = ctx
             .llm
@@ -251,17 +251,7 @@ async fn execute_plan(
 
         let assistant = response.message;
         let text = assistant.text.clone().unwrap_or_default();
-
-        // Filter out delegate calls before pushing to memory.
-        let filtered_calls: Vec<_> = assistant
-            .tool_calls
-            .iter()
-            .filter(|c| c.tool != "delegate")
-            .cloned()
-            .collect();
-        let mut clean_assistant = assistant.clone();
-        clean_assistant.tool_calls = filtered_calls;
-        ctx.memory.push_assistant(clean_assistant);
+        ctx.memory.push_assistant(assistant.clone());
 
         if text.contains("ALL STEPS COMPLETE") || assistant.is_termination() {
             all_output.push_str(&text);
@@ -270,9 +260,6 @@ async fn execute_plan(
 
         // Execute tool calls
         for call in &assistant.tool_calls {
-            if call.tool == "delegate" {
-                continue;
-            }
             tool_calls += 1;
             let result = match dispatch_tool_with_events(ctx, call).await {
                 Ok(r) => r,

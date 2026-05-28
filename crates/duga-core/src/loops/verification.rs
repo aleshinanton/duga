@@ -10,7 +10,7 @@
 use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
-use crate::loops::simple_react::dispatch_tool_with_events;
+use crate::loops::simple_react::{dispatch_tool_with_events, schemas_without_delegate};
 use crate::steering::{check_steer, SteerAction};
 use duga_events::Event;
 use duga_types::error::AgentError;
@@ -127,8 +127,11 @@ async fn generate_answer(
     let mut tool_calls = 0u32;
 
     for _step in 0..30 {
+        if ctx.cancellation.is_cancelled() {
+            return Err(AgentError::Cancelled);
+        }
         let messages = ctx.memory.messages();
-        let schemas = ctx.tools.schemas();
+        let schemas = schemas_without_delegate(&ctx.tools.schemas());
         let response = ctx
             .llm
             .chat(
@@ -142,23 +145,10 @@ async fn generate_answer(
 
         let assistant = response.message;
         let text = assistant.text.clone().unwrap_or_default();
-        // Filter out delegate calls — they're handled by SimpleReActLoop only.
-        // If pushed to memory, OpenAI requires tool_result immediately after.
-        let filtered_calls: Vec<_> = assistant
-            .tool_calls
-            .iter()
-            .filter(|c| c.tool != "delegate")
-            .cloned()
-            .collect();
-        let mut clean_assistant = assistant.clone();
-        clean_assistant.tool_calls = filtered_calls;
-        ctx.memory.push_assistant(clean_assistant);
+        ctx.memory.push_assistant(assistant.clone());
 
         // Execute tool calls
         for call in &assistant.tool_calls {
-            if call.tool == "delegate" {
-                continue;
-            }
             tool_calls += 1;
             let result = match dispatch_tool_with_events(ctx, call).await {
                 Ok(r) => r,
@@ -169,8 +159,7 @@ async fn generate_answer(
 
         output.push_str(&text);
 
-        let has_only_delegate = assistant.tool_calls.iter().all(|c| c.tool == "delegate");
-        if assistant.is_termination() || !text.is_empty() && (assistant.tool_calls.is_empty() || has_only_delegate) {
+        if assistant.is_termination() || !text.is_empty() && assistant.tool_calls.is_empty() {
             break;
         }
     }
