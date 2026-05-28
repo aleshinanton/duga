@@ -13,7 +13,7 @@ use duga_config::{Config, TelegramConfig};
 use duga_core::loop_context::LoopContext;
 use duga_core::loops::{register_default_loops, SimpleReActLoop};
 use duga_core::LoopRegistry;
-use duga_events::{Event, JsonlSink, RedactingSink};
+use duga_events::{JsonlSink, RedactingSink};
 use duga_tools::ErasedTool;
 use duga_tools_builtin::skill_install::InstallSkillTool;
 use duga_tools_builtin::skill_list::ListSkillsTool;
@@ -27,7 +27,6 @@ use duga_runtime::{
 };
 use duga_sandbox::{CancellationToken, Workspace};
 use duga_types::message::Message;
-use std::path::PathBuf;
 use std::sync::Arc;
 use teloxide::prelude::*;
 
@@ -314,7 +313,7 @@ impl TelegramRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use duga_core::history::normalize_tool_message_sequence;
     use duga_types::message::{ContentBlock, Message, Role};
     use duga_types::tool_call::ToolCall;
 

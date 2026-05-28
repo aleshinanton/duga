@@ -23,7 +23,7 @@ fn make_test_app() -> (App, mpsc::UnboundedReceiver<AppEvent>) {
     let (dir, config) = test_config();
     let tui_config = config.tui.clone().unwrap_or_default();
 
-    let app = App::new(config, tui_config, event_tx, fe_bridge, fe_sink);
+    let app = App::new(config, tui_config, event_tx, fe_bridge, fe_sink, std::path::PathBuf::from("/tmp/duga-test-sessions"));
     let _ = dir;
     (app, event_rx)
 }

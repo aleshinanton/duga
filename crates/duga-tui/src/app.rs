@@ -1136,6 +1136,7 @@ mod tests {
             event_tx,
             fe_bridge,
             fe_sink,
+            std::path::PathBuf::from("/tmp/duga-test-sessions"),
         )
     }
 
