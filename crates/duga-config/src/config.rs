@@ -98,6 +98,11 @@ pub struct TuiConfig {
     /// (e.g. ["shell", "write", "edit"]).
     #[serde(default)]
     pub require_confirmation_for: Vec<String>,
+    /// Default agent loop to use (e.g. "simple_react", "problem_solving",
+    /// "search", "decomposition", "verification").
+    /// Defaults to "simple_react" if not set.
+    #[serde(default = "default_loop_id")]
+    pub default_loop: String,
 }
 
 impl Default for TuiConfig {
@@ -109,6 +114,7 @@ impl Default for TuiConfig {
             theme: ThemeConfig::default(),
             keybindings: KeybindingsConfig::default(),
             require_confirmation_for: Vec::new(),
+            default_loop: default_loop_id(),
         }
     }
 }
@@ -195,6 +201,9 @@ fn default_search_key() -> String {
 fn default_steer_key() -> String {
     "ctrl-g".into()
 }
+fn default_loop_id() -> String {
+    "simple_react".into()
+}
 
 fn default_confirmation_timeout() -> Duration {
     Duration::from_secs(60)
@@ -226,6 +235,10 @@ pub struct TelegramConfig {
     pub attachments: TelegramAttachmentConfig,
     #[serde(default)]
     pub send_file: TelegramSendFileConfig,
+    /// Default agent loop (e.g. "simple_react", "problem_solving").
+    /// Defaults to "simple_react".
+    #[serde(default = "default_loop_id")]
+    pub default_loop: String,
 }
 
 fn default_telegram_token_env() -> String {
@@ -310,6 +323,7 @@ impl Default for TelegramConfig {
             data_dir: default_telegram_data_dir(),
             attachments: TelegramAttachmentConfig::default(),
             send_file: TelegramSendFileConfig::default(),
+            default_loop: default_loop_id(),
         }
     }
 }

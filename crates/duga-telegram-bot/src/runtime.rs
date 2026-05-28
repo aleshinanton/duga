@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use duga_config::{Config, TelegramConfig};
 use duga_core::loop_context::LoopContext;
 use duga_core::loops::{register_default_loops, SimpleReActLoop};
-use duga_core::{Loop, LoopRegistry};
+use duga_core::LoopRegistry;
 use duga_events::{Event, JsonlSink, RedactingSink, StoredEvent};
 use duga_tools::ErasedTool;
 use duga_tools_builtin::skill_install::InstallSkillTool;
@@ -246,10 +246,14 @@ impl TelegramRuntime {
             runtime.memory_mut().restore_history(history);
         }
 
-        // Build LoopContext and run via SimpleReActLoop.
+        // Build LoopContext and run via configured loop.
         // Scope ctx so borrows are released before we drop `runtime`.
         let result = {
-            let loop_impl = SimpleReActLoop;
+            let loop_id = telegram_config.default_loop.as_str();
+            let loop_impl = runtime
+                .registry
+                .get(loop_id)
+                .unwrap_or(&SimpleReActLoop);
             let agent_config = self.config.agent.clone();
             let loop_config = &agent_config.loop_config;
             let mut ctx = LoopContext {

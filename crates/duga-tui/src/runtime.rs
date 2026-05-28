@@ -7,7 +7,6 @@ use anyhow::Result;
 use duga_config::Config;
 use duga_core::loop_context::LoopContext;
 use duga_core::loops::SimpleReActLoop;
-use duga_core::Loop;
 use duga_core::LoopResult;
 use duga_events::EventSink;
 use duga_llm::dummy::DummyClient;
@@ -99,6 +98,18 @@ pub async fn run_agent(
         steer_limits: None,
     };
 
-    let loop_impl = SimpleReActLoop;
+    // Select the loop from the registry based on config.
+    let tui_cfg = config.tui.as_ref();
+    let loop_id = tui_cfg.map(|c| c.default_loop.as_str()).unwrap_or("simple_react");
+    let loop_impl = runtime
+        .registry
+        .get(loop_id)
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                "configured loop '{}' not found in registry, falling back to simple_react",
+                loop_id
+            );
+            &SimpleReActLoop
+        });
     loop_impl.run(task, &mut ctx).await
 }
