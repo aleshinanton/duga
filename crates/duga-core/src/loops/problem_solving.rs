@@ -251,7 +251,17 @@ async fn execute_plan(
 
         let assistant = response.message;
         let text = assistant.text.clone().unwrap_or_default();
-        ctx.memory.push_assistant(assistant.clone());
+
+        // Filter out delegate calls before pushing to memory.
+        let filtered_calls: Vec<_> = assistant
+            .tool_calls
+            .iter()
+            .filter(|c| c.tool != "delegate")
+            .cloned()
+            .collect();
+        let mut clean_assistant = assistant.clone();
+        clean_assistant.tool_calls = filtered_calls;
+        ctx.memory.push_assistant(clean_assistant);
 
         if text.contains("ALL STEPS COMPLETE") || assistant.is_termination() {
             all_output.push_str(&text);
@@ -260,6 +270,9 @@ async fn execute_plan(
 
         // Execute tool calls
         for call in &assistant.tool_calls {
+            if call.tool == "delegate" {
+                continue;
+            }
             tool_calls += 1;
             let result = match dispatch_tool_with_events(ctx, call).await {
                 Ok(r) => r,

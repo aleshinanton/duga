@@ -142,10 +142,23 @@ async fn generate_answer(
 
         let assistant = response.message;
         let text = assistant.text.clone().unwrap_or_default();
-        ctx.memory.push_assistant(assistant.clone());
+        // Filter out delegate calls — they're handled by SimpleReActLoop only.
+        // If pushed to memory, OpenAI requires tool_result immediately after.
+        let filtered_calls: Vec<_> = assistant
+            .tool_calls
+            .iter()
+            .filter(|c| c.tool != "delegate")
+            .cloned()
+            .collect();
+        let mut clean_assistant = assistant.clone();
+        clean_assistant.tool_calls = filtered_calls;
+        ctx.memory.push_assistant(clean_assistant);
 
         // Execute tool calls
         for call in &assistant.tool_calls {
+            if call.tool == "delegate" {
+                continue;
+            }
             tool_calls += 1;
             let result = match dispatch_tool_with_events(ctx, call).await {
                 Ok(r) => r,
@@ -156,7 +169,8 @@ async fn generate_answer(
 
         output.push_str(&text);
 
-        if assistant.is_termination() || !text.is_empty() && assistant.tool_calls.is_empty() {
+        let has_only_delegate = assistant.tool_calls.iter().all(|c| c.tool == "delegate");
+        if assistant.is_termination() || !text.is_empty() && (assistant.tool_calls.is_empty() || has_only_delegate) {
             break;
         }
     }
