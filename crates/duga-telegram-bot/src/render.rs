@@ -75,6 +75,7 @@ impl TelegramEventRenderer {
                     tool_call_id,
                     attempt,
                     description,
+                    ..
                 } => {
                     self.tool_info.insert(
                         tool_call_id.clone(),

@@ -30,11 +30,16 @@ pub enum TranscriptItem {
     ToolCallBlock {
         tool_call_id: String,
         tool_name: String,
+        /// Human-readable label from the LLM.
         description: String,
+        /// Raw JSON arguments (the actual command/parameters).
+        raw_args: Option<String>,
         is_running: bool,
         is_success: Option<bool>,
         is_expanded: bool,
         timestamp: Instant,
+        /// Tool result output (shown when expanded).
+        output: Option<String>,
     },
     /// A delegation notice (loop handoff).
     DelegationNotice {
@@ -214,22 +219,25 @@ impl Transcript {
         }
     }
 
-    /// Update a tool call block (mark as finished).
+    /// Update a tool call block (mark as finished, optionally set output).
     pub fn update_tool_call(
         &mut self,
         tool_call_id: &str,
         is_success: bool,
+        tool_output: Option<String>,
     ) {
         if let Some(idx) = self.tool_call_index.get(tool_call_id) {
             if let Some(TranscriptItem::ToolCallBlock {
                 is_running,
                 is_success: ref mut succ,
                 is_expanded,
+                ref mut output,
                 ..
             }) = self.items.get_mut(*idx)
             {
                 *is_running = false;
                 *succ = Some(is_success);
+                *output = tool_output;
                 // Expand on failure, collapse on success
                 if !is_success {
                     *is_expanded = true;
@@ -330,12 +338,14 @@ mod tests {
             tool_call_id: "tc1".into(),
             tool_name: "shell".into(),
             description: "ls".into(),
+            raw_args: None,
             is_running: true,
             is_success: None,
             is_expanded: false,
             timestamp: Instant::now(),
+            output: None,
         });
-        t.update_tool_call("tc1", true);
+        t.update_tool_call("tc1", true, None);
         if let TranscriptItem::ToolCallBlock { is_running, is_success, .. } = &t.items[0] {
             assert!(!is_running);
             assert_eq!(*is_success, Some(true));

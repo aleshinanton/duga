@@ -29,6 +29,8 @@ pub enum FrontendEvent {
         /// Human-readable description from the LLM's `label` arg,
         /// or falls back to tool_name if absent.
         description: String,
+        /// Raw JSON arguments for display (the actual command/parameters).
+        raw_args: Option<String>,
     },
     /// A tool call has completed.
     ToolCallFinished {
@@ -39,6 +41,8 @@ pub enum FrontendEvent {
         /// Human-readable description from the LLM's `label` arg,
         /// or falls back to tool_name if absent.
         description: String,
+        /// Tool result output for display.
+        output: Option<String>,
     },
     /// A partial token delta from the LLM.
     LlmTokenDelta {
@@ -140,11 +144,13 @@ impl FrontendEventSink {
                 if let Ok(mut map) = self.descriptions.lock() {
                     map.insert(call_id.clone(), description.clone());
                 }
+                let raw_args = serde_json::to_string_pretty(&tool_call.raw_args).ok();
                 Some(FrontendEvent::ToolCallStarted {
                     tool_name: tool_call.tool,
                     tool_call_id: call_id,
                     attempt,
                     description,
+                    raw_args,
                 })
             }
             Event::ToolCallFinished {
@@ -160,12 +166,14 @@ impl FrontendEventSink {
                     .ok()
                     .and_then(|mut map| map.remove(&call_id))
                     .unwrap_or_else(|| tool_name.clone());
+                let output = if result.output.is_empty() { None } else { Some(result.output.clone()) };
                 Some(FrontendEvent::ToolCallFinished {
                     tool_name: tool_name.clone(),
                     tool_call_id: call_id,
                     success: result.success,
                     attempt,
                     description,
+                    output,
                 })
             }
             Event::LlmTokenDelta { model, delta } => Some(FrontendEvent::LlmTokenDelta { model, delta }),

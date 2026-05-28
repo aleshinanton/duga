@@ -148,15 +148,17 @@ fn test_transcript_tool_call_lifecycle() {
         tool_call_id: "tc-1".into(),
         tool_name: "shell".into(),
         description: "ls -la".into(),
+        raw_args: None,
         is_running: true,
         is_success: None,
         is_expanded: false,
         timestamp: Instant::now(),
+        output: None,
     });
     assert_eq!(app.transcript.len(), 1);
 
     // Update tool call to succeeded
-    app.transcript.update_tool_call("tc-1", true);
+    app.transcript.update_tool_call("tc-1", true, None);
     if let TranscriptItem::ToolCallBlock {
         is_running,
         is_success,
@@ -177,12 +179,14 @@ fn test_transcript_tool_call_failed_expands() {
         tool_call_id: "tc-fail".into(),
         tool_name: "write".into(),
         description: "write file".into(),
+        raw_args: None,
         is_running: true,
         is_success: None,
         is_expanded: false,
         timestamp: Instant::now(),
+        output: None,
     });
-    app.transcript.update_tool_call("tc-fail", false);
+    app.transcript.update_tool_call("tc-fail", false, None);
     if let TranscriptItem::ToolCallBlock {
         is_running,
         is_success,
@@ -243,6 +247,7 @@ fn test_frontend_event_tool_call_started() {
         tool_call_id: "tc1".into(),
         attempt: 1,
         description: "list files".into(),
+        raw_args: None,
     }));
     assert_eq!(app.transcript.len(), 1);
     if let TranscriptItem::ToolCallBlock {
@@ -269,6 +274,7 @@ fn test_frontend_event_tool_call_finished() {
         tool_call_id: "tc1".into(),
         attempt: 1,
         description: "list files".into(),
+        raw_args: None,
     }));
     // Then ToolCallFinished
     app.update(AppEvent::Frontend(FrontendEvent::ToolCallFinished {
@@ -277,6 +283,7 @@ fn test_frontend_event_tool_call_finished() {
         success: true,
         attempt: 1,
         description: "list files".into(),
+        output: None,
     }));
     let items = app.transcript.items();
     assert_eq!(items.len(), 1);
@@ -602,6 +609,7 @@ fn test_final_only_hides_tool_during_run() {
         tool_call_id: "tc-hidden".into(),
         attempt: 1,
         description: "hidden tool".into(),
+        raw_args: None,
     }));
     // In FinalOnly mode, ToolCallStarted should not add to transcript
     assert_eq!(app.transcript.len(), 0);
@@ -618,6 +626,7 @@ fn test_final_only_shows_tool_after_completion() {
         tool_call_id: "tc-final".into(),
         attempt: 1,
         description: "final tool".into(),
+        raw_args: None,
     }));
     assert_eq!(app.transcript.len(), 0);
 
@@ -628,6 +637,7 @@ fn test_final_only_shows_tool_after_completion() {
         success: true,
         attempt: 1,
         description: "final tool".into(),
+        output: None,
     }));
     assert_eq!(app.transcript.len(), 1);
     if let TranscriptItem::ToolCallBlock { is_running, .. } = &app.transcript.items()[0] {

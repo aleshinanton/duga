@@ -328,6 +328,7 @@ impl App {
                 tool_name,
                 tool_call_id,
                 description,
+                raw_args,
                 ..
             } => {
                 let is_expanded = match self.tool_event_format {
@@ -341,10 +342,12 @@ impl App {
                         tool_call_id,
                         tool_name,
                         description,
+                        raw_args,
                         is_running: true,
                         is_success: None,
                         is_expanded,
                         timestamp: Instant::now(),
+                        output: None,
                     });
                 }
             }
@@ -353,10 +356,11 @@ impl App {
                 tool_call_id,
                 success,
                 description,
+                output,
                 ..
             } => {
                 // Update existing tool block if found
-                self.transcript.update_tool_call(&tool_call_id, success);
+                self.transcript.update_tool_call(&tool_call_id, success, output.clone());
                 // If FinalOnly mode and tool wasn't shown during running, show now
                 if self.tool_event_format == duga_config::ToolEventFormat::FinalOnly {
                     // Check if this tool was added during ToolCallStarted
@@ -366,10 +370,12 @@ impl App {
                             tool_call_id,
                             tool_name,
                             description,
+                            raw_args: None,
                             is_running: false,
                             is_success: Some(success),
                             is_expanded: !success, // Expand on failure
                             timestamp: Instant::now(),
+                            output,
                         });
                     }
                 }
@@ -760,9 +766,11 @@ impl App {
                     TranscriptItem::ToolCallBlock {
                         tool_name,
                         description,
+                        raw_args,
                         is_running,
                         is_success,
                         is_expanded,
+                        output,
                         ..
                     } => {
                         let icon = if *is_running {
@@ -794,6 +802,18 @@ impl App {
                         ));
 
                         if *is_expanded && !*is_running {
+                            // Show raw args (the actual command/parameters)
+                            if let Some(args) = raw_args {
+                                for arg_line in args.lines() {
+                                    lines.push(Line::from(
+                                        Span::styled(
+                                            format!("   args: {arg_line}"),
+                                            Style::default().fg(Color::DarkGray),
+                                        ),
+                                    ));
+                                }
+                            }
+                            // Show result status
                             lines.push(Line::from(
                                 Span::styled(
                                     format!("   result: {}",
@@ -806,6 +826,22 @@ impl App {
                                     Style::default().fg(Color::DarkGray),
                                 ),
                             ));
+                            // Show output on failure (or always if present)
+                            if let Some(out) = output {
+                                if !out.is_empty() {
+                                    lines.push(Line::from(
+                                        Span::styled("   output:", Style::default().fg(Color::DarkGray)),
+                                    ));
+                                    for out_line in out.lines().take(20) {
+                                        lines.push(Line::from(
+                                            Span::styled(
+                                                format!("     {out_line}"),
+                                                Style::default().fg(Color::DarkGray),
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
                         }
                         if *is_running {
                             lines.push(Line::from(
@@ -1040,6 +1076,7 @@ plugins:
             tool_call_id: "tc1".into(),
             attempt: 1,
             description: "ls -la".into(),
+            raw_args: None,
         }));
         assert_eq!(app.transcript.len(), 1);
         let items = app.transcript.items();
