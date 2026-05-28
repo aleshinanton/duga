@@ -399,6 +399,10 @@ impl App {
                 reason,
                 depth,
             } => {
+                // Update status bar to show the new loop.
+                if let AppState::Running { ref mut loop_name, .. } = self.state {
+                    *loop_name = to.clone();
+                }
                 self.transcript.push(TranscriptItem::DelegationNotice {
                     from,
                     to,
