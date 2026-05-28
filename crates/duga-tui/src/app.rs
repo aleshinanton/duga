@@ -227,13 +227,22 @@ impl App {
                 return;
             }
             GlobalAction::ToggleTool => {
-                // Toggle expansion of the currently selected tool block
-                // For simplicity, toggle the last tool block in the transcript
-                for (idx, item) in self.transcript.items().iter().enumerate().rev() {
-                    if matches!(item, TranscriptItem::ToolCallBlock { .. }) {
-                        self.transcript.toggle_tool_expand(idx);
-                        break;
-                    }
+                // Toggle expansion of all tool blocks in the transcript
+                let tool_indices: Vec<usize> = self
+                    .transcript
+                    .items()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, item)| {
+                        if matches!(item, TranscriptItem::ToolCallBlock { .. }) {
+                            Some(idx)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                for idx in tool_indices {
+                    self.transcript.toggle_tool_expand(idx);
                 }
                 return;
             }

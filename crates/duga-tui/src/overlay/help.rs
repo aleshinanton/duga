@@ -62,7 +62,7 @@ impl HelpOverlay {
             HelpSection {
                 title: "Collapse / Expand",
                 items: vec![
-                    HelpItem { key: "Tab".into(), description: "Collapse or expand tool output" },
+                    HelpItem { key: "Tab".into(), description: "Collapse or expand all tool outputs" },
                 ],
             },
             HelpSection {
