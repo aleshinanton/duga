@@ -13,7 +13,7 @@ use duga_config::{Config, TelegramConfig};
 use duga_core::loop_context::LoopContext;
 use duga_core::loops::{register_default_loops, SimpleReActLoop};
 use duga_core::LoopRegistry;
-use duga_events::{Event, JsonlSink, RedactingSink, StoredEvent};
+use duga_events::{Event, JsonlSink, RedactingSink};
 use duga_tools::ErasedTool;
 use duga_tools_builtin::skill_install::InstallSkillTool;
 use duga_tools_builtin::skill_list::ListSkillsTool;
@@ -143,8 +143,11 @@ impl TelegramRuntime {
         let replay_sink = Arc::new(RedactingSink::new(jsonl_sink));
 
         // Load previous conversation context so the agent remembers the chat.
-        let conversation_history =
-            load_conversation_history(&jsonl_path, &self.config.memory);
+        let conversation_history = duga_core::history::load_conversation_history(
+            &jsonl_path,
+            self.config.memory.context_window_size,
+            self.config.memory.max_context_tokens,
+        );
 
         // Load skills index (metadata-only) from workspace/skills/ and chat-level skills/.
         // Full bodies are lazy-loaded on demand when the LLM calls `read` on a SKILL.md.
@@ -308,119 +311,6 @@ impl TelegramRuntime {
     }
 }
 
-/// Load previous conversation messages from a JSONL session file.
-///
-/// Applies the sliding window and token budget from `MemoryConfig` to
-/// prevent old/irrelevant messages from saturating the context window.
-fn load_conversation_history(
-    path: &PathBuf,
-    memory_config: &duga_config::MemoryConfig,
-) -> Option<Vec<Message>> {
-    use std::io::{BufRead, BufReader};
-
-    let file = std::fs::File::open(path).ok()?;
-    let reader = BufReader::new(file);
-
-    let mut last_messages: Option<Vec<Message>> = None;
-    for line in reader.lines() {
-        let line = line.ok()?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Ok(event) = serde_json::from_str::<StoredEvent>(trimmed) {
-            if let Event::LlmRequest { messages, .. } = event.event {
-                last_messages = Some(messages);
-            }
-        }
-    }
-
-    let messages = last_messages?;
-    if messages.is_empty() {
-        return None;
-    }
-
-    // Filter out system messages (we provide a fresh system prompt).
-    let mut history: Vec<Message> = messages
-        .into_iter()
-        .filter(|m| !matches!(m.role, duga_types::message::Role::System))
-        .collect();
-
-    let total_in_history = history.len();
-
-    // Apply sliding window: keep only the most recent N messages.
-    if memory_config.context_window_size > 0
-        && history.len() > memory_config.context_window_size
-    {
-        let start = history.len() - memory_config.context_window_size;
-        history = history.split_off(start);
-    }
-
-    // Apply token budget: drop oldest messages until under the cap.
-    // Uses a simple character-based estimate (no LLM round-trip).
-    if memory_config.max_context_tokens > 0 {
-        while duga_core::memory::estimate_tokens(&history)
-            > memory_config.max_context_tokens
-            && history.len() > 1
-        {
-            history.remove(0);
-        }
-    }
-
-    // Normalize: drop orphaned tool messages that lack a preceding
-    // assistant with tool_calls (can happen after buggy compression in
-    // previous runs).
-    let history = normalize_tool_message_sequence(history);
-
-    if history.is_empty() {
-        None
-    } else {
-        tracing::info!(
-            loaded = history.len(),
-            total = total_in_history,
-            window = memory_config.context_window_size,
-            token_budget = memory_config.max_context_tokens,
-            "Loaded {} messages from session history ({} total)",
-            history.len(),
-            total_in_history
-        );
-        Some(history)
-    }
-}
-
-/// Remove orphaned tool messages from a message sequence.
-///
-/// OpenAI / DeepSeek require every tool-role message to follow an
-/// assistant message that contains tool_calls.  A buggy compression
-/// split in an earlier run can leave orphaned tool messages at the
-/// start of the restored history; this function drops them.
-fn normalize_tool_message_sequence(messages: Vec<Message>) -> Vec<Message> {
-    use duga_types::message::{ContentBlock, Role};
-
-    let mut out = Vec::with_capacity(messages.len());
-    // Track the last assistant that had tool_calls so consecutive
-    // tool results all remain valid.
-    let mut last_assistant_had_tool_calls = false;
-    for msg in messages {
-        if msg.role == Role::Tool {
-            if last_assistant_had_tool_calls {
-                out.push(msg);
-            }
-            // else: orphaned — drop it silently.
-            // Do NOT reset last_assistant_had_tool_calls here;
-            // multiple tool results can follow one assistant.
-        } else {
-            let has_tool_calls = msg.role == Role::Assistant
-                && msg
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::ToolCall(_)));
-            last_assistant_had_tool_calls = has_tool_calls;
-            out.push(msg);
-        }
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {

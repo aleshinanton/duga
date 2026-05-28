@@ -27,6 +27,10 @@ duga-replay = { path = "../duga-replay" }
 pulldown-cmark = { workspace = true }
 unicode-width = "0.2"
 async-trait = "0.1"
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"

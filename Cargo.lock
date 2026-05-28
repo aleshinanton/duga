@@ -844,6 +844,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "clap",
  "crossterm",
  "duga-config",
@@ -858,11 +859,14 @@ dependencies = [
  "duga-types",
  "pulldown-cmark",
  "ratatui",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "unicode-width 0.2.0",
+ "uuid",
 ]
 
 [[package]]

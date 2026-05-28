@@ -8,7 +8,7 @@ use duga_config::Config;
 use duga_core::loop_context::LoopContext;
 use duga_core::loops::SimpleReActLoop;
 use duga_core::LoopResult;
-use duga_events::EventSink;
+use duga_events::{EventSink, JsonlSink};
 use duga_llm::dummy::DummyClient;
 use duga_llm::LlmClient;
 use duga_runtime::{
@@ -17,6 +17,8 @@ use duga_runtime::{
 use duga_core::steering::SteeringReceiver;
 use duga_sandbox::{CancellationToken, Workspace};
 use duga_types::error::AgentError;
+use duga_types::message::Message;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::confirmation::{PendingConfirmation, TuiConfirmationProvider};
@@ -26,6 +28,7 @@ pub async fn build_runtime(
     config: &Config,
     fe_sink: Arc<FrontendEventSink>,
     confirmation_tx: Option<tokio::sync::mpsc::UnboundedSender<PendingConfirmation>>,
+    session_path: Option<&PathBuf>,
 ) -> Result<BuiltRuntime> {
     let llm: Arc<dyn LlmClient> = match duga_runtime::providers::build_llm(
         config.provider.as_deref().unwrap_or("dummy"),
@@ -62,7 +65,13 @@ pub async fn build_runtime(
         }
     }
 
-    let sinks: Vec<Arc<dyn EventSink>> = vec![fe_sink];
+    let mut sinks: Vec<Arc<dyn EventSink>> = vec![fe_sink];
+    if let Some(path) = session_path {
+        match JsonlSink::new(path) {
+            Ok(jsonl) => sinks.push(Arc::new(jsonl)),
+            Err(e) => tracing::warn!("Could not open session file for writing: {e}"),
+        }
+    }
     let runtime = build_agent(config, llm, dispatcher, workspace, sinks, None)?;
 
     Ok(runtime)
@@ -76,10 +85,16 @@ pub async fn run_agent(
     cancellation: CancellationToken,
     steer_rx: Option<SteeringReceiver>,
     confirmation_tx: Option<tokio::sync::mpsc::UnboundedSender<PendingConfirmation>>,
+    session_path: Option<PathBuf>,
+    history: Option<Vec<Message>>,
 ) -> Result<LoopResult, AgentError> {
-    let mut runtime = build_runtime(config, fe_sink, confirmation_tx)
+    let mut runtime = build_runtime(config, fe_sink, confirmation_tx, session_path.as_ref())
         .await
         .map_err(|e| AgentError::EventSinkFailed(format!("failed to build runtime: {e}")))?;
+
+    if let Some(h) = history {
+        runtime.memory_mut().restore_history(h);
+    }
 
     let mut ctx = LoopContext {
         config: &runtime.config.agent,

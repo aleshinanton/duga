@@ -3,6 +3,7 @@
 //! Owns the transcript, editor, overlays, event bridge, and agent runtime.
 //! Rendered by `terminal.rs` on each tick.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -15,11 +16,14 @@ use duga_runtime::{
 };
 use duga_sandbox::CancellationToken;
 use duga_types::error::AgentError;
+use duga_types::message::Message;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::editor::{Editor, EditorAction};
 use crate::keybindings::{GlobalAction, Keybindings};
 use crate::overlay::{self, Overlay, OverlayManager};
+use crate::session::{SessionInfo, list_sessions, load_conversation_history,
+    load_session_transcript, upsert_session_index, touch_session};
 use crate::transcript::{SystemLevel, Transcript, TranscriptItem};
 
 // ── App state machine ──────────────────────────────────────────────────────
@@ -98,6 +102,15 @@ pub struct App {
     /// Last known terminal dimensions.
     term_width: u16,
     term_height: u16,
+
+    // ── Session management ──────────────────────────────────────────────
+    pub sessions_dir: PathBuf,
+    /// UUID of the current active session (set on first message submit).
+    pub current_session_id: Option<String>,
+    /// Conversation history to restore on the next agent run (from a resumed session).
+    pending_history: Option<Vec<Message>>,
+    /// Receives the session ID selected by the session picker overlay.
+    session_result_rx: Option<mpsc::UnboundedReceiver<String>>,
 }
 
 impl App {
@@ -107,6 +120,7 @@ impl App {
         event_tx: mpsc::UnboundedSender<AppEvent>,
         fe_bridge: FrontendEventBridge,
         fe_sink: Arc<FrontendEventSink>,
+        sessions_dir: PathBuf,
     ) -> Self {
         let keybindings = Keybindings::from_config(&tui_config.keybindings);
         let tool_event_format = tui_config.tool_event_format.clone();
@@ -133,6 +147,10 @@ impl App {
             pending_confirm_tx: None,
             term_width: 80,
             term_height: 24,
+            sessions_dir,
+            current_session_id: None,
+            pending_history: None,
+            session_result_rx: None,
         }
     }
 
@@ -298,6 +316,20 @@ impl App {
 
         // 3. Additional global keys not in config
         match key {
+            // Ctrl+S: open session picker
+            KeyEvent {
+                code: KeyCode::Char('s'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                let (tx, rx) = mpsc::unbounded_channel();
+                self.session_result_rx = Some(rx);
+                let sessions = list_sessions(&self.sessions_dir);
+                self.overlays.push(Box::new(
+                    overlay::session_picker::SessionPickerOverlay::new(sessions, tx),
+                ));
+                return;
+            }
             // Ctrl+L: clear transcript
             KeyEvent {
                 code: KeyCode::Char('l'),
@@ -483,8 +515,13 @@ impl App {
     }
 
     fn handle_tick(&mut self) {
-        // Periodic updates: nothing needed right now beyond re-rendering.
-        // Could add loader animation ticks, cursor blink, etc.
+        // Poll for a session selection from the picker overlay.
+        if let Some(ref mut rx) = self.session_result_rx {
+            if let Ok(id) = rx.try_recv() {
+                self.session_result_rx = None;
+                self.switch_session(id);
+            }
+        }
     }
 
     fn handle_run_finished(&mut self, run_id: u64, result: Result<LoopResult, AgentError>) {
@@ -515,6 +552,52 @@ impl App {
         self.pending_confirm_tx = None;
     }
 
+    // ── Session management ──────────────────────────────────────────────
+
+    /// Resume a session: clear transcript, load history, set as active session.
+    fn switch_session(&mut self, id: String) {
+        let path = self.sessions_dir.join(format!("{id}.jsonl"));
+
+        // Reconstruct display transcript from the session file.
+        let mut new_transcript = Transcript::new();
+        for item in load_session_transcript(&path) {
+            new_transcript.push(item);
+        }
+
+        // Find the session title from the index for the notice.
+        let sessions = list_sessions(&self.sessions_dir);
+        let title = sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.title.as_str())
+            .unwrap_or("session");
+        new_transcript.push(TranscriptItem::SystemMessage {
+            text: format!("── Resumed: {title}"),
+            level: SystemLevel::Info,
+            timestamp: Instant::now(),
+        });
+
+        self.transcript = new_transcript;
+        self.scroll_to_bottom();
+
+        // Load conversation history for memory restoration on the next run.
+        let history = load_conversation_history(
+            &path,
+            self.config.memory.context_window_size,
+            self.config.memory.max_context_tokens,
+        );
+        self.pending_history = history;
+        self.current_session_id = Some(id.clone());
+
+        // Touch the last_active timestamp in the index.
+        touch_session(&self.sessions_dir, &id);
+    }
+
+    /// Scroll transcript to the most recent content.
+    fn scroll_to_bottom(&mut self) {
+        self.transcript.scroll_mut().scroll_to_bottom();
+    }
+
     // ── Run management ──────────────────────────────────────────────────
 
     /// Submit the current prompt and start an agent run.
@@ -529,6 +612,25 @@ impl App {
             text: task.clone(),
             timestamp: Instant::now(),
         });
+
+        // Assign a session if this is the first message.
+        if self.current_session_id.is_none() {
+            let id = uuid::Uuid::new_v4().to_string();
+            let title: String = task.chars().take(60).collect();
+            let info = SessionInfo::new(id.clone(), title);
+            upsert_session_index(&self.sessions_dir, &info);
+            self.current_session_id = Some(id);
+        } else {
+            // Update last_active for the current session.
+            if let Some(ref id) = self.current_session_id.clone() {
+                touch_session(&self.sessions_dir, id);
+            }
+        }
+
+        let session_path = self.current_session_id.as_ref().map(|id| {
+            self.sessions_dir.join(format!("{id}.jsonl"))
+        });
+        let history = self.pending_history.take();
 
         let cancellation = CancellationToken::new();
         let _cancel_clone = cancellation.clone();
@@ -566,6 +668,8 @@ impl App {
                 cancellation,
                 Some(SteeringReceiver::new(steer_rx)),
                 Some(confirm_tx),
+                session_path,
+                history,
             )
             .await;
 
@@ -781,7 +885,7 @@ impl App {
             lines.push(Line::from(""));
             lines.push(Line::from(
                 Span::styled(
-                    "F1: help  |  Ctrl+F: search  |  Ctrl+C: cancel  |  q: quit",
+                    "F1: help  |  Ctrl+F: search  |  Ctrl+S: sessions  |  Ctrl+C: cancel  |  q: quit",
                     Style::default().fg(Color::DarkGray),
                 ),
             ));
@@ -954,9 +1058,10 @@ impl App {
         let visible_lines = area.height as usize;
         let max_offset = total_lines.saturating_sub(visible_lines);
 
-        // Auto-scroll to bottom if not manually scrolled
+        // Auto-scroll to bottom if not manually scrolled.
+        // scroll.offset is "lines above the bottom" (0 = at bottom); convert to skip-from-top.
         let offset = if scroll.manual_scroll {
-            scroll.offset.min(max_offset)
+            max_offset.saturating_sub(scroll.offset)
         } else {
             // Auto-follow: show last N lines
             max_offset

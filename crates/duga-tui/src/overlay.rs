@@ -11,6 +11,7 @@ use ratatui::layout::Rect;
 pub mod confirmation;
 pub mod help;
 pub mod search;
+pub mod session_picker;
 
 /// Action returned by an overlay's key handler.
 #[derive(Clone, Debug, PartialEq, Eq)]

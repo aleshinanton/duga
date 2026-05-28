@@ -1,5 +1,6 @@
 //! Core runtime primitives for duga.
 
+pub mod history;
 pub mod loop_context;
 pub mod loop_registry;
 pub mod loop_result;

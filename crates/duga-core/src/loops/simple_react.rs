@@ -228,6 +228,12 @@ async fn run_simple_react(
             }
         }
 
+        // Guidance collected during the tool loop — injected only AFTER all tool
+        // results are pushed.  Anthropic requires every tool_result for a given
+        // assistant message to appear in the immediately-following user message;
+        // any injection between results breaks that invariant and causes HTTP 400.
+        let mut pending_guidance: Vec<SteeringContextEvent> = Vec::new();
+
         for call in &assistant.tool_calls {
             // Skip the delegate call already handled by the intercept
             if let Some(ref skip_id) = delegate_skip_id {
@@ -254,17 +260,13 @@ async fn run_simple_react(
             let steering_hint = result.steering_hint.take();
             ctx.memory.push_tool_result(result);
 
-            // ── Tool steer: process steering hints from tools ──
+            // Collect tool steering hints — defer injection until after all results.
             if let Some(hint) = steering_hint {
-                apply_context_event(
-                    ctx,
-                    SteeringContextEvent::InjectGuidance {
-                        text: hint,
-                        as_system: false,
-                        source: "tool".into(),
-                    },
-                )
-                .await?;
+                pending_guidance.push(SteeringContextEvent::InjectGuidance {
+                    text: hint,
+                    as_system: false,
+                    source: "tool".into(),
+                });
             }
 
             // ── Self-steering: track consecutive errors ──
@@ -273,20 +275,16 @@ async fn run_simple_react(
             } else {
                 consecutive_errors += 1;
                 if consecutive_errors >= 3 {
-                    apply_context_event(
-                        ctx,
-                        SteeringContextEvent::InjectGuidance {
-                            text: "You have failed 3 times in a row. Pivot to a different \
-                                   approach. Consider: (1) using a different tool, \
-                                   (2) breaking the problem down further, \
-                                   (3) explaining what's blocking you."
-                                .into(),
-                            as_system: true,
-                            source: "self-diagnosis".into(),
-                        },
-                    )
-                    .await?;
-                    consecutive_errors = 0; // reset after injecting
+                    pending_guidance.push(SteeringContextEvent::InjectGuidance {
+                        text: "You have failed 3 times in a row. Pivot to a different \
+                               approach. Consider: (1) using a different tool, \
+                               (2) breaking the problem down further, \
+                               (3) explaining what's blocking you."
+                            .into(),
+                        as_system: true,
+                        source: "self-diagnosis".into(),
+                    });
+                    consecutive_errors = 0; // reset after collecting
                 }
             }
 
@@ -294,12 +292,22 @@ async fn run_simple_react(
                 return fatal(ctx, error).await;
             }
             // ── POINT 2: Steering after tool result ──
+            // Cancel/ForceComplete terminate immediately (no further LLM call),
+            // so they are safe here even though remaining tool results are not
+            // yet in memory.  Reprompt is buffered (unreachable here), Continue
+            // is a no-op.  Context-mutation events from check_steer are applied
+            // inside check_steer itself, but those are rare in practice.
             match check_steer(ctx, false).await? {
                 SteerAction::Cancel(_reason) => return fatal(ctx, AgentError::Cancelled).await,
                 SteerAction::Complete(answer) => return complete_from_steer(ctx, answer).await,
                 SteerAction::Reprompt => unreachable!("Reprompt buffered at POINT 2"),
                 SteerAction::Continue => { /* next tool */ }
             }
+        }
+
+        // ── Apply deferred guidance after ALL tool results are in memory ──
+        for event in pending_guidance {
+            apply_context_event(ctx, event).await?;
         }
 
         if let Err(error) = compress_if_needed(ctx).await {

@@ -114,6 +114,12 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
     // Build TUI config (default if not present in config file).
     let tui_config = config.tui.clone().unwrap_or_default();
 
+    // Ensure sessions directory exists.
+    let sessions_dir = replay_dir.to_path_buf();
+    if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
+        tracing::warn!("Could not create sessions directory: {e}");
+    }
+
     // Build the app.
     let mut app = App::new(
         config.clone(),
@@ -121,6 +127,7 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
         event_tx.clone(),
         FrontendEventBridge::new(16).1, // dummy bridge; the real one is handled by fe_handle
         fe_sink,
+        sessions_dir,
     );
 
     // Pre-build the runtime for faster run starts
@@ -174,6 +181,5 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
     fe_handle.abort();
     // fe_tx was moved into fe_sink which was moved into app; drop happens naturally
 
-    let _ = replay_dir;
     Ok(())
 }

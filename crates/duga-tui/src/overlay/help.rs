@@ -56,6 +56,7 @@ impl HelpOverlay {
                 items: vec![
                     HelpItem { key: "F1".into(), description: "Toggle help" },
                     HelpItem { key: "Ctrl+F".into(), description: "Search transcript" },
+                    HelpItem { key: "Ctrl+S".into(), description: "Browse & resume sessions" },
                     HelpItem { key: "Escape".into(), description: "Close overlay / dismiss dialog" },
                 ],
             },
