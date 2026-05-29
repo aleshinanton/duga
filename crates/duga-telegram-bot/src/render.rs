@@ -115,9 +115,12 @@ impl TelegramEventRenderer {
                     let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::LlmTokenDelta { delta, .. } => {
-                    // Suppress thinking tokens (extended thinking produces these).
                     self.delta_buffer.push_str(&delta);
                     let _ = self.edit_process_message().await;
+                }
+                FrontendEvent::LlmThinkingDelta { .. } => {
+                    // Thinking deltas are not surfaced in Telegram.
+                    // Content is still logged in session JSONL for later review.
                 }
                 FrontendEvent::Error { message } => {
                     self.error_message = Some(message);

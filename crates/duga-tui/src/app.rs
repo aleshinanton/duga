@@ -294,8 +294,7 @@ impl App {
                 return;
             }
             GlobalAction::ToggleTool => {
-                // Collapse or expand all tool blocks to a consistent state.
-                // If any block is expanded, collapse all; otherwise expand all.
+                // Toggle tool call blocks
                 let any_expanded = self
                     .transcript
                     .items()
@@ -320,6 +319,32 @@ impl App {
                     .collect();
                 for idx in to_toggle {
                     self.transcript.toggle_tool_expand(idx);
+                }
+                // Also toggle thinking blocks
+                let any_thinking_expanded = self
+                    .transcript
+                    .items()
+                    .iter()
+                    .any(|item| {
+                        matches!(item, TranscriptItem::ThinkingBlock { is_expanded: true, is_streaming: false, .. })
+                    });
+                let think_target = !any_thinking_expanded;
+                let think_toggle: Vec<usize> = self
+                    .transcript
+                    .items()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, item)| {
+                        if let TranscriptItem::ThinkingBlock { is_expanded, is_streaming, .. } = item {
+                            if !is_streaming && *is_expanded != think_target {
+                                return Some(idx);
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                for idx in think_toggle {
+                    self.transcript.toggle_thinking_expand(idx);
                 }
                 return;
             }
@@ -412,6 +437,10 @@ impl App {
                 // Streaming tokens will arrive via LlmTokenDelta.
             }
             FrontendEvent::RunFinished { text } => {
+                // Auto-finish any lingering thinking block
+                if self.transcript.thinking_is_streaming() {
+                    self.transcript.finish_thinking();
+                }
                 // Check if we had streaming output before clearing it.
                 let had_streaming = self.transcript.streaming_index().is_some();
                 self.transcript.finish_streaming();
@@ -445,6 +474,10 @@ impl App {
                 raw_args,
                 ..
             } => {
+                // Auto-finish thinking if it was streaming
+                if self.transcript.thinking_is_streaming() {
+                    self.transcript.finish_thinking();
+                }
                 let is_expanded = match self.tool_event_format {
                     duga_config::ToolEventFormat::Full => true,
                     duga_config::ToolEventFormat::Collapsed => false,
@@ -496,7 +529,15 @@ impl App {
                 self.current_tool_call_id = None;
             }
             FrontendEvent::LlmTokenDelta { delta, .. } => {
+                if self.transcript.thinking_is_streaming() {
+                    self.transcript.finish_thinking();
+                }
                 self.transcript.append_to_streaming(&delta);
+            }
+            FrontendEvent::LlmThinkingDelta { delta, .. } => {
+                if self.tui_config.show_thinking {
+                    self.transcript.append_to_thinking(&delta);
+                }
             }
             FrontendEvent::Error { message } => {
                 self.transcript.push(TranscriptItem::SystemMessage {
@@ -1013,6 +1054,42 @@ impl App {
                                 Style::default().fg(color),
                             ),
                         ));
+                    }
+                    TranscriptItem::ThinkingBlock {
+                        text,
+                        is_streaming,
+                        is_expanded,
+                        ..
+                    } => {
+                        let prefix = if *is_streaming { "⟳ " } else { "🧠" };
+                        lines.push(Line::from(
+                            Span::styled(
+                                format!("{prefix} Thinking:"),
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                        ));
+                        if *is_expanded {
+                            for wrapped in crate::text::wrap_text(text, available_width.saturating_sub(2)) {
+                                lines.push(Line::from(
+                                    Span::styled(
+                                        format!("  {wrapped}"),
+                                        Style::default()
+                                            .fg(Color::DarkGray)
+                                            .add_modifier(Modifier::ITALIC),
+                                    ),
+                                ));
+                            }
+                        } else if !is_streaming {
+                            let word_count = text.split_whitespace().count();
+                            lines.push(Line::from(
+                                Span::styled(
+                                    format!("  ({} words — collapsed)", word_count),
+                                    Style::default().fg(Color::DarkGray),
+                                ),
+                            ));
+                        }
                     }
                     TranscriptItem::UserMessage { text, .. } => {
                         lines.push(Line::from(

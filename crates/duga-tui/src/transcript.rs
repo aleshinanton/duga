@@ -55,6 +55,13 @@ pub enum TranscriptItem {
         after_tokens: usize,
         timestamp: Instant,
     },
+    /// LLM thinking/reasoning content (collapsible, distinct from final response).
+    ThinkingBlock {
+        text: String,
+        is_streaming: bool,
+        is_expanded: bool,
+        timestamp: Instant,
+    },
 }
 
 /// Severity level for system messages.
@@ -126,6 +133,8 @@ pub struct Transcript {
     tool_call_index: std::collections::HashMap<String, usize>,
     /// Index of the currently-streaming assistant message (if any).
     streaming_index: Option<usize>,
+    /// Index of the currently-streaming thinking block (if any).
+    streaming_thinking_index: Option<usize>,
 }
 
 impl Transcript {
@@ -135,6 +144,7 @@ impl Transcript {
             scroll: ScrollState::new(),
             tool_call_index: std::collections::HashMap::new(),
             streaming_index: None,
+            streaming_thinking_index: None,
         }
     }
 
@@ -156,6 +166,11 @@ impl Transcript {
             TranscriptItem::AssistantMessage { is_streaming, .. } => {
                 if *is_streaming {
                     self.streaming_index = Some(self.items.len());
+                }
+            }
+            TranscriptItem::ThinkingBlock { is_streaming, .. } => {
+                if *is_streaming {
+                    self.streaming_thinking_index = Some(self.items.len());
                 }
             }
             _ => {}
@@ -216,6 +231,54 @@ impl Transcript {
             {
                 *is_streaming = false;
             }
+        }
+    }
+
+    /// Append text to the current thinking block. Auto-starts a new block if none exists.
+    pub fn append_to_thinking(&mut self, delta: &str) {
+        if let Some(idx) = self.streaming_thinking_index {
+            if let Some(TranscriptItem::ThinkingBlock { text, .. }) = self.items.get_mut(idx) {
+                text.push_str(delta);
+                return;
+            }
+        }
+        let item = TranscriptItem::ThinkingBlock {
+            text: delta.to_string(),
+            is_streaming: true,
+            is_expanded: true,
+            timestamp: Instant::now(),
+        };
+        self.streaming_thinking_index = Some(self.items.len());
+        self.items.push(item);
+        if !self.scroll.manual_scroll {
+            self.scroll.scroll_to_bottom();
+        }
+    }
+
+    /// Mark streaming thinking as complete (auto-collapse).
+    pub fn finish_thinking(&mut self) {
+        if let Some(idx) = self.streaming_thinking_index.take() {
+            if let Some(TranscriptItem::ThinkingBlock {
+                is_streaming,
+                is_expanded,
+                ..
+            }) = self.items.get_mut(idx)
+            {
+                *is_streaming = false;
+                *is_expanded = false;
+            }
+        }
+    }
+
+    /// Whether a thinking block is currently streaming.
+    pub fn thinking_is_streaming(&self) -> bool {
+        self.streaming_thinking_index.is_some()
+    }
+
+    /// Toggle expand/collapse of a thinking block.
+    pub fn toggle_thinking_expand(&mut self, idx: usize) {
+        if let Some(TranscriptItem::ThinkingBlock { is_expanded, .. }) = self.items.get_mut(idx) {
+            *is_expanded = !*is_expanded;
         }
     }
 
@@ -281,6 +344,7 @@ impl Transcript {
         self.items.clear();
         self.tool_call_index.clear();
         self.streaming_index = None;
+        self.streaming_thinking_index = None;
         self.scroll = ScrollState::new();
     }
 }
@@ -371,5 +435,74 @@ mod tests {
         t.scroll_mut().scroll_up(2);
         assert_eq!(t.scroll().offset, 2);
         assert!(t.scroll().manual_scroll);
+    }
+
+    #[test]
+    fn append_to_thinking_creates_block() {
+        let mut t = Transcript::new();
+        t.append_to_thinking("Hello");
+        t.append_to_thinking(" world");
+        assert_eq!(t.len(), 1);
+        if let TranscriptItem::ThinkingBlock { text, is_streaming, .. } = &t.items[0] {
+            assert_eq!(text, "Hello world");
+            assert!(is_streaming);
+        } else { panic!("expected ThinkingBlock"); }
+    }
+
+    #[test]
+    fn finish_thinking_marks_complete_and_collapsed() {
+        let mut t = Transcript::new();
+        t.append_to_thinking("reasoning");
+        assert!(t.thinking_is_streaming());
+        t.finish_thinking();
+        assert!(!t.thinking_is_streaming());
+        if let TranscriptItem::ThinkingBlock { is_streaming, is_expanded, .. } = &t.items[0] {
+            assert!(!is_streaming);
+            assert!(!is_expanded);
+        } else { panic!("expected ThinkingBlock"); }
+    }
+
+    #[test]
+    fn append_to_thinking_after_finish_creates_new_block() {
+        let mut t = Transcript::new();
+        t.append_to_thinking("first");
+        t.finish_thinking();
+        t.append_to_thinking("second");
+        assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn clear_during_thinking_resets_state() {
+        let mut t = Transcript::new();
+        t.append_to_thinking("thinking");
+        assert!(t.thinking_is_streaming());
+        t.clear();
+        assert!(!t.thinking_is_streaming());
+    }
+
+    #[test]
+    fn finish_thinking_noop_when_no_streaming() {
+        let mut t = Transcript::new();
+        t.finish_thinking();
+        assert!(!t.thinking_is_streaming());
+    }
+
+    #[test]
+    fn toggle_thinking_expand() {
+        let mut t = Transcript::new();
+        t.append_to_thinking("reasoning");
+        t.finish_thinking();
+        // After finish, auto-collapsed
+        if let TranscriptItem::ThinkingBlock { is_expanded, .. } = &t.items[0] {
+            assert!(!is_expanded);
+        } else { panic!("expected ThinkingBlock"); }
+        t.toggle_thinking_expand(0);
+        if let TranscriptItem::ThinkingBlock { is_expanded, .. } = &t.items[0] {
+            assert!(is_expanded);
+        } else { panic!("expected ThinkingBlock"); }
+        t.toggle_thinking_expand(0);
+        if let TranscriptItem::ThinkingBlock { is_expanded, .. } = &t.items[0] {
+            assert!(!is_expanded);
+        } else { panic!("expected ThinkingBlock"); }
     }
 }

@@ -1,7 +1,7 @@
 //! OpenAI chat-completions provider.
 
 use crate::{estimate_tokens, message_text, ChatFuture, LlmClient, LlmError};
-use duga_events::EventSink;
+use duga_events::{Event, EventSink};
 use duga_types::llm::{LlmCallOptions, LlmResponse, TokenUsage};
 use duga_types::message::{AssistantMessage, ContentBlock, Message, Role};
 use duga_types::tool_call::ToolCall;
@@ -63,11 +63,15 @@ impl LlmClient for OpenAiClient {
         &'a self,
         messages: &'a [Message],
         tools: &'a [ToolSchema],
-        _options: LlmCallOptions,
-        _event_sink: &'a dyn EventSink,
+        options: LlmCallOptions,
+        event_sink: &'a dyn EventSink,
     ) -> ChatFuture<'a> {
         Box::pin(async move {
-            let request = OpenAiRequest::from_duga(&self.model, messages, tools)?;
+            let mut request = OpenAiRequest::from_duga(&self.model, messages, tools)?;
+            if options.streaming {
+                request.stream = Some(true);
+                request.stream_options = Some(OpenAiStreamOptions { include_usage: true });
+            }
             let request_builder = self.http.post(self.endpoint());
             let request_builder = if self.api_key.is_empty() {
                 request_builder
@@ -80,6 +84,12 @@ impl LlmClient for OpenAiClient {
                 .await
                 .map_err(|e| LlmError::Transport(e.to_string()))?;
             let status = response.status();
+
+            if options.streaming && status.is_success() {
+                return self.parse_sse_stream(response, event_sink).await;
+            }
+
+            // Non-streaming path (unchanged)
             let body = response
                 .text()
                 .await
@@ -98,6 +108,93 @@ impl LlmClient for OpenAiClient {
     }
 }
 
+// ── SSE streaming support ──
+
+#[derive(Default)]
+struct OpenAiStreamToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+impl OpenAiClient {
+    async fn parse_sse_stream(
+        &self,
+        response: reqwest::Response,
+        event_sink: &dyn EventSink,
+    ) -> Result<LlmResponse, LlmError> {
+        let body = response.text().await.map_err(|e| LlmError::Transport(e.to_string()))?;
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut acc_tools: Vec<OpenAiStreamToolCall> = Vec::new();
+        let mut input_tokens: u32 = 0;
+        let mut output_tokens: u32 = 0;
+
+        for line in body.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data == "[DONE]" { continue; }
+                let chunk: serde_json::Value = serde_json::from_str(data)
+                    .map_err(|e| LlmError::Provider(format!("SSE parse: {e}")))?;
+
+                if let Some(u) = chunk.get("usage") {
+                    input_tokens = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
+                    output_tokens = u["completion_tokens"].as_u64().unwrap_or(0) as u32;
+                }
+
+                if let Some(choices) = chunk.get("choices").and_then(|c| c.as_array()) {
+                    for choice in choices {
+                        if let Some(delta) = choice.get("delta") {
+                            if let Some(rc) = delta["reasoning_content"].as_str() {
+                                reasoning.push_str(rc);
+                                event_sink.emit(Event::LlmThinkingDelta {
+                                    model: self.model.clone(), delta: rc.to_string(),
+                                }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
+                            }
+                            if let Some(t) = delta["content"].as_str() {
+                                content.push_str(t);
+                                event_sink.emit(Event::LlmTokenDelta {
+                                    model: self.model.clone(), delta: t.to_string(),
+                                }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
+                            }
+                            if let Some(tcs) = delta["tool_calls"].as_array() {
+                                for tc in tcs {
+                                    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                                    while acc_tools.len() <= idx {
+                                        acc_tools.push(OpenAiStreamToolCall::default());
+                                    }
+                                    let e = &mut acc_tools[idx];
+                                    if let Some(id) = tc["id"].as_str() { e.id = Some(id.to_string()); }
+                                    if let Some(fn_info) = tc.get("function") {
+                                        if let Some(n) = fn_info["name"].as_str() { e.name = Some(n.to_string()); }
+                                        if let Some(a) = fn_info["arguments"].as_str() { e.arguments.push_str(a); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let tool_calls: Vec<ToolCall> = acc_tools.iter().filter_map(|tc| {
+            let name = tc.name.as_deref().unwrap_or("unknown");
+            let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null);
+            Some(ToolCall::new(name, args))
+        }).collect();
+
+        Ok(LlmResponse {
+            message: AssistantMessage {
+                text: if content.is_empty() { None } else { Some(content) },
+                tool_calls,
+                reasoning_content: if reasoning.is_empty() { None } else { Some(reasoning) },
+            },
+            usage: TokenUsage { prompt: input_tokens, completion: output_tokens },
+        })
+    }
+}
+
 fn map_status(status: StatusCode, body: String) -> LlmError {
     if status == StatusCode::TOO_MANY_REQUESTS {
         LlmError::RateLimited(body)
@@ -112,6 +209,15 @@ struct OpenAiRequest {
     messages: Vec<OpenAiMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolSpec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<OpenAiStreamOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiStreamOptions {
+    include_usage: bool,
 }
 
 impl OpenAiRequest {
@@ -127,6 +233,8 @@ impl OpenAiRequest {
                 .map(openai_message)
                 .collect::<Result<_, _>>()?,
             tools: tools.iter().map(OpenAiToolSpec::from_schema).collect(),
+            stream: None,
+            stream_options: None,
         })
     }
 }

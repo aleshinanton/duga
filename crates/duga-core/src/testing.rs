@@ -170,6 +170,24 @@ impl LlmClient for MockLlm {
                 .pop_front()
                 .ok_or_else(|| LlmError::Provider("mock exhausted".into()))??;
             if options.streaming {
+                if let Some(reasoning) = &response.message.reasoning_content {
+                    for word in reasoning.split_whitespace() {
+                        event_sink
+                            .emit(Event::LlmThinkingDelta {
+                                model: self.model.clone(),
+                                delta: word.into(),
+                            })
+                            .await
+                            .map_err(|e| LlmError::Provider(e.to_string()))?;
+                    }
+                    event_sink
+                        .emit(Event::LlmThinkingDelta {
+                            model: self.model.clone(),
+                            delta: "\n".into(),
+                        })
+                        .await
+                        .map_err(|e| LlmError::Provider(e.to_string()))?;
+                }
                 if let Some(text) = &response.message.text {
                     for word in text.split_whitespace() {
                         event_sink
@@ -285,5 +303,40 @@ mod tests {
                 delta: "done".into()
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn mock_llm_streaming_with_thinking_emits_both_delta_types() {
+        let response = LlmResponse {
+            message: duga_types::message::AssistantMessage {
+                text: Some("the answer is 42".into()),
+                tool_calls: vec![],
+                reasoning_content: Some("Let me think step by step".into()),
+            },
+            usage: duga_types::llm::TokenUsage { prompt: 0, completion: 0 },
+        };
+        let llm = MockLlm::new(vec![Ok(response)]);
+        let sink = CapturingEventSink::new();
+        llm.chat(&[Message::user("q")], &[], LlmCallOptions { streaming: true }, &sink).await.unwrap();
+        let events = sink.events();
+        assert!(matches!(events[0], Event::LlmThinkingDelta { .. }));
+        assert!(matches!(events.last().unwrap(), Event::LlmTokenDelta { .. }));
+        assert_eq!(events.len(), 11);
+    }
+
+    #[tokio::test]
+    async fn mock_llm_non_streaming_emits_zero_deltas() {
+        let response = LlmResponse {
+            message: duga_types::message::AssistantMessage {
+                text: Some("done".into()),
+                tool_calls: vec![],
+                reasoning_content: Some("thinking".into()),
+            },
+            usage: duga_types::llm::TokenUsage { prompt: 0, completion: 0 },
+        };
+        let llm = MockLlm::new(vec![Ok(response)]);
+        let sink = CapturingEventSink::new();
+        llm.chat(&[Message::user("hello")], &[], LlmCallOptions { streaming: false }, &sink).await.unwrap();
+        assert!(sink.events().is_empty());
     }
 }

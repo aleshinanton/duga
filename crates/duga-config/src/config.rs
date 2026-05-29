@@ -103,6 +103,11 @@ pub struct TuiConfig {
     /// Defaults to "simple_react" if not set.
     #[serde(default = "default_loop_id")]
     pub default_loop: String,
+    /// Whether to display LLM thinking/reasoning content in the TUI.
+    /// When false, thinking events are silently dropped from the display
+    /// (but still logged in session JSONL). Defaults to true.
+    #[serde(default = "default_true")]
+    pub show_thinking: bool,
 }
 
 impl Default for TuiConfig {
@@ -115,6 +120,7 @@ impl Default for TuiConfig {
             keybindings: KeybindingsConfig::default(),
             require_confirmation_for: Vec::new(),
             default_loop: default_loop_id(),
+            show_thinking: true,
         }
     }
 }

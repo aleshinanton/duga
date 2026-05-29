@@ -56,6 +56,11 @@ pub enum Event {
         model: String,
         delta: String,
     },
+    /// Emitted during SSE streaming when the LLM produces thinking/reasoning tokens.
+    LlmThinkingDelta {
+        model: String,
+        delta: String,
+    },
     ToolCallStarted {
         tool_call: ToolCall,
         attempt: u32,
@@ -579,5 +584,59 @@ mod tests {
         assert!(json.contains("loop_delegated"));
         assert!(json.contains("simple_react"));
         assert!(json.contains("problem_solving"));
+    }
+
+    #[test]
+    fn llm_thinking_delta_roundtrip() {
+        let event = Event::LlmThinkingDelta {
+            model: "claude-sonnet-4-5-20250929".into(),
+            delta: "Let me reason".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
+        assert!(json.contains("llm_thinking_delta"));
+    }
+
+    #[test]
+    fn llm_thinking_delta_empty_delta_roundtrip() {
+        let event = Event::LlmThinkingDelta {
+            model: "o3".into(),
+            delta: "".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn llm_thinking_delta_stored_event_roundtrip() {
+        let event = Event::LlmThinkingDelta {
+            model: "deepseek-r1".into(),
+            delta: "...".into(),
+        };
+        let stored = StoredEvent::new(42, event.clone());
+        let json = serde_json::to_string(&stored).unwrap();
+        let decoded: StoredEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.event, event);
+        assert_eq!(decoded.seq, 42);
+    }
+
+    #[tokio::test]
+    async fn redacting_sink_does_not_redact_thinking_delta() {
+        let inner = Arc::new(RecordingSink::default());
+        let sink = RedactingSink::new(inner.clone());
+        sink.emit(Event::LlmThinkingDelta {
+            model: "claude-3".into(),
+            delta: "think carefully".into(),
+        }).await.unwrap();
+        let events = inner.events();
+        match &events[0] {
+            Event::LlmThinkingDelta { model, delta } => {
+                assert_eq!(model, "claude-3");
+                assert_eq!(delta, "think carefully");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

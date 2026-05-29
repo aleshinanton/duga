@@ -49,6 +49,11 @@ pub enum FrontendEvent {
         model: String,
         delta: String,
     },
+    /// A partial thinking/reasoning delta from the LLM (e.g., extended thinking).
+    LlmThinkingDelta {
+        model: String,
+        delta: String,
+    },
     /// The agent encountered an error.
     Error {
         message: String,
@@ -177,6 +182,9 @@ impl FrontendEventSink {
                 })
             }
             Event::LlmTokenDelta { model, delta } => Some(FrontendEvent::LlmTokenDelta { model, delta }),
+            Event::LlmThinkingDelta { model, delta } => {
+                Some(FrontendEvent::LlmThinkingDelta { model, delta })
+            }
             Event::Error { message } => Some(FrontendEvent::Error { message }),
             Event::MemoryCompressed {
                 before_tokens,
@@ -475,6 +483,52 @@ mod tests {
                 assert_eq!(tool_name, "write");
                 assert!(!success);
                 assert_eq!(attempt, 3);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_event_llm_thinking_delta() {
+        let sink = test_sink();
+        let event = Event::LlmThinkingDelta {
+            model: "claude-3".into(),
+            delta: "Let me reason...".into(),
+        };
+        match sink.map_event(event) {
+            Some(FrontendEvent::LlmThinkingDelta { model, delta }) => {
+                assert_eq!(model, "claude-3");
+                assert_eq!(delta, "Let me reason...");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_event_llm_thinking_delta_not_suppressed() {
+        // LlmThinkingDelta should NOT be suppressed (unlike LlmResponse).
+        let sink = test_sink();
+        let event = Event::LlmThinkingDelta {
+            model: "o3".into(),
+            delta: "thinking".into(),
+        };
+        assert!(sink.map_event(event).is_some());
+    }
+
+    #[tokio::test]
+    async fn bridge_llm_thinking_delta_roundtrip() {
+        let (tx, mut bridge) = FrontendEventBridge::new(32);
+        tx.send(FrontendEvent::LlmThinkingDelta {
+            model: "deepseek-r1".into(),
+            delta: "reasoning...".into(),
+        })
+        .await
+        .unwrap();
+        let event = bridge.recv().await.unwrap();
+        match event {
+            FrontendEvent::LlmThinkingDelta { model, delta } => {
+                assert_eq!(model, "deepseek-r1");
+                assert_eq!(delta, "reasoning...");
             }
             other => panic!("unexpected: {other:?}"),
         }

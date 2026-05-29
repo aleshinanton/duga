@@ -225,6 +225,18 @@ pub fn load_session_transcript(path: &Path) -> Vec<TranscriptItem> {
                     timestamp: Instant::now(),
                 });
             }
+            Event::LlmThinkingDelta { delta, .. } => {
+                if let Some(TranscriptItem::ThinkingBlock { text, .. }) = items.last_mut() {
+                    text.push_str(&delta);
+                } else {
+                    items.push(TranscriptItem::ThinkingBlock {
+                        text: delta,
+                        is_streaming: false,
+                        is_expanded: false,
+                        timestamp: Instant::now(),
+                    });
+                }
+            }
             _ => {}
         }
     }

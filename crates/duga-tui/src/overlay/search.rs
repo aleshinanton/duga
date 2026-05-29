@@ -219,6 +219,7 @@ fn transcript_item_to_string(item: &crate::transcript::TranscriptItem) -> String
         crate::transcript::TranscriptItem::SystemMessage { text, .. } => text.clone(),
         crate::transcript::TranscriptItem::UserMessage { text, .. } => text.clone(),
         crate::transcript::TranscriptItem::AssistantMessage { text, .. } => text.clone(),
+        crate::transcript::TranscriptItem::ThinkingBlock { text, .. } => text.clone(),
         crate::transcript::TranscriptItem::ToolCallBlock {
             tool_name,
             description,

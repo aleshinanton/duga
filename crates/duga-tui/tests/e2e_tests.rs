@@ -924,3 +924,81 @@ fn test_delete_session_nonexistent_does_not_panic() {
     });
     assert!(has_warn);
 }
+
+// ── Thinking Streaming E2E Tests ───────────────────────────────────────────
+
+#[test]
+fn test_thinking_streaming_creates_thinking_block() {
+    let (mut app, _rx) = make_test_app();
+    app.update(AppEvent::Frontend(FrontendEvent::LlmThinkingDelta {
+        model: "test".into(), delta: "Let me think".into(),
+    }));
+    app.update(AppEvent::Frontend(FrontendEvent::LlmThinkingDelta {
+        model: "test".into(), delta: " about this".into(),
+    }));
+    assert_eq!(app.transcript.len(), 1);
+    if let TranscriptItem::ThinkingBlock { text, is_streaming, .. } = &app.transcript.items()[0] {
+        assert_eq!(text, "Let me think about this");
+        assert!(is_streaming);
+    } else { panic!("expected ThinkingBlock"); }
+}
+
+#[test]
+fn test_thinking_auto_finishes_when_text_arrives() {
+    let (mut app, _rx) = make_test_app();
+    app.update(AppEvent::Frontend(FrontendEvent::LlmThinkingDelta {
+        model: "test".into(), delta: "reasoning".into(),
+    }));
+    app.update(AppEvent::Frontend(FrontendEvent::LlmTokenDelta {
+        model: "test".into(), delta: "answer".into(),
+    }));
+    assert_eq!(app.transcript.len(), 2);
+    if let TranscriptItem::ThinkingBlock { is_streaming, .. } = &app.transcript.items()[0] {
+        assert!(!is_streaming);
+    } else { panic!("expected ThinkingBlock"); }
+    if let TranscriptItem::AssistantMessage { is_streaming, .. } = &app.transcript.items()[1] {
+        assert!(is_streaming);
+    } else { panic!("expected AssistantMessage"); }
+}
+
+#[test]
+fn test_thinking_auto_finishes_on_run_finished() {
+    let (mut app, _rx) = make_test_app();
+    app.update(AppEvent::Frontend(FrontendEvent::LlmThinkingDelta {
+        model: "test".into(), delta: "thinking".into(),
+    }));
+    app.update(AppEvent::Frontend(FrontendEvent::RunFinished { text: None }));
+    if let TranscriptItem::ThinkingBlock { is_streaming, .. } = &app.transcript.items()[0] {
+        assert!(!is_streaming);
+    } else { panic!("expected ThinkingBlock"); }
+}
+
+#[test]
+fn test_no_thinking_events_produces_no_thinking_blocks() {
+    let (mut app, _rx) = make_test_app();
+    app.update(AppEvent::Frontend(FrontendEvent::LlmTokenDelta {
+        model: "test".into(), delta: "just".into(),
+    }));
+    app.update(AppEvent::Frontend(FrontendEvent::LlmTokenDelta {
+        model: "test".into(), delta: " text".into(),
+    }));
+    app.update(AppEvent::Frontend(FrontendEvent::RunFinished { text: None }));
+    for item in app.transcript.items() {
+        assert!(!matches!(item, TranscriptItem::ThinkingBlock { .. }));
+    }
+}
+
+#[test]
+fn test_thinking_non_streaming_regression() {
+    let (mut app, _rx) = make_test_app();
+    app.transcript.push(TranscriptItem::UserMessage {
+        text: "test".into(), timestamp: Instant::now(),
+    });
+    app.update(AppEvent::Frontend(FrontendEvent::RunFinished {
+        text: Some("direct answer".into()),
+    }));
+    let items = app.transcript.items();
+    assert_eq!(items.len(), 2);
+    assert!(matches!(items[0], TranscriptItem::UserMessage { .. }));
+    assert!(matches!(items[1], TranscriptItem::AssistantMessage { .. }));
+}

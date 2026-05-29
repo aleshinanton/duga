@@ -23,6 +23,20 @@ This project has not published versioned releases yet. Entries below summarize t
     replay → E2E tests → config flag.
   - Full epic at `backlog/epic-32-thinking-streaming.md`.
 
+- **EPIC-32 Implementation: Thinking Streaming.**  Full implementation of LLM thinking/reasoning streaming across all layers (355 tests, 0 regressions).
+  - **duga-events:** `Event::LlmThinkingDelta { model, delta }` variant with JSON roundtrip and redactor safety.
+  - **duga-core:** `MockLlm` extended to emit `LlmThinkingDelta` before `LlmTokenDelta` when `reasoning_content` is populated, enabling deterministic testing without real providers.
+  - **duga-llm (Anthropic):** SSE streaming via `parse_sse_stream()` — parses `content_block_start/delta/stop`, emits thinking/text deltas, accumulates tool calls and final `LlmResponse` with `reasoning_content`. Non-streaming path untouched.
+  - **duga-llm (OpenAI):** SSE streaming via `parse_sse_stream()` — handles `delta.reasoning_content` (thinking), `delta.content` (text), `delta.tool_calls` (incremental), and `[DONE]` sentinel. `stream_options: { include_usage: true }` for accurate token counts.
+  - **duga-runtime:** `FrontendEvent::LlmThinkingDelta` mapped from `Event::LlmThinkingDelta` in `FrontendEventSink::map_event()` with bridge roundtrip.
+  - **duga-tui (transcript):** `TranscriptItem::ThinkingBlock` with lifecycle methods (`append_to_thinking`, `finish_thinking`, `thinking_is_streaming`, `toggle_thinking_expand`). Auto-creates block on first delta, auto-collapses on finish (shows word count).
+  - **duga-tui (render):** Thinking blocks render as dimmed italic `🧠 Thinking:` with expandable text. Tab key toggles both tool and thinking blocks. Auto-finishes thinking on first `LlmTokenDelta`, `ToolCallStarted`, or `RunFinished`.
+  - **duga-tui (session):** `load_session_transcript()` reconstructs `ThinkingBlock` from stored `Event::LlmThinkingDelta` lines, merging consecutive deltas into a single collapsed block.
+  - **duga-config:** `tui.show_thinking: bool` flag (defaults to `true`). When `false`, thinking events are silently dropped from display but still logged in session JSONL.
+  - **duga-telegram-bot:** Placeholder handler for `FrontendEvent::LlmThinkingDelta` — thinking content is not surfaced in Telegram but remains in session logs.
+  - **E2E tests:** 5 new tests covering thinking block creation, auto-finish on text/tool/run-end, non-streaming regression, and zero-thinking-block guarantee.
+  - Full epic at `backlog/epic-32-thinking-streaming.md`.
+
 - **EPIC-17: Terminal UI Frontend — Interactive ratatui-based TUI.**  A full terminal-based interface for the duga agent, connecting to the shared runtime without duplicating any harness wiring.  Key additions:
   - **`duga-tui` crate** — ratatui + crossterm binary with async event loop, raw mode / alternate screen lifecycle, bracketed paste, and focus tracking.
   - **App state machine** — `Idle → Running → Idle` with cancellation token support.  Event loop merges crossterm input (spawn_blocking thread), frontend bridge events, and 50ms ticks via `tokio::select!`.
