@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::editor::{Editor, EditorAction};
 use crate::keybindings::{GlobalAction, Keybindings};
 use crate::overlay::{self, Overlay, OverlayManager};
-use crate::session::{SessionInfo, list_sessions, load_conversation_history,
+use crate::session::{SessionInfo, delete_session, list_sessions, load_conversation_history,
     load_session_transcript, upsert_session_index, touch_session};
 use crate::transcript::{SystemLevel, Transcript, TranscriptItem};
 
@@ -40,6 +40,15 @@ pub enum AppState {
         /// Name of the active loop (e.g. "simple_react", "problem_solving").
         loop_name: String,
     },
+}
+
+/// Distinguishes what the active confirmation dialog is for.
+#[derive(Clone, Debug)]
+pub enum ConfirmKind {
+    /// Confirming a tool execution request from the agent runtime.
+    ToolExecution,
+    /// Confirming deletion of a session.
+    DeleteSession { session_id: String },
 }
 
 // ── Internal events ────────────────────────────────────────────────────────
@@ -95,8 +104,6 @@ pub struct App {
     active_steer: Option<SteeringSender>,
     /// Receiver for pending confirmation requests from the agent.
     confirmation_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::confirmation::PendingConfirmation>>,
-    /// Currently active confirmation dialog (handled outside overlay manager).
-    active_confirm_dialog: Option<crate::overlay::confirmation::ConfirmationDialog>,
     /// Oneshot sender to respond to the active confirmation.
     pending_confirm_tx: Option<oneshot::Sender<ConfirmationDecision>>,
     /// Last known terminal dimensions.
@@ -111,6 +118,14 @@ pub struct App {
     pending_history: Option<Vec<Message>>,
     /// Receives the session ID selected by the session picker overlay.
     session_result_rx: Option<mpsc::UnboundedReceiver<String>>,
+    /// Receives delete requests from the session picker overlay.
+    delete_session_rx: Option<mpsc::UnboundedReceiver<String>>,
+    /// Pending session ID to delete (waiting for confirmation).
+    pub pending_delete_id: Option<String>,
+    /// What the active confirmation dialog is for.
+    pub confirm_kind: Option<ConfirmKind>,
+    /// Currently active confirmation dialog (handled outside overlay manager).
+    pub active_confirm_dialog: Option<crate::overlay::confirmation::ConfirmationDialog>,
 }
 
 impl App {
@@ -151,6 +166,9 @@ impl App {
             current_session_id: None,
             pending_history: None,
             session_result_rx: None,
+            delete_session_rx: None,
+            pending_delete_id: None,
+            confirm_kind: None,
         }
     }
 
@@ -324,9 +342,13 @@ impl App {
             } => {
                 let (tx, rx) = mpsc::unbounded_channel();
                 self.session_result_rx = Some(rx);
+                let (delete_tx, delete_rx) = mpsc::unbounded_channel();
+                self.delete_session_rx = Some(delete_rx);
                 let sessions = list_sessions(&self.sessions_dir);
                 self.overlays.push(Box::new(
-                    overlay::session_picker::SessionPickerOverlay::new(sessions, tx),
+                    overlay::session_picker::SessionPickerOverlay::new(
+                        sessions, tx, Some(delete_tx),
+                    ),
                 ));
                 return;
             }
@@ -514,13 +536,28 @@ impl App {
         }
     }
 
-    fn handle_tick(&mut self) {
+    pub fn handle_tick(&mut self) {
         // Poll for a session selection from the picker overlay.
         if let Some(ref mut rx) = self.session_result_rx {
             if let Ok(id) = rx.try_recv() {
                 self.session_result_rx = None;
                 self.switch_session(id);
             }
+        }
+
+        // Poll for delete requests from the session picker overlay.
+        if let Some(ref mut rx) = self.delete_session_rx {
+            if let Ok(id) = rx.try_recv() {
+                self.pending_delete_id = Some(id);
+            }
+        }
+
+        // Show delete confirmation dialog if a delete is pending and no dialog is active.
+        if self.pending_delete_id.is_some()
+            && self.active_confirm_dialog.is_none()
+            && self.pending_confirm_tx.is_none()
+        {
+            self.show_delete_confirmation();
         }
     }
 
@@ -550,6 +587,7 @@ impl App {
         self.confirmation_rx = None;
         self.active_confirm_dialog = None;
         self.pending_confirm_tx = None;
+        self.confirm_kind = None;
     }
 
     // ── Session management ──────────────────────────────────────────────
@@ -759,22 +797,93 @@ impl App {
                 );
                 self.active_confirm_dialog = Some(dialog);
                 self.pending_confirm_tx = Some(pending.response_tx);
+                self.confirm_kind = Some(ConfirmKind::ToolExecution);
                 break; // Only handle one at a time
             }
         }
+    }
+
+    /// Show a confirmation dialog for session deletion.
+    fn show_delete_confirmation(&mut self) {
+        let session_id = match self.pending_delete_id.take() {
+            Some(id) => id,
+            None => return,
+        };
+
+        let sessions = list_sessions(&self.sessions_dir);
+        let title = sessions
+            .iter()
+            .find(|s| s.id == session_id)
+            .map(|s| s.title.as_str())
+            .unwrap_or("session");
+
+        use crate::overlay::confirmation::ConfirmationDialog;
+        let dialog = ConfirmationDialog::yes_no(
+            "Delete Session",
+            format!("Delete session \"{title}\"? This cannot be undone."),
+        );
+        self.active_confirm_dialog = Some(dialog);
+        self.confirm_kind = Some(ConfirmKind::DeleteSession {
+            session_id,
+        });
     }
 
     /// Check if the confirmation dialog was dismissed and send the response.
     fn process_confirm_result(&mut self) {
         if let Some(ref mut dialog) = self.active_confirm_dialog {
             if let Some(result) = dialog.take_result() {
-                use crate::overlay::confirmation::ConfirmationResult;
-                let decision = match result {
-                    ConfirmationResult::Confirmed(idx) if idx == 0 => ConfirmationDecision::Approved,
-                    _ => ConfirmationDecision::Denied,
-                };
-                if let Some(tx) = self.pending_confirm_tx.take() {
-                    let _ = tx.send(decision);
+                let kind = self.confirm_kind.take();
+                match kind {
+                    Some(ConfirmKind::ToolExecution) => {
+                        use crate::overlay::confirmation::ConfirmationResult;
+                        let decision = match result {
+                            ConfirmationResult::Confirmed(idx) if idx == 0 => {
+                                ConfirmationDecision::Approved
+                            }
+                            _ => ConfirmationDecision::Denied,
+                        };
+                        if let Some(tx) = self.pending_confirm_tx.take() {
+                            let _ = tx.send(decision);
+                        }
+                    }
+                    Some(ConfirmKind::DeleteSession { session_id }) => {
+                        use crate::overlay::confirmation::ConfirmationResult;
+                        if matches!(result, ConfirmationResult::Confirmed(0)) {
+                            let sessions_dir = self.sessions_dir.clone();
+                            match delete_session(&sessions_dir, &session_id) {
+                                Ok(true) => {
+                                    self.transcript.push(TranscriptItem::SystemMessage {
+                                        text: "Session deleted.".into(),
+                                        level: SystemLevel::Info,
+                                        timestamp: Instant::now(),
+                                    });
+                                }
+                                Ok(false) => {
+                                    self.transcript.push(TranscriptItem::SystemMessage {
+                                        text: "Session not found.".into(),
+                                        level: SystemLevel::Warn,
+                                        timestamp: Instant::now(),
+                                    });
+                                }
+                                Err(e) => {
+                                    self.transcript.push(TranscriptItem::SystemMessage {
+                                        text: format!("Failed to delete session: {e}"),
+                                        level: SystemLevel::Error,
+                                        timestamp: Instant::now(),
+                                    });
+                                }
+                            }
+                        }
+                        // Close the session picker overlay after delete confirmation.
+                        if self.overlays.has_overlay() {
+                            self.overlays.pop();
+                        }
+                        // Clean up the delete channel since the overlay was closed.
+                        self.delete_session_rx = None;
+                    }
+                    None => {
+                        // No kind set — shouldn't happen, but handle gracefully.
+                    }
                 }
                 self.active_confirm_dialog = None;
             }

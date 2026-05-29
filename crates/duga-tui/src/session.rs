@@ -81,6 +81,30 @@ pub fn upsert_session_index(sessions_dir: &Path, info: &SessionInfo) {
     }
 }
 
+/// Delete a session: removes the JSONL file and the index entry.
+///
+/// Returns `true` if the session was found and deleted.
+pub fn delete_session(sessions_dir: &Path, id: &str) -> std::io::Result<bool> {
+    let path = sessions_dir.join(format!("{id}.jsonl"));
+    let existed = path.exists();
+    if existed {
+        std::fs::remove_file(&path)?;
+    }
+
+    // Remove from index
+    let raw = std::fs::read_to_string(index_path(sessions_dir)).unwrap_or_default();
+    let mut sessions: Vec<SessionInfo> = serde_json::from_str(&raw).unwrap_or_default();
+    let before = sessions.len();
+    sessions.retain(|s| s.id != id);
+    let removed_from_index = sessions.len() < before;
+
+    let json = serde_json::to_string_pretty(&sessions)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    std::fs::write(index_path(sessions_dir), json)?;
+
+    Ok(existed || removed_from_index)
+}
+
 /// Update the `last_active` timestamp of a session.
 pub fn touch_session(sessions_dir: &Path, id: &str) {
     let raw = std::fs::read_to_string(index_path(sessions_dir)).unwrap_or_default();
@@ -206,4 +230,67 @@ pub fn load_session_transcript(path: &Path) -> Vec<TranscriptItem> {
     }
 
     items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn setup_sessions_dir() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().to_path_buf();
+        (dir, sessions_dir)
+    }
+
+    fn add_test_session(sessions_dir: &Path, id: &str, title: &str) {
+        let info = SessionInfo::new(id.into(), title.into());
+        upsert_session_index(sessions_dir, &info);
+        // Create a dummy JSONL file.
+        let path = sessions_dir.join(format!("{id}.jsonl"));
+        fs::write(&path, "{}").unwrap();
+    }
+
+    #[test]
+    fn test_delete_session_removes_file_and_index() {
+        let (_dir, sessions_dir) = setup_sessions_dir();
+        add_test_session(&sessions_dir, "s1", "Test Session");
+        add_test_session(&sessions_dir, "s2", "Another");
+
+        let before = list_sessions(&sessions_dir);
+        assert_eq!(before.len(), 2);
+
+        let result = delete_session(&sessions_dir, "s1").unwrap();
+        assert!(result);
+
+        // File should be gone.
+        assert!(!sessions_dir.join("s1.jsonl").exists());
+
+        // Index should have only s2.
+        let after = list_sessions(&sessions_dir);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, "s2");
+    }
+
+    #[test]
+    fn test_delete_session_nonexistent_returns_false() {
+        let (_dir, sessions_dir) = setup_sessions_dir();
+        let result = delete_session(&sessions_dir, "nope").unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_delete_session_cleans_index_even_if_file_missing() {
+        let (_dir, sessions_dir) = setup_sessions_dir();
+        add_test_session(&sessions_dir, "orphan", "Orphan");
+
+        // Remove the JSONL file but leave the index entry.
+        fs::remove_file(sessions_dir.join("orphan.jsonl")).unwrap();
+
+        let result = delete_session(&sessions_dir, "orphan").unwrap();
+        assert!(result, "should report true because index entry was removed");
+
+        let after = list_sessions(&sessions_dir);
+        assert!(after.is_empty());
+    }
 }

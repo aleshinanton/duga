@@ -646,3 +646,281 @@ fn test_final_only_shows_tool_after_completion() {
         panic!("expected ToolCallBlock");
     }
 }
+
+// ── Session Delete Tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_session_picker_delete_key_sends_request() {
+    use duga_tui::overlay::session_picker::SessionPickerOverlay;
+    use duga_tui::overlay::Overlay;
+    use duga_tui::session::SessionInfo;
+
+    let sessions = vec![
+        SessionInfo::new("s1".into(), "First session".into()),
+        SessionInfo::new("s2".into(), "Second session".into()),
+    ];
+    let (result_tx, _result_rx) = mpsc::unbounded_channel();
+    let (delete_tx, mut delete_rx) = mpsc::unbounded_channel();
+
+    let mut picker = SessionPickerOverlay::new(sessions, result_tx, Some(delete_tx));
+
+    // Press Delete key on first session
+    let action = picker.handle_key(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+    assert!(matches!(action, duga_tui::overlay::OverlayAction::Consumed));
+
+    // Should have received delete request for s1
+    let id = delete_rx.try_recv().unwrap();
+    assert_eq!(id, "s1");
+}
+
+#[test]
+fn test_session_picker_ctrl_d_sends_delete_request() {
+    use duga_tui::overlay::session_picker::SessionPickerOverlay;
+    use duga_tui::overlay::Overlay;
+    use duga_tui::session::SessionInfo;
+
+    let sessions = vec![SessionInfo::new("s1".into(), "Test".into())];
+    let (result_tx, _result_rx) = mpsc::unbounded_channel();
+    let (delete_tx, mut delete_rx) = mpsc::unbounded_channel();
+
+    let mut picker = SessionPickerOverlay::new(sessions, result_tx, Some(delete_tx));
+
+    // Ctrl+D
+    let action = picker.handle_key(&KeyEvent::new(
+        KeyCode::Char('d'),
+        KeyModifiers::CONTROL,
+    ));
+    assert!(matches!(action, duga_tui::overlay::OverlayAction::Consumed));
+
+    let id = delete_rx.try_recv().unwrap();
+    assert_eq!(id, "s1");
+}
+
+#[test]
+fn test_session_picker_no_delete_tx_ignores_delete_key() {
+    use duga_tui::overlay::session_picker::SessionPickerOverlay;
+    use duga_tui::overlay::Overlay;
+    use duga_tui::session::SessionInfo;
+
+    let sessions = vec![SessionInfo::new("s1".into(), "Test".into())];
+    let (result_tx, _result_rx) = mpsc::unbounded_channel();
+
+    // No delete channel provided
+    let mut picker = SessionPickerOverlay::new(sessions, result_tx, None);
+
+    // Delete key should be consumed but not crash
+    let action = picker.handle_key(&KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+    assert!(matches!(action, duga_tui::overlay::OverlayAction::Consumed));
+}
+
+#[test]
+fn test_session_picker_set_sessions_updates_list() {
+    use duga_tui::overlay::session_picker::SessionPickerOverlay;
+    use duga_tui::overlay::Overlay;
+    use duga_tui::session::SessionInfo;
+
+    let sessions = vec![
+        SessionInfo::new("a".into(), "A".into()),
+        SessionInfo::new("b".into(), "B".into()),
+        SessionInfo::new("c".into(), "C".into()),
+    ];
+    let (result_tx, _result_rx) = mpsc::unbounded_channel();
+
+    let mut picker = SessionPickerOverlay::new(sessions, result_tx, None);
+
+    // Select last item
+    for _ in 0..2 {
+        picker.handle_key(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+
+    // Remove last item
+    let updated = vec![
+        SessionInfo::new("a".into(), "A".into()),
+        SessionInfo::new("b".into(), "B".into()),
+    ];
+    picker.set_sessions(updated);
+
+    // Can still select without panic (selection clamped)
+    let action = picker.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(action, duga_tui::overlay::OverlayAction::Close));
+}
+
+#[test]
+fn test_delete_session_end_to_end() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let sessions_dir = dir.path().to_path_buf();
+
+    // Create a session via the index
+    let info = duga_tui::session::SessionInfo::new(
+        "del-me".into(),
+        "Delete Me".into(),
+    );
+    duga_tui::session::upsert_session_index(&sessions_dir, &info);
+    // Create the JSONL file
+    fs::write(sessions_dir.join("del-me.jsonl"), "{}").unwrap();
+
+    // Verify it exists
+    let before = duga_tui::session::list_sessions(&sessions_dir);
+    assert_eq!(before.len(), 1);
+
+    // Delete it
+    let result = duga_tui::session::delete_session(&sessions_dir, "del-me").unwrap();
+    assert!(result);
+
+    // File gone
+    assert!(!sessions_dir.join("del-me.jsonl").exists());
+
+    // Index empty
+    let after = duga_tui::session::list_sessions(&sessions_dir);
+    assert!(after.is_empty());
+}
+
+#[test]
+fn test_app_delete_session_shows_confirmation() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let sessions_dir = dir.path().to_path_buf();
+
+    // Create a test session
+    let info = duga_tui::session::SessionInfo::new(
+        "kill-me".into(),
+        "Kill Me".into(),
+    );
+    duga_tui::session::upsert_session_index(&sessions_dir, &info);
+    fs::write(sessions_dir.join("kill-me.jsonl"), "{}").unwrap();
+
+    // Build an app pointing at this sessions dir
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (fe_tx, fe_bridge) = FrontendEventBridge::new(16);
+    let fe_sink = Arc::new(duga_runtime::FrontendEventSink::new(fe_tx));
+    let (_config_dir, config) = test_config();
+    let tui_config = config.tui.clone().unwrap_or_default();
+
+    let mut app = App::new(
+        config,
+        tui_config,
+        event_tx,
+        fe_bridge,
+        fe_sink,
+        sessions_dir.clone(),
+    );
+
+    // Simulate: set a pending delete request and tick to show the dialog
+    app.pending_delete_id = Some("kill-me".into());
+    app.handle_tick();
+
+    // Confirmation dialog should be active
+    assert!(app.active_confirm_dialog.is_some());
+    assert!(matches!(
+        app.confirm_kind,
+        Some(duga_tui::app::ConfirmKind::DeleteSession { .. })
+    ));
+
+    // Confirm the deletion (Enter = Confirm with Yes selected, index 0)
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    app.handle_key(&enter);
+
+    // Dialog should be gone
+    assert!(app.active_confirm_dialog.is_none());
+
+    // Session file should be deleted
+    assert!(!sessions_dir.join("kill-me.jsonl").exists());
+
+    let after = duga_tui::session::list_sessions(&sessions_dir);
+    assert!(after.is_empty());
+}
+
+#[test]
+fn test_app_delete_session_cancel_does_not_delete() {
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let sessions_dir = dir.path().to_path_buf();
+
+    // Create a test session
+    let info = duga_tui::session::SessionInfo::new(
+        "keep-me".into(),
+        "Keep Me".into(),
+    );
+    duga_tui::session::upsert_session_index(&sessions_dir, &info);
+    fs::write(sessions_dir.join("keep-me.jsonl"), "{}").unwrap();
+
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (fe_tx, fe_bridge) = FrontendEventBridge::new(16);
+    let fe_sink = Arc::new(duga_runtime::FrontendEventSink::new(fe_tx));
+    let (_config_dir, config) = test_config();
+    let tui_config = config.tui.clone().unwrap_or_default();
+
+    let mut app = App::new(
+        config,
+        tui_config,
+        event_tx,
+        fe_bridge,
+        fe_sink,
+        sessions_dir.clone(),
+    );
+
+    // Set a pending delete and tick to show the dialog
+    app.pending_delete_id = Some("keep-me".into());
+    app.handle_tick();
+
+    assert!(app.active_confirm_dialog.is_some());
+
+    // Cancel with Escape
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    app.handle_key(&esc);
+
+    // Dialog should be gone
+    assert!(app.active_confirm_dialog.is_none());
+
+    // Session file should still exist
+    assert!(sessions_dir.join("keep-me.jsonl").exists());
+
+    let after = duga_tui::session::list_sessions(&sessions_dir);
+    assert_eq!(after.len(), 1);
+}
+
+#[test]
+fn test_delete_session_nonexistent_does_not_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let sessions_dir = dir.path().to_path_buf();
+
+    // No sessions created
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let (fe_tx, fe_bridge) = FrontendEventBridge::new(16);
+    let fe_sink = Arc::new(duga_runtime::FrontendEventSink::new(fe_tx));
+    let (_config_dir, config) = test_config();
+    let tui_config = config.tui.clone().unwrap_or_default();
+
+    let mut app = App::new(
+        config,
+        tui_config,
+        event_tx,
+        fe_bridge,
+        fe_sink,
+        sessions_dir.clone(),
+    );
+
+    // Delete a session that doesn't exist
+    app.pending_delete_id = Some("ghost".into());
+    app.handle_tick();
+
+    assert!(app.active_confirm_dialog.is_some());
+
+    let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    app.handle_key(&enter);
+
+    // Should not crash and should show "not found" message
+    assert!(app.active_confirm_dialog.is_none());
+    let items = app.transcript.items();
+    let has_warn = items.iter().any(|item| {
+        matches!(item,
+            TranscriptItem::SystemMessage { text, level: SystemLevel::Warn, .. }
+            if text == "Session not found."
+        )
+    });
+    assert!(has_warn);
+}

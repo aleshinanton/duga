@@ -1,7 +1,7 @@
-//! Session picker overlay — browse and resume past sessions.
+//! Session picker overlay — browse, resume, and delete past sessions.
 
 use crate::session::SessionInfo;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -17,11 +17,37 @@ pub struct SessionPickerOverlay {
     selected: usize,
     scroll_offset: usize,
     result_tx: UnboundedSender<String>,
+    /// Channel to request deletion of the selected session.
+    delete_tx: Option<UnboundedSender<String>>,
+    /// Whether a delete has been requested (waiting for confirmation).
+    delete_requested: bool,
 }
 
 impl SessionPickerOverlay {
-    pub fn new(sessions: Vec<SessionInfo>, result_tx: UnboundedSender<String>) -> Self {
-        Self { sessions, selected: 0, scroll_offset: 0, result_tx }
+    pub fn new(
+        sessions: Vec<SessionInfo>,
+        result_tx: UnboundedSender<String>,
+        delete_tx: Option<UnboundedSender<String>>,
+    ) -> Self {
+        Self {
+            sessions,
+            selected: 0,
+            scroll_offset: 0,
+            result_tx,
+            delete_tx,
+            delete_requested: false,
+        }
+    }
+
+    /// Update the session list (e.g. after a deletion).
+    pub fn set_sessions(&mut self, sessions: Vec<SessionInfo>) {
+        self.sessions = sessions;
+        if self.selected >= self.sessions.len() {
+            self.selected = self.sessions.len().saturating_sub(1);
+        }
+        if self.scroll_offset > self.selected {
+            self.scroll_offset = self.selected;
+        }
     }
 
     fn select_current(&self) -> OverlayAction {
@@ -29,6 +55,16 @@ impl SessionPickerOverlay {
             let _ = self.result_tx.send(session.id.clone());
         }
         OverlayAction::Close
+    }
+
+    fn request_delete(&mut self) -> OverlayAction {
+        if let Some(ref tx) = self.delete_tx {
+            if let Some(session) = self.sessions.get(self.selected) {
+                let _ = tx.send(session.id.clone());
+                self.delete_requested = true;
+            }
+        }
+        OverlayAction::Consumed
     }
 }
 
@@ -52,7 +88,7 @@ impl Overlay for SessionPickerOverlay {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Sessions — ↑↓ navigate · Enter resume · Esc cancel ")
+            .title(" Sessions — ↑↓ navigate · Enter resume · Del delete · Esc cancel ")
             .border_style(Style::default().fg(Color::Cyan))
             .style(Style::default().bg(Color::Rgb(30, 30, 30)));
         let inner = block.inner(dialog_area);
@@ -82,8 +118,16 @@ impl Overlay for SessionPickerOverlay {
             let y = inner.y + (row - self.scroll_offset) as u16;
             let is_selected = row == self.selected;
 
-            let bg = if is_selected { Color::Rgb(50, 80, 120) } else { Color::Rgb(30, 30, 30) };
-            let fg = if is_selected { Color::White } else { Color::Gray };
+            let bg = if is_selected {
+                Color::Rgb(50, 80, 120)
+            } else {
+                Color::Rgb(30, 30, 30)
+            };
+            let fg = if is_selected {
+                Color::White
+            } else {
+                Color::Gray
+            };
 
             // Fill row background
             for x in inner.x..inner.x + inner.width {
@@ -93,15 +137,14 @@ impl Overlay for SessionPickerOverlay {
             }
 
             // Title (truncated)
-            let title: String = session
-                .title
-                .chars()
-                .take(title_w)
-                .collect();
+            let title: String = session.title.chars().take(title_w).collect();
             let padded = format!(" {:<width$}", title, width = title_w);
 
             let title_style = if is_selected {
-                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(fg)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(fg).bg(bg)
             };
@@ -120,30 +163,63 @@ impl Overlay for SessionPickerOverlay {
     }
 
     fn handle_key(&mut self, key: &KeyEvent) -> OverlayAction {
-        match key.code {
-            KeyCode::Esc => OverlayAction::Close,
-            KeyCode::Enter => self.select_current(),
-            KeyCode::Up | KeyCode::Char('k') => {
+        match key {
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => OverlayAction::Close,
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => self.select_current(),
+            KeyEvent {
+                code: KeyCode::Delete, ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('d'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => self.request_delete(),
+            KeyEvent {
+                code: KeyCode::Up, ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('k'),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 self.selected = self.selected.saturating_sub(1);
                 if self.selected < self.scroll_offset {
                     self.scroll_offset = self.selected;
                 }
                 OverlayAction::Consumed
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyEvent {
+                code: KeyCode::Down, ..
+            }
+            | KeyEvent {
+                code: KeyCode::Char('j'),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 if !self.sessions.is_empty() {
                     self.selected = (self.selected + 1).min(self.sessions.len() - 1);
                 }
                 OverlayAction::Consumed
             }
-            KeyCode::PageUp => {
+            KeyEvent {
+                code: KeyCode::PageUp, ..
+            } => {
                 self.selected = self.selected.saturating_sub(10);
                 if self.selected < self.scroll_offset {
                     self.scroll_offset = self.selected;
                 }
                 OverlayAction::Consumed
             }
-            KeyCode::PageDown => {
+            KeyEvent {
+                code: KeyCode::PageDown,
+                ..
+            } => {
                 if !self.sessions.is_empty() {
                     self.selected = (self.selected + 10).min(self.sessions.len() - 1);
                 }
