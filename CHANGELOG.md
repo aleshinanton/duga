@@ -8,6 +8,21 @@ This project has not published versioned releases yet. Entries below summarize t
 
 ### Added
 
+- **EPIC-32 Planning: Thinking Streaming — Display LLM Reasoning in TUI.**
+  Complete analysis and task breakdown for streaming LLM thinking/reasoning content
+  (Anthropic extended thinking, OpenAI o-series reasoning, DeepSeek reasoning_content)
+  to the duga TUI in real time. Key design decisions:
+  - SSE streaming via existing `event_sink` parameter — no `LlmClient` trait change needed.
+  - New `Event::LlmThinkingDelta` and `FrontendEvent::LlmThinkingDelta` types through
+    the full event pipeline (duga-events → duga-runtime → duga-tui).
+  - New `TranscriptItem::ThinkingBlock` variant with collapsible, dimmed-italic rendering.
+  - Session JSONL files capture thinking deltas for replay.
+  - Zero regression: non-streaming and non-thinking model paths are untouched.
+  - 10 tasks across 7 layers, ordered by dependency: events → MockLlm → provider
+    SSE (Anthropic + OpenAI) → frontend bridge → TUI model → TUI render → session
+    replay → E2E tests → config flag.
+  - Full epic at `backlog/epic-32-thinking-streaming.md`.
+
 - **EPIC-17: Terminal UI Frontend — Interactive ratatui-based TUI.**  A full terminal-based interface for the duga agent, connecting to the shared runtime without duplicating any harness wiring.  Key additions:
   - **`duga-tui` crate** — ratatui + crossterm binary with async event loop, raw mode / alternate screen lifecycle, bracketed paste, and focus tracking.
   - **App state machine** — `Idle → Running → Idle` with cancellation token support.  Event loop merges crossterm input (spawn_blocking thread), frontend bridge events, and 50ms ticks via `tokio::select!`.
@@ -25,6 +40,67 @@ This project has not published versioned releases yet. Entries below summarize t
   - **Cancellation** — `Ctrl+C` / `q` during a run cancels via `CancellationToken`.  Editor re-enables on run completion.
   - **TuiConfig** added to `duga-config::Config` (`ime_support`, `protocol_detection`, `tool_event_format`, `theme`, `keybindings`).
   - **Integration tests** — 32 e2e tests covering app state, transcript lifecycle, frontend event mapping, key routing, overlay lifecycle, tool event formats, confirmation dialogs, search, and editor behavior.  No live terminal or LLM required.
+
+- **EPIC-29 & EPIC-30: Core Skills Infrastructure + Tooling & Telegram Integration.**
+  Complete skills system allowing duga to use reusable skill modules (code-review,
+  graphify) with on-demand installation, listing, and removal. Key additions:
+  - **Skill manifest system** — skills are directories with `SKILL.md` manifests defining
+    name, description, location, and associated tools. Skills can override system prompts
+    and register custom tools.
+  - **`skill-install` / `skill-list` / `skill-remove` built-in tools** — LLM can install,
+    list, and remove skills at runtime. Skills are cloned from configured repositories
+    into the workspace.
+  - **Skill-aware system prompt** — installed skills inject their instructions into the
+    system prompt, giving the LLM access to specialized workflows.
+  - **Telegram integration** — skills are loaded per-chat from the workspace; installed
+    skills persist across messages. Skill installation/removal events are rendered in
+    the Telegram progress stream.
+  - **`remove-skill` tool** — allows the LLM to clean up unneeded skills, freeing context
+    window space.
+  - **`aux_roots` config** — additional read-only workspace paths (e.g. shared data dirs)
+    accessible to `read`/`write`/`edit`/`send_file` tools for cross-project skill data.
+
+- **EPIC-28: File Attachment Sending (Bot → User).**  The Telegram bot can now send files
+  back to the user via the `send_file` tool. Key additions:
+  - **`send_file` built-in tool** — sends workspace files to the Telegram chat as document
+    attachments. Supports workspace-relative and absolute paths (with Docker mount
+    remapping for container sandboxes).
+  - **Path resolution** — handles workspace root, `aux_roots`, and Docker sandbox mount
+    path translation (`/workspace` → host path).
+  - **File existence validation** — verifies the file exists before attempting to send,
+    with clear error messages for missing files.
+  - **Unit test coverage** — 10 `resolve_send_path` unit tests covering workspace paths,
+    absolute paths, aux_roots, and Docker mount scenarios.
+
+- **EPIC-17 TUI Follow-ups — session management, scrolling, and UX polish.**  Post-landing
+  enhancements to the Terminal UI based on real usage. Key additions and fixes:
+  - **Session manager** — `Ctrl+S` opens a session picker overlay listing all past
+    sessions (newest first) with relative timestamps. Sessions can be resumed (loads
+    transcript + conversation history for memory restoration) or deleted (with a
+    confirmation dialog). Session JSONL files are cleaned up on deletion.
+  - **Mouse scroll support** — trackpad and mouse wheel scrolling in the transcript
+    pane. Uses `?1003h` any-event tracking (Unix-only; Windows Console API handles this
+    natively). Small fixed 3-line scroll for trackpads, half-page for keyboard
+    PageUp/PageDown.
+  - **Tool block toggle-all** — Tab key now toggles all tool call blocks to a consistent
+    state (all expanded or all collapsed) instead of flipping each individually.
+  - **Expanded tool blocks** — show raw JSON args and execution output when expanded.
+    Failed tool calls auto-expand.
+  - **Live delegation status** — the status bar updates to reflect the active delegated
+    loop (e.g. "Running… [problem_solving]"). Delegation notices appear in the transcript.
+  - **Delegate tool fixes** — delegate calls are filtered from tool schemas in specialized
+    loops. The delegate tool is never dispatched outside SimpleReActLoop, preventing
+    confusing error messages.
+  - **Steering input** — type + Enter mid-run to inject guidance into the active agent
+    (non-blocking; editor stays active during runs).
+  - **Tool confirmation dialogs** — tools configured with `require_confirmation_for` show
+    Yes/No confirmation dialogs in the TUI before execution.
+  - **Confirmation dialog z-order** — confirmation dialogs now render on top of overlays
+    (e.g. session picker), not behind them.
+  - **Duplicate message fix** — the TUI no longer shows duplicate final answers when
+    streaming is enabled.
+  - **Runtime guard fix** — removed a dead runtime state guard that was blocking prompt
+    submission after agent runs.
 
 - **EPIC-31: Steering — Dynamic mid-loop guidance injection.**  Allows human users, tools, config rules, and the loop itself to inject guidance, observations, or constraints into the LLM context *during* a loop run (not just at startup). Key additions:
   - **Steering types** (`duga-core::steering`) — `SteeringContextEvent` (InjectGuidance, ResetTask, AdjustLimits, InjectToolResult), `SteeringControlEvent` (Cancel, ForceComplete, Reprompt), `SteeringSender`/`SteeringReceiver` async channel pair with two-pass priority drain (Cancel > ForceComplete > Reprompt).
@@ -73,6 +149,18 @@ This project has not published versioned releases yet. Entries below summarize t
 
 ### Fixed
 
+- **Memory pinned messages no longer accumulate across runs.** `restore_history()` now
+  clears the pinned set before repinning, preventing cross-run contamination where a
+  prior run's pinned task anchor would persist into the next run's context.
+- **Summarizer no longer truncates messages before summarization.** Removed an aggressive
+  truncation that was cutting messages at 500 chars before feeding them to the semantic
+  summarizer, causing loss of important context. Added comprehensive summarizer tests.
+- **UTF-8 character boundary clamping in chunk splitting.** `chunk_message()` now clamps
+  split points to valid UTF-8 character boundaries, preventing panics when a Telegram
+  message split lands in the middle of a multi-byte character.
+- **Test coverage expanded across 9 crates.** Added 71 new tests filling coverage gaps
+  in `duga-tools` (resolve_path, send_file resolve), `duga-core` (summarizer edge cases),
+  `duga-events` (redaction), `duga-sandbox` (executor), and `duga-telegram-bot`.
 - **`dispatch_tool_with_events` now includes retry and timeout handling** (was bare single-dispatch with no retries). Specialized loops (Verification, Decomposition, Search, ProblemSolving) previously had no transient error recovery or timeout protection on tool calls, while the main SimpleReActLoop did. Now retries up to `limits.retry_on_error` additional times on transient errors for tools that opt in via `Tool::retryable`, with each dispatch bounded by a 60s timeout (cancellation token still interrupts).
 - **Specialized loops now isolate context between independent iterations.**  Verification answer attempts, Decomposition subtasks, and Search cycles were all contaminating each other through shared `Memory` — attempt N saw all tool calls and LLM responses from attempts 0..N-1, breaking the independence contract.  Added `Memory::checkpoint()`/`Memory::restore()` and wrapped each independent iteration with save/restore.  Also fixed ProblemSolving to prefer the audit's clean `final_answer` over the noisy `accumulated_output` (which contained LLM meta-commentary and tool logs), and to use the audit answer (not raw execute_plan output) when refining tasks across iterations.
 - **Telegram bot no longer leaks raw tool-call XML to users.** Added `sanitize_tool_call_syntax()` in the Telegram formatter that strips `</tool_calls>`, `<invoke>`, and `<parameter>` XML fragments from final answers. Some LLMs (especially DeepSeek when primed with tool-call examples in context) generate text containing literal tool-call syntax that Telegram HTML parse mode would interpret as tags, leaking partial artifacts.
