@@ -961,14 +961,14 @@ impl App {
         // ── Editor ────────────────────────────────────────────────────
         self.render_editor(frame, main_layout[3]);
 
-        // ── Confirmation dialog ──────────────────────────────────────
-        if let Some(ref dialog) = self.active_confirm_dialog {
-            dialog.render(area, frame.buffer_mut());
-        }
-
         // ── Overlays ──────────────────────────────────────────────────
         if self.overlays.has_overlay() {
             self.overlays.render_all(frame.buffer_mut(), area);
+        }
+
+        // ── Confirmation dialog (on top of overlays) ─────────────────
+        if let Some(ref dialog) = self.active_confirm_dialog {
+            dialog.render(area, frame.buffer_mut());
         }
     }
 
