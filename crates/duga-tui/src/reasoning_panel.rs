@@ -133,20 +133,21 @@ impl ReasoningPanel {
         } else {
             let mut lines = Vec::new();
 
-            // Show block count if there's history
-            if self.blocks.len() > 1 {
-                lines.push(Line::from(Span::styled(
-                    format!("{} reasoning blocks in this session", self.blocks.len()),
-                    theme.text_dim_style(),
-                )));
-                lines.push(Line::from(""));
-            }
+            // Show all blocks (newest first) as a compact list
+            let max_w = inner.width.saturating_sub(2) as usize;
+            let max_lines = inner.height.saturating_sub(1) as usize;
 
-            // Show the most recent block
-            if let Some(block) = self.blocks.last() {
+            for (i, block) in self.blocks.iter().rev().enumerate() {
+                if lines.len() >= max_lines {
+                    lines.push(Line::from(Span::styled(
+                        format!("… and {} more", self.blocks.len().saturating_sub(i)),
+                        theme.text_dim_style(),
+                    )));
+                    break;
+                }
+
                 let wc = block.text.split_whitespace().count();
-
-                // Duration (frozen when completed, live when streaming)
+                let status = if block.is_streaming { "…" } else { "✓" };
                 let duration_str = if let Some(frozen) = block.duration_secs {
                     format!("{:.1}s", frozen)
                 } else if let Some(started) = block.started_at {
@@ -156,27 +157,28 @@ impl ReasoningPanel {
                     "—".into()
                 };
 
-                // Header with stats
+                // One-line summary per block
+                let summary = format!("{status} {wc}w | {duration_str}");
+                lines.push(Line::from(Span::styled(summary, theme.text_dim_style())));
+
+                // Preview: first non-empty line of reasoning text, truncated
+                let preview = block.text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                let preview = truncate_to_width(preview, max_w);
                 lines.push(Line::from(Span::styled(
-                    format!("{} words  |  {} duration", wc, duration_str),
-                    theme.text_dim_style(),
+                    format!("  {preview}"),
+                    theme.muted_italic_style(),
                 )));
-                lines.push(Line::from(""));
 
-                // First few lines of text
-                let truncated = truncate_to_lines(&block.text, inner.width as usize, inner.height.saturating_sub(6) as usize);
-                for line_text in truncated.lines() {
-                    lines.push(Line::from(Span::styled(
-                        line_text.to_string(),
-                        theme.muted_italic_style(),
-                    )));
-                }
-
-                if block.text.lines().count() > inner.height.saturating_sub(6) as usize {
-                    lines.push(Line::from(Span::styled(
-                        "…",
-                        theme.muted_style(),
-                    )));
+                // Show full text if this is the streaming block
+                if block.is_streaming && block.text.lines().count() > 1 {
+                    for extra in block.text.lines().skip(1).take(max_lines.saturating_sub(lines.len())) {
+                        if lines.len() >= max_lines { break; }
+                        let short = truncate_to_width(extra, max_w);
+                        lines.push(Line::from(Span::styled(
+                            format!("  {short}"),
+                            theme.muted_italic_style(),
+                        )));
+                    }
                 }
             }
 
@@ -188,33 +190,17 @@ impl ReasoningPanel {
     }
 }
 
-/// Truncate text to fit within given line count and width.
-fn truncate_to_lines(text: &str, max_width: usize, max_lines: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut result = String::new();
-    let mut count = 0;
-
-    for line in lines.iter().take(max_lines) {
-        let shortened = if line.len() > max_width {
-            let end = line
-                .char_indices()
-                .take(max_width.saturating_sub(1))
-                .last()
-                .map(|(i, _)| i + 1)
-                .unwrap_or(0);
-            format!("{}…", &line[..end])
-        } else {
-            line.to_string()
-        };
-        result.push_str(&shortened);
-        result.push('\n');
-        count += 1;
+/// Truncate a single line to fit within max_width chars, appending "…" if needed.
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_width {
+        text.to_string()
+    } else if max_width <= 1 {
+        "…".to_string()
+    } else {
+        let truncated: String = text.chars().take(max_width.saturating_sub(1)).collect();
+        format!("{truncated}…")
     }
-
-    if count < text.lines().count() {
-        result.push_str("…");
-    }
-    result
 }
 
 #[cfg(test)]
@@ -279,16 +265,15 @@ mod tests {
     }
 
     #[test]
-    fn truncate_to_lines_fits() {
-        let result = truncate_to_lines("short", 80, 5);
-        assert_eq!(result.trim(), "short");
+    fn truncate_to_width_fits() {
+        let result = truncate_to_width("short", 80);
+        assert_eq!(result, "short");
     }
 
     #[test]
-    fn truncate_to_lines_truncates() {
-        let long = "a\nb\nc\nd\ne\nf\ng\nh";
-        let result = truncate_to_lines(long, 80, 3);
-        let lines: Vec<&str> = result.lines().collect();
-        assert!(lines.len() <= 4, "should have at most 4 lines (3 + …)");
+    fn truncate_to_width_truncates() {
+        let result = truncate_to_width("this is a very long line of text", 15);
+        assert!(result.chars().count() <= 15);
+        assert!(result.ends_with('…'));
     }
 }
