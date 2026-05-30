@@ -59,7 +59,7 @@ impl ReasoningPanel {
         };
 
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
             .title(title)
             .border_style(Style::default().fg(theme.colors.border));
 

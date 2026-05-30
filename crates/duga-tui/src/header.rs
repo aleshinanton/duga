@@ -65,6 +65,16 @@ impl HeaderWidget {
         // Separator
         spans.push(Span::styled("│", Style::default().fg(theme.colors.muted)));
 
+        // Thinking level
+        let think_str = format!(" {:?} ", app.config.thinking_level);
+        spans.push(Span::styled(
+            think_str,
+            Style::default().fg(theme.colors.text_dim),
+        ));
+
+        // Separator
+        spans.push(Span::styled("│", Style::default().fg(theme.colors.muted)));
+
         // Status dot + label
         spans.push(Span::styled(
             format!(" {} {} ", status.1, status.0),

@@ -93,7 +93,7 @@ impl Overlay for ConfirmationDialog {
 
         // Render dialog box
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
             .title(format!(" {} ", self.title))
             .border_style(Style::default().fg(Color::Yellow))
             .style(Style::default().bg(Color::Rgb(30, 30, 30)));

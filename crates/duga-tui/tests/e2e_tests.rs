@@ -391,7 +391,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[test]
 fn test_key_quit_when_idle() {
     let (mut app, _rx) = make_test_app();
-    app.handle_key(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    app.handle_key(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
     assert!(app.should_quit());
 }
 

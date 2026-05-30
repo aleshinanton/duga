@@ -234,7 +234,7 @@ fn default_cancel_key() -> String {
     "ctrl-c".into()
 }
 fn default_quit_key() -> String {
-    "q".into()
+    "ctrl-q".into()
 }
 fn default_help_key() -> String {
     "f1".into()

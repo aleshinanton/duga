@@ -100,7 +100,7 @@ impl EventLog {
     /// Render the event log into the given area.
     pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
             .title(format!("📋 Event Log ({}) ", self.entries.len()))
             .border_style(Style::default().fg(theme.colors.border));
 

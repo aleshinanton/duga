@@ -110,7 +110,7 @@ impl Overlay for SearchOverlay {
             .style(input_style)
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
                     .border_style(Style::default().fg(Color::Cyan))
                     .title(format!(
                         " Search — {} of {} matches ",

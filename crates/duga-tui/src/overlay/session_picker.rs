@@ -87,7 +87,7 @@ impl Overlay for SessionPickerOverlay {
         let dialog_area = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
 
         let block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
             .title(" Sessions — ↑↓ navigate · Enter resume · Del delete · Esc cancel ")
             .border_style(Style::default().fg(Color::Cyan))
             .style(Style::default().bg(Color::Rgb(30, 30, 30)));

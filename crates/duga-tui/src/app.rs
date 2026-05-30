@@ -396,6 +396,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
             GlobalAction::Help => {
                 self.push_overlay(Box::new(overlay::help::HelpOverlay::new(
                     &self.keybindings,
+                    &self.theme,
                 )));
                 return;
             }
@@ -1262,7 +1263,19 @@ fn is_typing_key(key: &KeyEvent) -> bool {
     }
 
     fn render_transcript(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
-        crate::chat::ChatView::render(area, frame.buffer_mut(), &self.transcript, &self.theme);
+        use ratatui::widgets::Widget;
+        // Subtle border when Chat has focus
+        if self.focus == crate::focus::Focus::Chat {
+            let block = ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .border_style(ratatui::style::Style::default().fg(self.theme.colors.primary))
+                .title(" Chat ");
+            let inner = block.inner(area);
+            block.render(area, frame.buffer_mut());
+            crate::chat::ChatView::render(inner, frame.buffer_mut(), &self.transcript, &self.theme);
+        } else {
+            crate::chat::ChatView::render(area, frame.buffer_mut(), &self.transcript, &self.theme);
+        }
     }
 
     fn render_editor(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
@@ -1315,7 +1328,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
         let editor_widget = Paragraph::new(text)
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
                     .title(title)
                     .border_style(Style::default().fg(border_color)),
             )
@@ -1432,7 +1445,7 @@ plugins:
     #[test]
     fn global_quit_when_idle() {
         let mut app = make_app();
-        app.handle_key(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        app.handle_key(&KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         assert!(app.should_quit());
     }
 
