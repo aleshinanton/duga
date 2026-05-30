@@ -73,14 +73,14 @@ App::render() → multi-pane Layout:
   [Input 4 rows]
   [Footer 1 row]
 + Modal overlays on top
-+ Focus model routes keys to active pane
++ Focus model routes keys to active pane (Chat | Sidebar | Input | Overlay)
 ```
 
 ### Key Design Decisions
 
 1. **Sidebar is persistent, not a modal** — Reasoning and event log are always accessible, not hidden behind key combos. Collapse with `r`/`e` as needed, but the panel structure stays.
 
-2. **Focus model replaces ad-hoc key routing** — `Focus::Chat | Sidebar | Input` enum. Tab/Shift+Tab cycles. Dedicated shortcuts (`r`, `e`, `i`) jump directly. Esc returns to Chat. This eliminates the current problem where keybindings compete between editor and global actions.
+2. **Focus model replaces ad-hoc key routing** — `Focus::Chat | Sidebar | Input | Overlay` enum. Tab/Shift+Tab cycles Chat → Sidebar → Input. Overlay is a modal focus entered when a dialog opens (help, search, session picker, confirmation) and exited via Esc/action. Dedicated shortcuts (`r`, `e`, `i`) jump directly. Esc returns to Chat (or closes overlay). This eliminates the current problem where keybindings compete between editor and global actions.
 
 3. **Message cards use ratatui Block borders** — Each user/assistant/system message wrapped in a bordered block with role-colored title. This creates clear visual separation between turns without wasting vertical space.
 
@@ -177,7 +177,7 @@ tui:
 | TASK-33.6 | Sidebar split renders when enabled; empty state "No sidebar content" when panels are collapsed |
 | TASK-33.7 | Reasoning panel shows duration + token count; collapsed state shows summary; expanded shows full text |
 | TASK-33.8 | Event log pushes events; max 200 enforced; renders timestamp + severity icon + message; scroll within log |
-| TASK-33.9 | Tab cycles Focus::Chat → Sidebar → Input; Shift+Tab cycles reverse; dedicated shortcuts (i, r, e, Esc) work; keys route to correct widget |
+| TASK-33.9 | Tab cycles Chat → Sidebar → Input; Overlay is modal (entered on dialog open, exited on close, restores previous focus); dedicated shortcuts (i, r, e, Esc) work; keys route to correct widget |
 | TASK-33.10 | Error banner renders above input when error exists; dismiss key; auto-dismiss after 5s configurable |
 | TASK-33.11 | Character counter shows in input area; live updates on keystroke; color changes at threshold |
 | TASK-33.12 | Width < 120: sidebar hidden, overlay toggle works; width >= 120: sidebar persistent |
@@ -416,6 +416,10 @@ tui:
      - **Idle + Chat focus**: `j/k Scroll | g/G Top/Bottom | Tab→Input | i Input`
      - **Idle + Input focus**: `Enter Submit | Esc→Chat | ↑↓ History`
      - **Running**: `Ctrl+C Cancel | Ctrl+R Retry | s Steer`
+     - **Overlay** (help): `Esc Close | j/k Scroll`
+     - **Overlay** (search): `Esc Close | Enter Search | ↓↑ Results`
+     - **Overlay** (session picker): `Esc Close | Enter Select | d Delete`
+     - **Overlay** (confirmation): `y/n Confirm | Esc Cancel`
      - **Sidebar focus**: `j/k Scroll | Tab→Input | r Toggle Reason | e Toggle Events`
   3. Render as single `Paragraph` with dimmed text on subtle background
   4. Truncate with `…` on narrow terminals
@@ -592,36 +596,54 @@ tui:
 ### TASK-33.9: Focus model — keyboard navigation router
 
 - **Labels:** `layer/tui`, `priority/critical`
-- **Description:** Implement a `Focus` enum (`Chat | Sidebar | Input`) and a focus router that directs key events to the correct widget. Tab/Shift+Tab cycles through focus. Dedicated shortcuts: `i` → Input, `r` → Sidebar (reasoning toggle), `e` → Sidebar (events toggle), `Esc` → Chat. The focus model replaces the ad-hoc key routing in `App::handle_key()`.
+- **Description:** Implement a `Focus` enum (`Chat | Sidebar | Input | Overlay`) and a focus router that directs key events to the correct widget. Tab/Shift+Tab cycles through Chat → Sidebar → Input (skipping Overlay — overlays are modal, entered when a dialog opens and exited via Esc/action). Dedicated shortcuts: `i` → Input, `r` → Sidebar (reasoning toggle), `e` → Sidebar (events toggle), `Esc` → Chat (or closes overlay). The focus model replaces the ad-hoc key routing in `App::handle_key()`.
+
+Overlay focus covers all existing modal dialogs: help (F1), search (Ctrl+F), session picker (Ctrl+S), confirmation dialogs (tool execution, session deletion). When an overlay opens, focus transitions to `Focus::Overlay`; when it closes, focus returns to the previous value.
 - **Files affected:**
   - `crates/duga-tui/src/focus.rs` (new)
   - `crates/duga-tui/src/app.rs`
 - **Types involved:** `Focus`, `FocusRouter`
 - **Functions to implement:**
-  - `Focus::next()` — Tab order: Chat → Sidebar → Input → Chat
+  - `Focus::next()` — Tab order: Chat → Sidebar → Input → Chat (Overlay is modal, not in the cycle)
   - `Focus::prev()` — Shift+Tab: Chat → Input → Sidebar → Chat
+  - `Focus::enter_overlay()` — called when an overlay opens; saves previous focus, sets Overlay
+  - `Focus::exit_overlay()` — called when overlay closes; restores previous focus
   - `FocusRouter::route(key: &KeyEvent, focus: Focus, app: &mut App) -> bool` — returns true if consumed
 - **Dependencies:** None (pure logic, integrates with existing key handler)
 - **Implementation steps:**
-  1. Define `Focus` enum: `Chat, Sidebar, Input`
-  2. Implement `Focus::next()` and `Focus::prev()` as methods
-  3. Add `focus: Focus` field to `App`, default `Focus::Chat`
+  1. Define `Focus` enum: `Chat, Sidebar, Input, Overlay`
+  2. Add `previous_focus: Focus` field to track what to return to after overlay closes
+  3. Implement `Focus::next()` and `Focus::prev()` as methods (skip Overlay in cycle)
+  4. Implement `Focus::enter_overlay()` — stores current focus in `previous_focus`, sets `Overlay`
+  5. Implement `Focus::exit_overlay()` — restores from `previous_focus`
+  6. Add `focus: Focus` field to `App`, default `Focus::Chat`
   4. In `App::handle_key()`, add focus routing **before** existing overlay/global checks:
      ```
      // 0.5. Focus-mode keys (Tab, Shift+Tab, dedicated shortcuts)
+     // Only active when no overlay is showing
      match key {
-       Tab => self.focus = self.focus.next(),
-       Shift+Tab => self.focus = self.focus.prev(),
-       'i' if no overlay => self.focus = Focus::Input,
-       'r' if no overlay => {
+       Tab if !matches!(self.focus, Focus::Overlay) =>
+         self.focus = self.focus.next(),
+       Shift+Tab if !matches!(self.focus, Focus::Overlay) =>
+         self.focus = self.focus.prev(),
+       'i' if !self.overlays.has_overlay() => self.focus = Focus::Input,
+       'r' if !self.overlays.has_overlay() => {
          self.focus = Focus::Sidebar;
          self.sidebar.toggle_reasoning();
        }
-       'e' if no overlay => {
+       'e' if !self.overlays.has_overlay() => {
          self.focus = Focus::Sidebar;
          self.sidebar.toggle_events();
        }
-       Esc => self.focus = Focus::Chat,
+       Esc => {
+         if matches!(self.focus, Focus::Overlay) {
+           // Close top overlay, restore previous focus
+           self.overlays.pop();
+           self.focus = self.focus.exit_overlay();
+         } else {
+           self.focus = Focus::Chat;
+         }
+       }
        _ => {}
      }
      ```
@@ -629,34 +651,58 @@ tui:
      - `Focus::Chat` → scroll keys (j/k/g/G), forwarding to transcript scroll
      - `Focus::Sidebar` → scroll keys for event log + reasoning panel, r/e toggles
      - `Focus::Input` → all keys to editor (except global shortcuts)
+     - `Focus::Overlay` → all keys to active overlay (help/search/session picker/confirmation). Tab does NOT cycle out of overlay — overlays are modal.
   6. Global shortcuts (Ctrl+C, Ctrl+L, F1, q) still work regardless of focus
   7. Mouse click on a pane sets focus to that pane (future enhancement, not required)
+  8. When an overlay opens (F1 help, Ctrl+F search, Ctrl+S sessions, confirmation dialog):
+     - Call `self.focus.enter_overlay()` to save previous focus and set Overlay
+     - Push overlay onto `OverlayManager` as today
+     - All keys route to the overlay until it closes
+  9. When an overlay closes (Esc, action complete, dialog confirmed/denied):
+     - Pop overlay from `OverlayManager`
+     - Call `self.focus.exit_overlay()` to restore previous focus
+     - If no more overlays remain, focus is restored to the pre-overlay pane
 - **Edge cases:**
-  - Overlay visible → focus routing disabled, overlay captures all keys
-  - Running state → Tab still works, user can read sidebar while agent runs
+  - Overlay visible → `Focus::Overlay` is active; Tab/Shift+Tab do NOT change focus; dedicated shortcuts (i/r/e) are blocked; overlay captures all keys
+  - Overlay opens while in Sidebar focus → `enter_overlay()` saves Sidebar; `exit_overlay()` restores Sidebar
+  - Overlay opens while in Input focus → `enter_overlay()` saves Input; `exit_overlay()` restores Input (user can continue typing where they left off)
+  - Running state + overlay (e.g. confirmation dialog) → Tab still blocked; user must handle confirmation before returning to chat
+  - Running state + no overlay → Tab still works, user can read sidebar while agent runs
   - Sidebar hidden (responsive mode) → Focus::Sidebar skipped in Tab cycle
-- **Definition of Done:** Tab/Shift+Tab cycle focus correctly. Dedicated shortcuts jump to specific panes. Keys route to correct widget.
+  - Nested overlays (e.g. confirmation dialog on top of session picker) → top overlay has focus; closing top restores to the overlay below (still Overlay focus); closing last overlay restores to saved focus
+  - Overlay closes via action (not Esc) → `exit_overlay()` still called (e.g. session selected in picker → picker closes → focus returns)
+- **Definition of Done:** Tab/Shift+Tab cycle focus correctly through Chat/Sidebar/Input. Overlay focus is modal — entered on dialog open, exited on dialog close, restores previous focus. Dedicated shortcuts jump to specific panes. Keys route to correct widget.
 - **Acceptance criteria:**
   - Default focus is Chat
-  - Tab: Chat → Sidebar → Input → Chat
+  - Tab: Chat → Sidebar → Input → Chat (Overlay not in cycle)
   - Shift+Tab: Chat → Input → Sidebar → Chat
-  - `i` jumps to Input from any focus
-  - `Esc` returns to Chat from any focus
-  - `r`/`e` open sidebar + toggle panels + set focus to Sidebar
+  - `i` jumps to Input from any non-overlay focus
+  - `Esc` returns to Chat from any non-overlay focus; closes overlay + restores focus from Overlay
+  - `r`/`e` open sidebar + toggle panels + set focus to Sidebar (blocked during overlay)
   - Chat focus: j/k scrolls transcript
   - Sidebar focus: j/k scrolls event log / reasoning
   - Input focus: typing goes to editor
-  - Overlay open: focus routing disabled
+  - Help dialog (F1) → focus becomes Overlay → Esc closes, focus restored to previous
+  - Search dialog (Ctrl+F) → focus becomes Overlay → Esc closes, focus restored to previous
+  - Session picker (Ctrl+S) → focus becomes Overlay → session selected → picker closes, focus restored to previous
+  - Confirmation dialog → focus becomes Overlay → confirmed/denied → dialog closes, focus restored to previous
+  - Overlay open: Tab/Shift+Tab do NOT change focus; i/r/e shortcuts blocked
   - Sidebar hidden (width=0): focus skips Sidebar
   - All existing global shortcuts (Ctrl+C, Ctrl+L, F1, q) work in every focus mode
+  - `enter_overlay()` + `exit_overlay()` roundtrip preserves the exact previous focus
 - **Test plan:**
-  - unit: `Focus::next()` cycles correctly
-  - unit: `Focus::prev()` cycles correctly
-  - unit: Tab key routes to next focus
-  - unit: `i` key sets Focus::Input
-  - unit: `Esc` sets Focus::Chat
-  - unit: Key routing: j/k scroll chat in Chat mode, edit buffer in Input mode
-  - unit: Overlay blocks focus routing
+  - unit: `Focus::next()` cycles Chat → Sidebar → Input → Chat (skips Overlay)
+  - unit: `Focus::prev()` cycles Chat → Input → Sidebar → Chat
+  - unit: `enter_overlay()` saves current focus, sets Overlay
+  - unit: `exit_overlay()` restores saved focus
+  - unit: `enter_overlay()` from Chat → `exit_overlay()` → Chat
+  - unit: `enter_overlay()` from Input → `exit_overlay()` → Input
+  - unit: Tab key routes to next focus (blocked when Focus::Overlay)
+  - unit: `i` key sets Focus::Input (blocked when Focus::Overlay)
+  - unit: `Esc` sets Focus::Chat from any non-overlay; closes overlay + restores from Overlay
+  - unit: Key routing: j/k scroll chat in Chat mode, edit buffer in Input mode, overlay handler in Overlay mode
+  - unit: Overlay open: Tab/Shift+Tab no-ops; i/r/e shortcuts no-op
+  - unit: Nested overlays: closing top overlay stays in Overlay focus (lower overlay); closing last restores to saved focus
   - unit: Existing keybinding tests pass
 - **Estimated effort:** 4 hours
 - **Depends on:** TASK-33.6 (sidebar exists for focus to target)
@@ -784,7 +830,7 @@ tui:
   1. Add `responsive_breakpoint: Option<u16>` to `TuiConfig` (default 120)
   2. `LayoutManager::is_sidebar_visible()` method
   3. When sidebar hidden (width=0):
-     - Focus skips Sidebar in Tab cycle
+     - Focus skips Sidebar in Tab cycle (also skips Overlay in cycle, as always)
      - `r` key opens reasoning as a floating overlay (reuse overlay system)
      - `e` key opens event log as a floating overlay
      - Overlay positioned at right 40% of screen, full height
@@ -806,7 +852,7 @@ tui:
 - **Test plan:**
   - unit: `compute(119, 40, _)` → sidebar width = 0
   - unit: `compute(120, 40, _)` → sidebar width = 30
-  - unit: Focus skips Sidebar when hidden
+  - unit: Focus skips Sidebar when hidden; Overlay always skipped in cycle
   - unit: `r` key opens overlay when sidebar hidden
   - unit: Resize event transitions correctly
 - **Estimated effort:** 4 hours
@@ -880,7 +926,7 @@ tui:
   4. **Event log flow**: Submit prompt → run agent with tool calls → verify log entries appear
   5. **Reasoning panel flow**: Send thinking deltas → verify panel shows content
   6. **Error banner flow**: Trigger error → verify banner appears → auto-dismisses
-  7. **Focus navigation**: Verify Tab/Shift+Tab cycle, dedicated shortcuts, key routing
+  7. **Focus navigation**: Verify Tab/Shift+Tab cycle Chat → Sidebar → Input; verify Overlay focus on help/search/session picker/confirmation dialogs; verify `enter_overlay()`/`exit_overlay()` roundtrip; verify overlay blocks Tab and dedicated shortcuts
   8. **Session roundtrip**: Save session with new layout → load session → verify rendering
   9. **Responsive mode**: Change terminal size → verify sidebar visibility
   10. **Full agent run**: `test_config()` → `make_test_app()` → submit → streaming → tool calls → finish → verify transcript + log + banner
