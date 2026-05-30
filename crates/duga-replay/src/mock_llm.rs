@@ -70,8 +70,6 @@ mod tests {
     use super::*;
     use duga_events::{Event, StoredEvent};
     use duga_types::message::Message;
-    use duga_types::tool_call::ToolCall;
-
     fn make_llm_response_event(seq: u64, text: &str) -> StoredEvent {
         StoredEvent::new(
             seq,

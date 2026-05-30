@@ -4,7 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
 
 use crate::theme::Theme;
 use crate::transcript::{SystemLevel, Transcript, TranscriptItem};
@@ -127,7 +127,7 @@ fn push_card(out: &mut Vec<Line<'static>>, title: &str, body: &str, w: usize, th
     let border_style = Style::default().fg(theme.colors.border).bg(theme.colors.bg);
     let _title_style = Style::default().fg(theme.colors.primary).bg(theme.colors.bg);
 
-    let inner_w = w.saturating_sub(4);
+    let inner_w = w.saturating_sub(6);
 
     // Build the card content
     let card_body: Vec<Line<'static>> = if streaming && body.is_empty() {
@@ -151,7 +151,7 @@ fn push_card(out: &mut Vec<Line<'static>>, title: &str, body: &str, w: usize, th
     let mut tmp = Buffer::empty(Rect::new(0, 0, card_w, h));
 
     let widget = Paragraph::new(Text::from(card_body))
-        .block(Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).title(title).border_style(border_style))
+        .block(Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).padding(Padding::horizontal(1)).title(title).border_style(border_style))
         .style(style);
     widget.render(Rect::new(0, 0, card_w, h), &mut tmp);
 
@@ -183,7 +183,7 @@ fn push_card(out: &mut Vec<Line<'static>>, title: &str, body: &str, w: usize, th
 fn push_thinking(out: &mut Vec<Line<'static>>, text: &str, streaming: bool, expanded: bool, scroll: usize, w: usize, theme: &Theme) {
     let wc = text.split_whitespace().count();
     let title = if streaming { format!("Reasoning (streaming...)") } else { format!("Reasoning ({} words)", wc) };
-    let inner_w = w.saturating_sub(4);
+    let inner_w = w.saturating_sub(6);
     let lines_raw = crate::text::wrap_text(text, inner_w);
     let total = lines_raw.len();
 
@@ -209,7 +209,7 @@ fn push_thinking(out: &mut Vec<Line<'static>>, text: &str, streaming: bool, expa
     let cw = w as u16;
     let mut tmp = Buffer::empty(Rect::new(0, 0, cw, h));
     Paragraph::new(Text::from(body))
-        .block(Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).title(title).border_style(Style::default().fg(theme.colors.border)))
+        .block(Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).padding(Padding::horizontal(1)).title(title).border_style(Style::default().fg(theme.colors.border)))
         .render(Rect::new(0, 0, cw, h), &mut tmp);
 
     for row in 0..h {
@@ -233,7 +233,7 @@ fn push_assistant_with_thinking(
     w: usize, theme: &Theme,
 ) {
     let title = if as_ { "Assistant ..." } else { "Assistant" };
-    let inner_w = w.saturating_sub(4);
+    let inner_w = w.saturating_sub(6);
     let think_lines = crate::text::wrap_text(think, inner_w);
     let total = think_lines.len();
     let wc = think.split_whitespace().count();
@@ -281,7 +281,7 @@ fn push_assistant_with_thinking(
     let cw = w as u16;
     let mut tmp = Buffer::empty(Rect::new(0, 0, cw, h));
     Paragraph::new(Text::from(body))
-        .block(Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).title(title).border_style(Style::default().fg(theme.colors.border)))
+        .block(Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).padding(Padding::horizontal(1)).title(title).border_style(Style::default().fg(theme.colors.border)))
         .render(Rect::new(0, 0, cw, h), &mut tmp);
 
     for row in 0..h {

@@ -1265,18 +1265,20 @@ fn is_typing_key(key: &KeyEvent) -> bool {
 
     fn render_transcript(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
         use ratatui::widgets::Widget;
-        // Subtle border when Chat has focus
-        if self.focus == crate::focus::Focus::Chat {
-            let block = ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::ALL)
-                .border_style(ratatui::style::Style::default().fg(self.theme.colors.primary))
-                .title(" Chat ");
-            let inner = block.inner(area);
-            block.render(area, frame.buffer_mut());
-            crate::chat::ChatView::render(inner, frame.buffer_mut(), &self.transcript, &self.theme);
+        let focused = self.focus == crate::focus::Focus::Chat;
+        let border_color = if focused {
+            self.theme.colors.primary
         } else {
-            crate::chat::ChatView::render(area, frame.buffer_mut(), &self.transcript, &self.theme);
-        }
+            self.theme.colors.border
+        };
+        let block = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_set(ratatui::symbols::border::PLAIN)
+            .border_style(ratatui::style::Style::default().fg(border_color))
+            .title(" Chat ");
+        let inner = block.inner(area);
+        block.render(area, frame.buffer_mut());
+        crate::chat::ChatView::render(inner, frame.buffer_mut(), &self.transcript, &self.theme);
     }
 
     fn render_editor(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {

@@ -361,7 +361,7 @@ async fn test_read_prefers_workspace_over_aux() {
     let aux_dir = TempDir::new().unwrap();
     std::fs::write(aux_dir.path().join("dual.txt"), "aux data").unwrap();
 
-    let (ws_dir, ws, dp) = setup_with_aux(&aux_dir);
+    let (_ws_dir, ws, dp) = setup_with_aux(&aux_dir);
     let c = CancellationToken::new();
     let s = NullSink;
 

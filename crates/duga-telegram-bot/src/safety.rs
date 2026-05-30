@@ -60,7 +60,6 @@ impl TelegramConfirmationProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use duga_runtime::confirmation::ConfirmationRequest;
 
     #[test]

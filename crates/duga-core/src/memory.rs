@@ -957,7 +957,7 @@ mod tests {
 
         // Restore 5 messages — all would have been pinned in the
         // previous run's capture.
-        let mut restored: Vec<Message> = (0..5)
+        let restored: Vec<Message> = (0..5)
             .map(|i| {
                 let mut m = Message::user(format!("old msg {i}"));
                 m.pinned = true; // as they would come from previous LlmRequest

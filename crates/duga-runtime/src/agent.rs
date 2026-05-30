@@ -187,8 +187,6 @@ impl Summarizer for RuntimeSummarizer {
 mod tests {
     use super::*;
     use duga_config::SandboxMode;
-    use std::io::Write;
-
     fn make_config(mode: SandboxMode) -> duga_config::Config {
         let mode_str = match mode {
             SandboxMode::Host => "host",

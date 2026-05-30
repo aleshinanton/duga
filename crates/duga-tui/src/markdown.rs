@@ -356,7 +356,7 @@ mod tests {
         let text = render_markdown("**bold** text", 80);
         // Should have a span with BOLD modifier
         let spans: Vec<&Span> = text.lines.iter().flat_map(|l| l.spans.iter()).collect();
-        let has_bold = spans.iter().any(|s| {
+        let _has_bold = spans.iter().any(|s| {
             s.style.add_modifier(Modifier::BOLD).add_modifier(Modifier::BOLD)
                 == s.style.add_modifier(Modifier::BOLD)
         });
