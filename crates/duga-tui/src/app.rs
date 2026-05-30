@@ -1086,15 +1086,29 @@ impl App {
                             ),
                         ));
                         if *is_expanded {
-                            for wrapped in crate::text::wrap_text(text, available_width.saturating_sub(2)) {
-                                lines.push(Line::from(
-                                    Span::styled(
-                                        format!("  {wrapped}"),
-                                        Style::default()
-                                            .fg(Color::DarkGray)
-                                            .add_modifier(Modifier::ITALIC),
-                                    ),
-                                ));
+                            let think_lines = crate::text::wrap_text(text, available_width.saturating_sub(2));
+                            let max_think_lines = 8usize;
+                            let total = think_lines.len();
+                            let display: Vec<&str> = if total > max_think_lines {
+                                if *is_streaming {
+                                    think_lines.iter().skip(total - max_think_lines).map(|s| s.as_str()).collect()
+                                } else {
+                                    think_lines.iter().take(max_think_lines).map(|s| s.as_str()).collect()
+                                }
+                            } else {
+                                think_lines.iter().map(|s| s.as_str()).collect()
+                            };
+                            for w in &display {
+                                lines.push(Line::from(Span::styled(
+                                    format!("  {w}"),
+                                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                                )));
+                            }
+                            if total > max_think_lines {
+                                lines.push(Line::from(Span::styled(
+                                    format!("  ── {total} lines (Tab to collapse) ──"),
+                                    Style::default().fg(Color::Rgb(80, 80, 80)),
+                                )));
                             }
                         } else if !is_streaming {
                             let word_count = text.split_whitespace().count();
@@ -1149,13 +1163,35 @@ impl App {
                                     ),
                                 ));
                                 if *is_expanded {
-                                    for w in crate::text::wrap_text(think_text, available_width.saturating_sub(4)) {
+                                    let think_lines = crate::text::wrap_text(think_text, available_width.saturating_sub(4));
+                                    let max_think_lines = 8usize;
+                                    let total = think_lines.len();
+                                    let display: Vec<&str> = if total > max_think_lines {
+                                        // During streaming show the tail (latest reasoning);
+                                        // after completion show the head.
+                                        if *think_streaming {
+                                            think_lines.iter().skip(total - max_think_lines).map(|s| s.as_str()).collect()
+                                        } else {
+                                            think_lines.iter().take(max_think_lines).map(|s| s.as_str()).collect()
+                                        }
+                                    } else {
+                                        think_lines.iter().map(|s| s.as_str()).collect()
+                                    };
+                                    for w in &display {
                                         lines.push(Line::from(
                                             Span::styled(
                                                 format!("    {w}"),
                                                 Style::default()
                                                     .fg(Color::DarkGray)
                                                     .add_modifier(Modifier::ITALIC),
+                                            ),
+                                        ));
+                                    }
+                                    if total > max_think_lines {
+                                        lines.push(Line::from(
+                                            Span::styled(
+                                                format!("    ── {total} lines (Tab to collapse) ──"),
+                                                Style::default().fg(Color::Rgb(80, 80, 80)),
                                             ),
                                         ));
                                     }
