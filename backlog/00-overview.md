@@ -2,7 +2,7 @@
 
 **Repository:** `aleshinanton/duga`  
 **Generated:** 2026-05-10  
-**Updated:** 2026-05-25 (added EPIC-31 steering)  
+**Updated:** 2026-05-30 (added EPIC-33 TUI redesign)  
 **Spec version:** 1.2  
 **Plan version:** Implementation-Grade Execution Plan  
 
@@ -43,7 +43,9 @@
 | EPIC-29 | Core Skills Infrastructure | 6 | §5, §32 | 12 |
 | EPIC-30 | Skills Tooling & Telegram Integration | 6 | §5, §11, §24 | 11 |
 | EPIC-31 | Steering — Dynamic Mid-Loop Guidance | 12 | §5 (new) | 53 |
-| **Total** | | **221** | | **866.5** |
+| EPIC-32 | Thinking Streaming — LLM Reasoning in TUI | 10 | §5, §24, §32 | 41.5 |
+| EPIC-33 | TUI Redesign — Modern Professional Terminal UI | 14 | §5, §24, §32 | 53 |
+| **Total** | | **245** | | **961** |
 
 ---
 
@@ -494,3 +496,5 @@ status/ready (unblocked, can be picked up)
 | `epic-27-markdown-html-formatting.md` | EPIC-27: Markdown → Telegram HTML Conversion (5 tasks) |
 | `epic-28-file-attachment-send.md` | EPIC-28: File Attachment Sending (7 tasks) |
 | `epic-31-steering.md` | EPIC-31: Steering — Dynamic Mid-Loop Guidance Injection (12 tasks) |
+| `epic-32-thinking-streaming.md` | EPIC-32: Thinking Streaming — LLM Reasoning Display in TUI (10 tasks) |
+| `epic-33-tui-redesign.md` | EPIC-33: TUI Redesign — Modern, Dense, Professional Terminal UI (14 tasks) |
