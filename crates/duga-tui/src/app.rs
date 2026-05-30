@@ -1117,10 +1117,11 @@ impl App {
                         lines.push(Line::from(
                             Span::styled("You:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                         ));
-                        for wrapped in crate::text::wrap_text(text, available_width.saturating_sub(2)) {
-                            lines.push(Line::from(
+                        for wrapped in crate::text::wrap_text(text, available_width.saturating_sub(4)) {
+                            lines.push(Line::from(vec![
+                                ratatui::text::Span::raw("  "),
                                 Span::styled(wrapped, Style::default().fg(Color::White)),
-                            ));
+                            ]));
                         }
                     }
                     TranscriptItem::AssistantMessage {
@@ -1205,13 +1206,15 @@ impl App {
                             }
                         }
 
-                        // Render as markdown
+                        // Render markdown (indented under assistant heading)
                         let md = crate::markdown::render_markdown(
                             text,
-                            available_width.saturating_sub(2),
+                            available_width.saturating_sub(4),
                         );
                         for md_line in md.lines {
-                            lines.push(md_line.clone());
+                            let mut spans = vec![ratatui::text::Span::raw("  ")];
+                            spans.extend(md_line.spans.clone());
+                            lines.push(ratatui::text::Line::from(spans));
                         }
                     }
                     TranscriptItem::ToolCallBlock {
@@ -1328,6 +1331,13 @@ impl App {
                 }
                 // Blank line between items
                 lines.push(Line::from(""));
+                // Thin separator between blocks
+                lines.push(Line::from(
+                    Span::styled(
+                        "─".repeat(available_width.min(80) as usize),
+                        Style::default().fg(Color::Rgb(60, 60, 60)),
+                    ),
+                ));
                 idx += 1;
             }
         }
