@@ -93,6 +93,22 @@ impl ReasoningPanel {
         }
     }
 
+    /// Get word count and duration of the last block (for event log).
+    pub fn last_block_stats(&self) -> Option<(usize, String)> {
+        self.blocks.last().map(|b| {
+            let wc = b.text.split_whitespace().count();
+            let dur = if let Some(frozen) = b.duration_secs {
+                format!("{:.1}s", frozen)
+            } else if let Some(started) = b.started_at {
+                let elapsed = started.elapsed().as_secs_f64();
+                format!("{:.1}s", elapsed)
+            } else {
+                "—".into()
+            };
+            (wc, dur)
+        })
+    }
+
     /// Whether a block is currently streaming.
     pub fn is_streaming(&self) -> bool {
         self.blocks.last().map(|b| b.is_streaming).unwrap_or(false)

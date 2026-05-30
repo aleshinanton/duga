@@ -22,7 +22,7 @@ impl Default for SidebarState {
     fn default() -> Self {
         Self {
             reasoning_expanded: false,
-            events_expanded: false,
+            events_expanded: true,
         }
     }
 }

@@ -309,6 +309,17 @@ impl App {
         (transcript_height / 2).max(1)
     }
 
+    /// Log reasoning block completion to the event log.
+    fn log_reasoning_completed(&mut self) {
+        if let Some((wc, dur)) = self.reasoning_panel.last_block_stats() {
+            self.event_log.push(LogEntry::new(
+                LogLevel::Success,
+                "🧠",
+                format!("Reasoning done — {wc} words, {dur}"),
+            ));
+        }
+    }
+
 /// Returns true if the key event represents a typing/editing action
 /// (characters, backspace, delete, arrows, home, end) that should
 /// auto-switch focus to the Input pane.
@@ -634,6 +645,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 if self.transcript.thinking_is_streaming() {
                     self.transcript.finish_thinking();
                     self.reasoning_panel.finish_current_block();
+                    self.log_reasoning_completed();
                 }
                 // Check if we had streaming output before clearing it.
                 let had_streaming = self.transcript.streaming_index().is_some();
@@ -672,6 +684,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 if self.transcript.thinking_is_streaming() {
                     self.transcript.finish_thinking();
                     self.reasoning_panel.finish_current_block();
+                    self.log_reasoning_completed();
                 }
                 // Log to event log
                 self.event_log.push(LogEntry::new(
@@ -746,11 +759,20 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 if self.transcript.thinking_is_streaming() {
                     self.transcript.finish_thinking();
                     self.reasoning_panel.finish_current_block();
+                    self.log_reasoning_completed();
                 }
                 self.transcript.append_to_streaming(&delta);
             }
             FrontendEvent::LlmThinkingDelta { delta, .. } => {
                 if self.tui_config.show_thinking {
+                    // Log start of a new reasoning block
+                    if !self.transcript.thinking_is_streaming() {
+                        self.event_log.push(LogEntry::new(
+                            LogLevel::Info,
+                            "🧠",
+                            "Reasoning started".into(),
+                        ));
+                    }
                     // Track reasoning in the reasoning panel (sidebar)
                     self.reasoning_panel.add_block(&delta);
                     self.transcript.append_to_thinking(&delta);
