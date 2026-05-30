@@ -303,7 +303,7 @@ impl Transcript {
                 *scroll_offset = 0;
                 return false;
             }
-            let total_lines = text.lines().count().max(1);
+            let total_lines = crate::text::wrap_text(text, 80).len().max(1);
             let next = *scroll_offset + page_lines;
             if next >= total_lines {
                 // Wrapped around: collapse
