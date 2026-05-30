@@ -1,7 +1,7 @@
 //! Reasoning panel — shows thinking content in sidebar with duration tracking.
 //!
-//! Auto-expands during streaming, auto-collapses after completion.
-//! Shows duration (time from first to last thinking delta) and word count.
+//! Maintains a history of thinking blocks for the current session.
+//! On session reload, all blocks are populated from the transcript.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -12,15 +12,23 @@ use std::time::Instant;
 
 use crate::theme::Theme;
 
+/// A single reasoning/thinking block.
+#[derive(Clone, Debug)]
+pub struct ReasoningBlock {
+    pub text: String,
+    pub is_streaming: bool,
+    pub timestamp: Instant,
+    /// Duration in seconds, set when streaming completes.
+    pub duration_secs: Option<f64>,
+    /// When the block started (for live duration).
+    pub started_at: Option<Instant>,
+}
+
 /// Reasoning panel state.
 #[derive(Clone, Debug, Default)]
 pub struct ReasoningPanel {
-    /// When reasoning started (for duration).
-    pub started_at: Option<Instant>,
-    /// Whether reasoning completed.
-    pub completed: bool,
-    /// Frozen duration captured at finish time (stops the timer).
-    pub duration_secs: Option<f64>,
+    /// History of thinking blocks for this session.
+    pub blocks: Vec<ReasoningBlock>,
 }
 
 impl ReasoningPanel {
@@ -28,23 +36,71 @@ impl ReasoningPanel {
         Self::default()
     }
 
-    /// Mark reasoning as started.
-    pub fn start(&mut self) {
-        self.started_at = Some(Instant::now());
-        self.completed = false;
+    /// Start a new streaming thinking block (or append to current).
+    pub fn add_block(&mut self, delta: &str) {
+        if let Some(last) = self.blocks.last_mut() {
+            if last.is_streaming {
+                last.text.push_str(delta);
+                return;
+            }
+        }
+        // Start a new streaming block
+        let now = Instant::now();
+        self.blocks.push(ReasoningBlock {
+            text: delta.to_string(),
+            is_streaming: true,
+            timestamp: now,
+            duration_secs: None,
+            started_at: Some(now),
+        });
     }
 
-    /// Mark reasoning as completed.
-    pub fn finish(&mut self) {
-        self.duration_secs = self.started_at.map(|s| s.elapsed().as_secs_f64());
-        self.completed = true;
+    /// Mark the current streaming block as complete.
+    pub fn finish_current_block(&mut self) {
+        if let Some(last) = self.blocks.last_mut() {
+            if last.is_streaming {
+                last.is_streaming = false;
+                last.duration_secs = last.started_at.map(|s| s.elapsed().as_secs_f64());
+            }
+        }
+    }
+
+    /// Populate blocks from a transcript (for session reload).
+    pub fn load_from_transcript_items(&mut self, items: &[crate::transcript::TranscriptItem]) {
+        self.blocks.clear();
+        for item in items {
+            if let crate::transcript::TranscriptItem::ThinkingBlock {
+                text,
+                is_streaming,
+                timestamp,
+                started_at,
+                ..
+            } = item
+            {
+                let duration = if !is_streaming {
+                    started_at.map(|s| s.elapsed().as_secs_f64())
+                } else {
+                    None
+                };
+                self.blocks.push(ReasoningBlock {
+                    text: text.clone(),
+                    is_streaming: *is_streaming,
+                    timestamp: *timestamp,
+                    duration_secs: duration,
+                    started_at: *started_at,
+                });
+            }
+        }
+    }
+
+    /// Whether a block is currently streaming.
+    pub fn is_streaming(&self) -> bool {
+        self.blocks.last().map(|b| b.is_streaming).unwrap_or(false)
     }
 
     /// Reset state.
     pub fn reset(&mut self) {
-        self.started_at = None;
-        self.completed = false;
-        self.duration_secs = None;
+        self.blocks.clear();
     }
 
     /// Render the reasoning panel in the given area.
@@ -52,11 +108,10 @@ impl ReasoningPanel {
         &self,
         area: Rect,
         buf: &mut Buffer,
-        text: Option<&str>,
-        is_streaming: bool,
         theme: &Theme,
     ) {
-        let title = if is_streaming {
+        let streaming = self.is_streaming();
+        let title = if streaming {
             "🧠 Reasoning (streaming…) "
         } else {
             "🧠 Reasoning "
@@ -70,21 +125,31 @@ impl ReasoningPanel {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let content = match text {
-            Some(t) if t.is_empty() && is_streaming => {
-                vec![Line::from(Span::styled(
-                    "Waiting for reasoning…",
-                    theme.muted_italic_style(),
-                ))]
+        let content = if self.blocks.is_empty() {
+            vec![Line::from(Span::styled(
+                "No reasoning data",
+                theme.text_dim_style(),
+            ))]
+        } else {
+            let mut lines = Vec::new();
+
+            // Show block count if there's history
+            if self.blocks.len() > 1 {
+                lines.push(Line::from(Span::styled(
+                    format!("{} reasoning blocks in this session", self.blocks.len()),
+                    theme.text_dim_style(),
+                )));
+                lines.push(Line::from(""));
             }
-            Some(t) => {
-                let mut lines = Vec::new();
-                let wc = t.split_whitespace().count();
+
+            // Show the most recent block
+            if let Some(block) = self.blocks.last() {
+                let wc = block.text.split_whitespace().count();
 
                 // Duration (frozen when completed, live when streaming)
-                let duration_str = if let Some(frozen) = self.duration_secs {
+                let duration_str = if let Some(frozen) = block.duration_secs {
                     format!("{:.1}s", frozen)
-                } else if let Some(started) = self.started_at {
+                } else if let Some(started) = block.started_at {
                     let elapsed = started.elapsed().as_secs_f64();
                     format!("{:.1}s", elapsed)
                 } else {
@@ -99,7 +164,7 @@ impl ReasoningPanel {
                 lines.push(Line::from(""));
 
                 // First few lines of text
-                let truncated = truncate_to_lines(t, inner.width as usize, inner.height.saturating_sub(3) as usize);
+                let truncated = truncate_to_lines(&block.text, inner.width as usize, inner.height.saturating_sub(6) as usize);
                 for line_text in truncated.lines() {
                     lines.push(Line::from(Span::styled(
                         line_text.to_string(),
@@ -107,21 +172,15 @@ impl ReasoningPanel {
                     )));
                 }
 
-                if t.lines().count() > inner.height.saturating_sub(3) as usize {
+                if block.text.lines().count() > inner.height.saturating_sub(6) as usize {
                     lines.push(Line::from(Span::styled(
                         "…",
                         theme.muted_style(),
                     )));
                 }
+            }
 
-                lines
-            }
-            None => {
-                vec![Line::from(Span::styled(
-                    "No reasoning data",
-                    theme.text_dim_style(),
-                ))]
-            }
+            lines
         };
 
         let widget = Paragraph::new(content);
@@ -163,34 +222,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn starts_with_none_duration() {
+    fn new_panel_has_empty_blocks() {
         let panel = ReasoningPanel::new();
-        assert!(panel.started_at.is_none());
+        assert!(panel.blocks.is_empty());
+        assert!(!panel.is_streaming());
     }
 
     #[test]
-    fn start_sets_timestamp() {
+    fn add_block_creates_streaming_block() {
         let mut panel = ReasoningPanel::new();
-        panel.start();
-        assert!(panel.started_at.is_some());
-        assert!(!panel.completed);
+        panel.add_block("hello");
+        assert_eq!(panel.blocks.len(), 1);
+        assert!(panel.blocks[0].is_streaming);
+        assert!(panel.blocks[0].started_at.is_some());
+        assert!(panel.is_streaming());
     }
 
     #[test]
-    fn finish_marks_completed() {
+    fn add_block_appends_to_streaming() {
         let mut panel = ReasoningPanel::new();
-        panel.start();
-        panel.finish();
-        assert!(panel.completed);
+        panel.add_block("hello");
+        panel.add_block(" world");
+        assert_eq!(panel.blocks.len(), 1);
+        assert_eq!(panel.blocks[0].text, "hello world");
     }
 
     #[test]
-    fn reset_clears_state() {
+    fn finish_current_block_stops_streaming() {
         let mut panel = ReasoningPanel::new();
-        panel.start();
+        panel.add_block("reasoning");
+        assert!(panel.is_streaming());
+        panel.finish_current_block();
+        assert!(!panel.is_streaming());
+        assert!(!panel.blocks[0].is_streaming);
+        assert!(panel.blocks[0].duration_secs.is_some());
+    }
+
+    #[test]
+    fn reset_clears_all_blocks() {
+        let mut panel = ReasoningPanel::new();
+        panel.add_block("test");
+        panel.finish_current_block();
+        panel.add_block("test2");
+        assert_eq!(panel.blocks.len(), 2);
         panel.reset();
-        assert!(panel.started_at.is_none());
-        assert!(!panel.completed);
+        assert!(panel.blocks.is_empty());
+    }
+
+    #[test]
+    fn add_block_after_finish_creates_new_block() {
+        let mut panel = ReasoningPanel::new();
+        panel.add_block("first");
+        panel.finish_current_block();
+        panel.add_block("second");
+        assert_eq!(panel.blocks.len(), 2);
     }
 
     #[test]

@@ -57,8 +57,6 @@ impl SidebarView {
         buf: &mut Buffer,
         state: &SidebarState,
         reasoning: &ReasoningPanel,
-        reasoning_text: Option<&str>,
-        reasoning_is_streaming: bool,
         event_log: &EventLog,
         scroll_offset: usize,
         theme: &Theme,
@@ -79,8 +77,6 @@ impl SidebarView {
             reasoning.render(
                 reasoning_rect,
                 buf,
-                reasoning_text,
-                reasoning_is_streaming,
                 theme,
             );
         }

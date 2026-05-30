@@ -408,6 +408,15 @@ impl Transcript {
         (start, end)
     }
 
+    /// Return all thinking blocks (with their index).
+    pub fn thinking_blocks(&self) -> Vec<(usize, &TranscriptItem)> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| matches!(item, TranscriptItem::ThinkingBlock { .. }))
+            .collect()
+    }
+
     /// Clear all items.
     pub fn clear(&mut self) {
         self.items.clear();

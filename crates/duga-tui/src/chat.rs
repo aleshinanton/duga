@@ -36,27 +36,6 @@ impl ChatView {
         let mut idx = start;
         while idx < end {
             let item = &items[idx];
-            let next_is_assist = idx + 1 < items.len()
-                && matches!(item, TranscriptItem::ThinkingBlock { .. })
-                && matches!(items[idx + 1], TranscriptItem::AssistantMessage { .. });
-
-            if next_is_assist {
-                if let (
-                    TranscriptItem::ThinkingBlock { text: t, is_streaming: ts, is_expanded: te, scroll_offset: so, .. },
-                    TranscriptItem::AssistantMessage { text: a, is_streaming: as_, .. },
-                ) = (&items[idx], &items[idx + 1]) {
-                    push_assistant_with_thinking(&mut content, a, *as_, t, *ts, *te, *so, avail_w, theme);
-                    idx += 2;
-                    continue;
-                }
-            }
-
-            if idx > 0 && matches!(item, TranscriptItem::AssistantMessage { .. })
-                && matches!(items[idx - 1], TranscriptItem::ThinkingBlock { .. }) {
-                idx += 1;
-                continue;
-            }
-
             push_item(&mut content, item, avail_w, theme);
             idx += 1;
         }
@@ -226,78 +205,6 @@ fn push_thinking(out: &mut Vec<Line<'static>>, text: &str, streaming: bool, expa
     }
 }
 
-fn push_assistant_with_thinking(
-    out: &mut Vec<Line<'static>>,
-    assist: &str, as_: bool,
-    think: &str, ts: bool, te: bool, so: usize,
-    w: usize, theme: &Theme,
-) {
-    let title = if as_ { "Assistant ..." } else { "Assistant" };
-    let inner_w = w.saturating_sub(6);
-    let think_lines = crate::text::wrap_text(think, inner_w);
-    let total = think_lines.len();
-    let wc = think.split_whitespace().count();
-
-    let mut body: Vec<Line<'static>> = Vec::new();
-
-    if te {
-        // Expanded: show header + lines
-        body.push(Line::from(Span::styled(format!("Reasoning ({} words):", wc), theme.muted_italic_style())));
-        let start = if ts { total.saturating_sub(8) } else { so.min(total.saturating_sub(1)) };
-        for line in think_lines.iter().skip(start).take(8) {
-            body.push(Line::from(Span::styled(format!("  {line}"), theme.muted_italic_style())));
-        }
-        if total > 8 {
-            body.push(Line::from(Span::styled(
-                format!("  -- {}-{} of {total} --", start+1, (start+8).min(total)),
-                theme.muted_style(),
-            )));
-        }
-    } else if !ts {
-        // Collapsed: single line with word count + expand hint
-        body.push(Line::from(Span::styled(
-            format!("Reasoning ({} words) — Ctrl+R to expand", wc),
-            theme.text_dim_style(),
-        )));
-    } else {
-        // Streaming but collapsed (shouldn't normally happen)
-        body.push(Line::from(Span::styled("Reasoning…", theme.muted_italic_style())));
-    }
-
-    // separator
-    body.push(Line::from(Span::styled("─".repeat(inner_w.min(60)), Style::default().fg(theme.colors.border))));
-
-    if as_ && assist.is_empty() {
-        body.push(Line::from(Span::styled("...", theme.muted_italic_style())));
-    } else if !assist.is_empty() {
-        let md = crate::markdown::render_markdown(assist, inner_w);
-        for l in md.lines {
-            let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect();
-            body.push(Line::from(Span::styled(s, theme.text_style())));
-        }
-    }
-
-    let h = (body.len() + 2) as u16;
-    let cw = w as u16;
-    let mut tmp = Buffer::empty(Rect::new(0, 0, cw, h));
-    Paragraph::new(Text::from(body))
-        .block(Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).padding(Padding::horizontal(1)).title(title).border_style(Style::default().fg(theme.colors.border)))
-        .render(Rect::new(0, 0, cw, h), &mut tmp);
-
-    for row in 0..h {
-        let cells = &tmp.content[(row as usize * cw as usize)..];
-        let mut spans = vec![];
-        let mut j = 0;
-        while j < cw as usize && j < cells.len() {
-            let s = cells[j].style();
-            let mut run = String::new();
-            while j < cw as usize && j < cells.len() && cells[j].style() == s { run.push_str(cells[j].symbol()); j += 1; }
-            if !run.is_empty() { spans.push(Span::styled(run, s)); }
-        }
-        if !spans.is_empty() { out.push(Line::from(spans)); }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,13 +238,6 @@ mod tests {
         push_item(&mut v, &TranscriptItem::AssistantMessage { text: String::new(), timestamp: Instant::now(), is_streaming: true }, 40, &theme);
         let all: String = v.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
         assert!(all.contains("..."));
-    }
-    #[test]
-    fn think_in_assist() {
-        let theme = t(); let mut v = vec![];
-        push_assistant_with_thinking(&mut v, "ans", false, "thk", false, true, 0, 40, &theme);
-        let all: String = v.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
-        assert!(all.contains("Assistant")); assert!(all.contains("Reasoning")); assert!(all.contains("thk")); assert!(all.contains("ans"));
     }
     #[test]
     fn tool() {

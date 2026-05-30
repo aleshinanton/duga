@@ -633,7 +633,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 // Auto-finish any lingering thinking block
                 if self.transcript.thinking_is_streaming() {
                     self.transcript.finish_thinking();
-                    self.reasoning_panel.finish();
+                    self.reasoning_panel.finish_current_block();
                 }
                 // Check if we had streaming output before clearing it.
                 let had_streaming = self.transcript.streaming_index().is_some();
@@ -671,7 +671,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 // Auto-finish thinking if it was streaming
                 if self.transcript.thinking_is_streaming() {
                     self.transcript.finish_thinking();
-                    self.reasoning_panel.finish();
+                    self.reasoning_panel.finish_current_block();
                 }
                 // Log to event log
                 self.event_log.push(LogEntry::new(
@@ -745,16 +745,14 @@ fn is_typing_key(key: &KeyEvent) -> bool {
             FrontendEvent::LlmTokenDelta { delta, .. } => {
                 if self.transcript.thinking_is_streaming() {
                     self.transcript.finish_thinking();
-                    self.reasoning_panel.finish();
+                    self.reasoning_panel.finish_current_block();
                 }
                 self.transcript.append_to_streaming(&delta);
             }
             FrontendEvent::LlmThinkingDelta { delta, .. } => {
                 if self.tui_config.show_thinking {
-                    // Start reasoning panel timer on first delta
-                    if !self.transcript.thinking_is_streaming() {
-                        self.reasoning_panel.start();
-                    }
+                    // Track reasoning in the reasoning panel (sidebar)
+                    self.reasoning_panel.add_block(&delta);
                     self.transcript.append_to_thinking(&delta);
                 }
             }
@@ -896,6 +894,9 @@ fn is_typing_key(key: &KeyEvent) -> bool {
 
         self.transcript = new_transcript;
         self.scroll_to_bottom();
+
+        // Populate reasoning panel with thinking blocks from the session.
+        self.reasoning_panel.load_from_transcript_items(self.transcript.items());
 
         // Load conversation history for memory restoration on the next run.
         let history = load_conversation_history(
@@ -1207,28 +1208,11 @@ fn is_typing_key(key: &KeyEvent) -> bool {
 
         // ── Sidebar ───────────────────────────────────────────────────
         if pane_rects.sidebar.width > 0 {
-            // Get reasoning text from latest thinking block
-            let (reasoning_text, reasoning_streaming) = self
-                .transcript
-                .items()
-                .iter()
-                .rev()
-                .find_map(|item| {
-                    if let TranscriptItem::ThinkingBlock { text, is_streaming, .. } = item {
-                        Some((text.as_str(), *is_streaming))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(("", false));
-
             crate::sidebar::SidebarView::render(
                 pane_rects.sidebar,
                 frame.buffer_mut(),
                 &self.sidebar_state,
                 &self.reasoning_panel,
-                Some(reasoning_text),
-                reasoning_streaming,
                 &self.event_log,
                 self.sidebar_scroll,
                 &self.theme,
@@ -1273,7 +1257,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
         };
         let block = ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::ALL)
-            .border_set(ratatui::symbols::border::PLAIN)
+            .border_set(ratatui::symbols::border::ROUNDED)
             .border_style(ratatui::style::Style::default().fg(border_color))
             .title(" Chat ");
         let inner = block.inner(area);
