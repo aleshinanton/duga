@@ -63,6 +63,8 @@ pub enum TranscriptItem {
         /// Line offset for paginated view (0 = first page).
         scroll_offset: usize,
         timestamp: Instant,
+        /// When the first thinking delta arrived (for duration tracking).
+        started_at: Option<Instant>,
     },
 }
 
@@ -244,12 +246,14 @@ impl Transcript {
                 return;
             }
         }
+        let now = Instant::now();
         let item = TranscriptItem::ThinkingBlock {
             text: delta.to_string(),
             is_streaming: true,
             is_expanded: true,
             scroll_offset: 0,
-            timestamp: Instant::now(),
+            timestamp: now,
+            started_at: Some(now),
         };
         self.streaming_thinking_index = Some(self.items.len());
         self.items.push(item);
@@ -379,6 +383,31 @@ impl Transcript {
         &mut self.scroll
     }
 
+    /// Estimate the visible range of item indices for a given viewport.
+    /// Uses average lines per item type to skip off-screen items.
+    /// Returns (start_index, end_index) for items that could be visible.
+    pub fn estimate_visible_range(&self, viewport_height: u16) -> (usize, usize) {
+        let total = self.items.len();
+        if total == 0 {
+            return (0, 0);
+        }
+
+        // Avg lines per item type (border + content + separator)
+        let avg_lines: usize = 7;
+        let visible_items = (viewport_height as usize / avg_lines).max(1) + 3;
+
+        let max_offset = total.saturating_sub(1);
+        let start = if self.scroll.manual_scroll {
+            max_offset.saturating_sub(self.scroll.offset)
+        } else {
+            max_offset.saturating_sub(visible_items / 2)
+        };
+
+        let start = start.min(total.saturating_sub(1));
+        let end = (start + visible_items).min(total);
+        (start, end)
+    }
+
     /// Clear all items.
     pub fn clear(&mut self) {
         self.items.clear();
@@ -483,9 +512,10 @@ mod tests {
         t.append_to_thinking("Hello");
         t.append_to_thinking(" world");
         assert_eq!(t.len(), 1);
-        if let TranscriptItem::ThinkingBlock { text, is_streaming, .. } = &t.items[0] {
+        if let TranscriptItem::ThinkingBlock { text, is_streaming, started_at, .. } = &t.items[0] {
             assert_eq!(text, "Hello world");
             assert!(is_streaming);
+            assert!(started_at.is_some());
         } else { panic!("expected ThinkingBlock"); }
     }
 

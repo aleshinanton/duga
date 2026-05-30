@@ -108,6 +108,35 @@ pub struct TuiConfig {
     /// (but still logged in session JSONL). Defaults to true.
     #[serde(default = "default_true")]
     pub show_thinking: bool,
+    // ── EPIC-33: TUI Redesign config fields ────────────────────────
+    /// Whether to show the persistent sidebar.
+    #[serde(default = "default_true")]
+    pub show_sidebar: bool,
+    /// Sidebar width as percentage of terminal width (15-40).
+    #[serde(default = "default_sidebar_pct")]
+    pub sidebar_width_pct: u8,
+    /// Whether to show the footer shortcut bar.
+    #[serde(default = "default_true")]
+    pub show_footer: bool,
+    /// Whether to show the header bar.
+    #[serde(default = "default_true")]
+    pub show_header: bool,
+    /// Width threshold below which sidebar collapses (0 = always show).
+    #[serde(default = "default_responsive_breakpoint")]
+    pub responsive_breakpoint: u16,
+    /// Maximum characters in the input area.
+    #[serde(default = "default_input_max_chars")]
+    pub input_max_chars: usize,
+    /// Auto-dismiss timeout for error banners in seconds.
+    #[serde(default = "default_banner_auto_dismiss")]
+    pub banner_auto_dismiss_secs: u64,
+    /// Maximum number of entries in the event log.
+    #[serde(default = "default_event_log_max")]
+    pub event_log_max_entries: usize,
+    /// Whether to use the new multi-pane layout (EPIC-33). Set to false
+    /// to fall back to the original single-pane layout.
+    #[serde(default = "default_true")]
+    pub use_new_layout: bool,
 }
 
 impl Default for TuiConfig {
@@ -121,6 +150,15 @@ impl Default for TuiConfig {
             require_confirmation_for: Vec::new(),
             default_loop: default_loop_id(),
             show_thinking: true,
+            show_sidebar: true,
+            sidebar_width_pct: default_sidebar_pct(),
+            show_footer: true,
+            show_header: true,
+            responsive_breakpoint: default_responsive_breakpoint(),
+            input_max_chars: default_input_max_chars(),
+            banner_auto_dismiss_secs: default_banner_auto_dismiss(),
+            event_log_max_entries: default_event_log_max(),
+            use_new_layout: true,
         }
     }
 }
@@ -209,6 +247,26 @@ fn default_steer_key() -> String {
 }
 fn default_loop_id() -> String {
     "simple_react".into()
+}
+
+fn default_sidebar_pct() -> u8 {
+    25
+}
+
+fn default_responsive_breakpoint() -> u16 {
+    120
+}
+
+fn default_input_max_chars() -> usize {
+    500
+}
+
+fn default_banner_auto_dismiss() -> u64 {
+    5
+}
+
+fn default_event_log_max() -> usize {
+    200
 }
 
 fn default_confirmation_timeout() -> Duration {

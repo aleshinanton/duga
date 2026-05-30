@@ -235,6 +235,7 @@ pub fn load_session_transcript(path: &Path) -> Vec<TranscriptItem> {
                         is_expanded: false,
                         scroll_offset: 0,
                         timestamp: Instant::now(),
+                        started_at: None,
                     });
                 }
             }

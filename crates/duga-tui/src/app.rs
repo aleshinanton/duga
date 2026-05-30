@@ -19,11 +19,18 @@ use duga_types::error::AgentError;
 use duga_types::message::Message;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::banner::ErrorBanner;
 use crate::editor::{Editor, EditorAction};
+use crate::event_log::{EventLog, LogEntry, LogLevel};
+use crate::focus::{Focus, FocusRouter, FocusAction};
 use crate::keybindings::{GlobalAction, Keybindings};
+use crate::layout::LayoutManager;
 use crate::overlay::{self, Overlay, OverlayManager};
+use crate::reasoning_panel::ReasoningPanel;
 use crate::session::{SessionInfo, delete_session, list_sessions, load_conversation_history,
     load_session_transcript, upsert_session_index, touch_session};
+use crate::sidebar::SidebarState;
+use crate::theme::Theme;
 use crate::transcript::{SystemLevel, Transcript, TranscriptItem};
 
 // ── App state machine ──────────────────────────────────────────────────────
@@ -72,6 +79,28 @@ pub struct App {
     pub state: AppState,
     pub config: Config,
     pub tui_config: TuiConfig,
+
+    /// Current theme (from config).
+    pub theme: Theme,
+
+    /// Layout engine for computing pane rectangles.
+    pub layout_manager: LayoutManager,
+
+    /// Sidebar panel state.
+    pub sidebar_state: SidebarState,
+
+    /// Current keyboard focus.
+    pub focus: Focus,
+    /// Focus to restore after overlay closes.
+    pub previous_focus: Focus,
+
+    /// Error/warning/cancel banner.
+    pub banner: ErrorBanner,
+
+    /// Structured event log.
+    pub event_log: EventLog,
+    /// Reasoning panel state.
+    pub reasoning_panel: ReasoningPanel,
 
     /// Transcript of the conversation.
     pub transcript: Transcript,
@@ -139,11 +168,29 @@ impl App {
     ) -> Self {
         let keybindings = Keybindings::from_config(&tui_config.keybindings);
         let tool_event_format = tui_config.tool_event_format.clone();
+        let theme = Theme::from_config(&tui_config.theme.name);
+        let layout_manager = LayoutManager::new(
+            tui_config.sidebar_width_pct,
+            tui_config.show_header,
+            tui_config.show_sidebar,
+            tui_config.show_footer,
+            tui_config.responsive_breakpoint,
+        );
+        let banner_auto_dismiss_secs = tui_config.banner_auto_dismiss_secs;
+        let event_log_max = tui_config.event_log_max_entries;
 
         Self {
             state: AppState::Idle,
             config,
             tui_config,
+            theme,
+            layout_manager,
+            sidebar_state: SidebarState::new(),
+            focus: Focus::default(),
+            previous_focus: Focus::default(),
+            banner: ErrorBanner::new(banner_auto_dismiss_secs),
+            event_log: EventLog::new(event_log_max),
+            reasoning_panel: ReasoningPanel::new(),
             transcript: Transcript::new(),
             editor: Editor::new(),
             overlays: OverlayManager::new(),
@@ -172,7 +219,33 @@ impl App {
         }
     }
 
-    // ── Event handling ──────────────────────────────────────────────────
+    /// Push an overlay and transition focus to Overlay mode.
+    fn push_overlay(&mut self, overlay: Box<dyn Overlay>) {
+        if !self.overlays.has_overlay() {
+            self.previous_focus = self.focus;
+            self.focus = Focus::Overlay;
+        }
+        self.overlays.push(overlay);
+    }
+
+    /// Pop the topmost overlay. When no overlays remain, restore focus.
+    fn pop_overlay(&mut self) {
+        self.overlays.pop();
+        if !self.overlays.has_overlay() {
+            self.focus = self.previous_focus;
+        }
+    }
+
+    /// Show the sidebar as a floating overlay (for narrow terminals).
+    pub fn show_sidebar_overlay(&mut self) {
+        // This is a lightweight overlay that just signals the sidebar
+        // should be displayed. In practice, the sidebar panel content
+        // is still rendered in the main layout when overlay mode is active.
+        // For now, we use a placeholder overlay.
+        // Full implementation would create a dedicated SidebarOverlay.
+        self.focus = Focus::Sidebar;
+        self.sidebar_state.toggle_reasoning();
+    }
 
     /// Handle a single `AppEvent` and update internal state.
     pub fn update(&mut self, event: AppEvent) {
@@ -244,14 +317,50 @@ impl App {
 
         // 1. Overlays get first crack
         if self.overlays.has_overlay() {
-            if self.overlays.handle_key(key) {
+            let consumed = self.overlays.handle_key(key);
+            // If overlay was closed, restore focus
+            if !self.overlays.has_overlay() && self.focus == Focus::Overlay {
+                self.focus = self.previous_focus;
+            }
+            if consumed {
                 return;
             }
             // Escape always closes overlays
             if key.code == KeyCode::Esc {
-                self.overlays.pop();
+                self.pop_overlay();
                 return;
             }
+        }
+
+        // 1.5. Focus routing (Tab, dedicated shortcuts, Esc)
+        let sidebar_visible = self
+            .layout_manager
+            .is_sidebar_visible(self.term_width);
+        let has_overlay = self.overlays.has_overlay();
+        let is_running = matches!(self.state, AppState::Running { .. });
+
+        match FocusRouter::route(
+            key,
+            &mut self.focus,
+            sidebar_visible,
+            has_overlay,
+            is_running,
+        ) {
+            FocusAction::Consumed => return,
+            FocusAction::PassToOverlay => {
+                // Key should be handled by overlay (already done above when has_overlay is true).
+                // If overlay handler already consumed the key, we wouldn't be here.
+                // So pass through to global keybindings.
+            }
+            FocusAction::ToggleReasoning => {
+                self.sidebar_state.toggle_reasoning();
+                return;
+            }
+            FocusAction::ToggleEvents => {
+                self.sidebar_state.toggle_events();
+                return;
+            }
+            FocusAction::PassThrough => {}
         }
 
         // 2. Global keybindings
@@ -272,7 +381,7 @@ impl App {
                 return;
             }
             GlobalAction::Help => {
-                self.overlays.push(Box::new(overlay::help::HelpOverlay::new(
+                self.push_overlay(Box::new(overlay::help::HelpOverlay::new(
                     &self.keybindings,
                 )));
                 return;
@@ -280,7 +389,7 @@ impl App {
             GlobalAction::Search => {
                 let mut search = overlay::search::SearchOverlay::new();
                 search.search(&self.transcript);
-                self.overlays.push(Box::new(search));
+                self.push_overlay(Box::new(search));
                 return;
             }
             GlobalAction::ScrollUp => {
@@ -352,6 +461,17 @@ impl App {
 
         // 3. Additional global keys not in config
         match key {
+            // Enter dismisses banner (when no overlay)
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                if self.banner.is_active() && !self.overlays.has_overlay() {
+                    self.banner.dismiss();
+                    return;
+                }
+            }
             // Ctrl+S: open session picker
             KeyEvent {
                 code: KeyCode::Char('s'),
@@ -363,7 +483,7 @@ impl App {
                 let (delete_tx, delete_rx) = mpsc::unbounded_channel();
                 self.delete_session_rx = Some(delete_rx);
                 let sessions = list_sessions(&self.sessions_dir);
-                self.overlays.push(Box::new(
+                self.push_overlay(Box::new(
                     overlay::session_picker::SessionPickerOverlay::new(
                         sessions, tx, Some(delete_tx),
                     ),
@@ -377,6 +497,8 @@ impl App {
                 ..
             } => {
                 self.transcript.clear();
+                self.event_log.clear();
+                self.reasoning_panel.reset();
                 self.transcript.push(TranscriptItem::SystemMessage {
                     text: "Transcript cleared.".into(),
                     level: SystemLevel::Info,
@@ -407,8 +529,8 @@ impl App {
             _ => {}
         }
 
-        // 4. Pass key to editor
-        if !self.overlays.has_overlay() {
+        // 4. Pass key to editor (only when Input has focus)
+        if !self.overlays.has_overlay() && self.focus == Focus::Input {
             match self.editor.handle_key(key) {
                 EditorAction::Submit => {
                     if matches!(self.state, AppState::Running { .. }) {
@@ -433,6 +555,7 @@ impl App {
                 // Auto-finish any lingering thinking block
                 if self.transcript.thinking_is_streaming() {
                     self.transcript.finish_thinking();
+                    self.reasoning_panel.finish();
                 }
                 // Check if we had streaming output before clearing it.
                 let had_streaming = self.transcript.streaming_index().is_some();
@@ -471,6 +594,12 @@ impl App {
                 if self.transcript.thinking_is_streaming() {
                     self.transcript.finish_thinking();
                 }
+                // Log to event log
+                self.event_log.push(LogEntry::new(
+                    LogLevel::Info,
+                    "●",
+                    format!("Tool: {tool_name} started — {description}"),
+                ));
                 let is_expanded = match self.tool_event_format {
                     duga_config::ToolEventFormat::Full => true,
                     duga_config::ToolEventFormat::Collapsed => false,
@@ -499,6 +628,19 @@ impl App {
                 output,
                 ..
             } => {
+                // Log to event log
+                let (level, icon) = if success {
+                    (LogLevel::Success, "✓")
+                } else {
+                    (LogLevel::Error, "✗")
+                };
+                self.event_log.push(LogEntry::new(
+                    level,
+                    icon,
+                    format!("Tool: {tool_name} {} — {description}",
+                        if success { "ok" } else { "failed" }),
+                ));
+
                 // Update existing tool block if found
                 self.transcript.update_tool_call(&tool_call_id, success, output.clone());
                 // If FinalOnly mode and tool wasn't shown during running, show now
@@ -524,20 +666,31 @@ impl App {
             FrontendEvent::LlmTokenDelta { delta, .. } => {
                 if self.transcript.thinking_is_streaming() {
                     self.transcript.finish_thinking();
+                    self.reasoning_panel.finish();
                 }
                 self.transcript.append_to_streaming(&delta);
             }
             FrontendEvent::LlmThinkingDelta { delta, .. } => {
                 if self.tui_config.show_thinking {
+                    // Start reasoning panel timer on first delta
+                    if !self.transcript.thinking_is_streaming() {
+                        self.reasoning_panel.start();
+                    }
                     self.transcript.append_to_thinking(&delta);
                 }
             }
             FrontendEvent::Error { message } => {
+                self.event_log.push(LogEntry::new(
+                    LogLevel::Error,
+                    "✗",
+                    message.clone(),
+                ));
                 self.transcript.push(TranscriptItem::SystemMessage {
-                    text: message,
+                    text: message.clone(),
                     level: SystemLevel::Error,
                     timestamp: Instant::now(),
                 });
+                self.banner.show(crate::banner::BannerLevel::Error, message);
             }
             FrontendEvent::LoopDelegated {
                 from,
@@ -545,6 +698,11 @@ impl App {
                 reason,
                 depth,
             } => {
+                self.event_log.push(LogEntry::new(
+                    LogLevel::Info,
+                    "→",
+                    format!("{from} → {to}: {reason}"),
+                ));
                 // Update status bar to show the new loop.
                 if let AppState::Running { ref mut loop_name, .. } = self.state {
                     *loop_name = to.clone();
@@ -561,6 +719,11 @@ impl App {
                 before_tokens,
                 after_tokens,
             } => {
+                self.event_log.push(LogEntry::new(
+                    LogLevel::Warning,
+                    "⚠",
+                    format!("Memory: {before_tokens}→{after_tokens} tokens"),
+                ));
                 self.transcript.push(TranscriptItem::MemoryNotice {
                     before_tokens,
                     after_tokens,
@@ -571,6 +734,9 @@ impl App {
     }
 
     pub fn handle_tick(&mut self) {
+        // Auto-dismiss banner
+        self.banner.tick();
+
         // Poll for a session selection from the picker overlay.
         if let Some(ref mut rx) = self.session_result_rx {
             if let Ok(id) = rx.try_recv() {
@@ -767,6 +933,10 @@ impl App {
                     level: SystemLevel::Warn,
                     timestamp: Instant::now(),
                 });
+                self.banner.show(
+                    crate::banner::BannerLevel::Cancel,
+                    "Request cancelled. Press Ctrl+R to retry.".into(),
+                );
                 let (run_id, loop_name) = if let AppState::Running { run_id, loop_name, .. } = &self.state {
                     (*run_id, loop_name.clone())
                 } else {
@@ -910,7 +1080,7 @@ impl App {
                         }
                         // Close the session picker overlay after delete confirmation.
                         if self.overlays.has_overlay() {
-                            self.overlays.pop();
+                            self.pop_overlay();
                         }
                         // Clean up the delete channel since the overlay was closed.
                         self.delete_session_rx = None;
@@ -933,67 +1103,84 @@ impl App {
 
     /// Render the entire TUI.
     pub fn render(&self, frame: &mut ratatui::Frame) {
-        use ratatui::layout::{Constraint, Direction, Layout};
-        use ratatui::style::{Color, Style};
         use ratatui::text::{Line, Span};
         use ratatui::widgets::Paragraph;
 
         let area = frame.area();
 
-        // Layout: [Status bar] [Transcript area] [Separator] [Editor area]
-        let main_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),  // Status bar
-                Constraint::Min(5),     // Transcript (fills remaining)
-                Constraint::Length(1),  // Separator
-                Constraint::Length(3),  // Editor area (min 3 lines)
-            ])
-            .split(area);
+        // Compute pane rects from the layout manager
+        let pane_rects = self.layout_manager.compute(
+            area.width,
+            area.height,
+            self.banner.is_active(),
+        );
 
-        // ── Status bar ────────────────────────────────────────────────
-        let status_text = match &self.state {
-            AppState::Idle => Span::styled(
-                " duga-tui | Idle ",
-                Style::default().fg(Color::Black).bg(Color::Green),
-            ),
-            AppState::Running {
-                run_id,
-                cancel_requested,
-                loop_name,
-            } => {
-                let label = if *cancel_requested {
-                    format!(" duga-tui | Cancelling… [{loop_name}] [run #{run_id}] ")
-                } else {
-                    format!(" duga-tui | Running… [{loop_name}] [run #{run_id}] ")
-                };
-                Span::styled(
-                    label,
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Yellow),
-                )
-            }
-        };
-
-        let status = Paragraph::new(Line::from(status_text))
-            .style(Style::default().bg(Color::Rgb(40, 40, 40)));
-        frame.render_widget(status, main_layout[0]);
+        // ── Status bar (header area) ──────────────────────────────────
+        if pane_rects.header.height > 0 {
+            self.render_header(frame, pane_rects.header);
+        }
 
         // ── Transcript ────────────────────────────────────────────────
-        self.render_transcript(frame, main_layout[1]);
+        self.render_transcript(frame, pane_rects.chat);
+
+        // ── Sidebar ───────────────────────────────────────────────────
+        if pane_rects.sidebar.width > 0 {
+            // Get reasoning text from latest thinking block
+            let (reasoning_text, reasoning_streaming) = self
+                .transcript
+                .items()
+                .iter()
+                .rev()
+                .find_map(|item| {
+                    if let TranscriptItem::ThinkingBlock { text, is_streaming, .. } = item {
+                        Some((text.as_str(), *is_streaming))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(("", false));
+
+            crate::sidebar::SidebarView::render(
+                pane_rects.sidebar,
+                frame.buffer_mut(),
+                &self.sidebar_state,
+                &self.reasoning_panel,
+                Some(reasoning_text),
+                reasoning_streaming,
+                &self.event_log,
+                &self.theme,
+            );
+        }
+
+        // ── Banner ────────────────────────────────────────────────────
+        if pane_rects.banner.height > 0 {
+            self.banner.render(pane_rects.banner, frame.buffer_mut(), &self.theme);
+        }
 
         // ── Separator ─────────────────────────────────────────────────
-        let sep = Paragraph::new(Line::from(
-            Span::styled(
-                "─".repeat(main_layout[2].width as usize),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ));
-        frame.render_widget(sep, main_layout[2]);
+        let sep_area = ratatui::layout::Rect::new(
+            pane_rects.chat.x,
+            pane_rects.input.y.saturating_sub(1),
+            area.width,
+            1,
+        );
+        if sep_area.y < area.height {
+            let sep = Paragraph::new(Line::from(
+                Span::styled(
+                    "─".repeat(area.width as usize),
+                    self.theme.separator_style(),
+                ),
+            ));
+            frame.render_widget(sep, sep_area);
+        }
 
-        // ── Editor ────────────────────────────────────────────────────
-        self.render_editor(frame, main_layout[3]);
+        // ── Editor (input area) ───────────────────────────────────────
+        self.render_editor(frame, pane_rects.input);
+
+        // ── Footer ───────────────────────────────────────────────────
+        if pane_rects.footer.height > 0 {
+            crate::footer::FooterView::render(pane_rects.footer, frame.buffer_mut(), self, &self.theme);
+        }
 
         // ── Overlays ──────────────────────────────────────────────────
         if self.overlays.has_overlay() {
@@ -1006,391 +1193,59 @@ impl App {
         }
     }
 
+    fn render_header(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        crate::header::HeaderWidget::render(area, frame.buffer_mut(), self, &self.theme);
+    }
+
     fn render_transcript(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
-        use ratatui::style::{Color, Modifier, Style};
-        use ratatui::text::{Line, Span, Text};
-        use ratatui::widgets::{Block, Paragraph, Wrap};
-
-        let items = self.transcript.items();
-        let scroll = self.transcript.scroll();
-
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        let available_width = area.width as usize;
-
-        // If empty, show welcome message
-        if items.is_empty() {
-            lines.push(Line::from(
-                Span::styled(
-                    "Welcome to duga TUI! Type a task or question below and press Enter.",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ));
-            lines.push(Line::from(""));
-            lines.push(Line::from(
-                Span::styled(
-                    "F1: help  |  Ctrl+F: search  |  Ctrl+S: sessions  |  Ctrl+C: cancel  |  q: quit",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ));
-        } else {
-            let mut idx = 0;
-            while idx < items.len() {
-                let item = &items[idx];
-                match item {
-                    TranscriptItem::SystemMessage { text, level, .. } => {
-                        let color = match level {
-                            SystemLevel::Info => Color::Gray,
-                            SystemLevel::Warn => Color::Yellow,
-                            SystemLevel::Error => Color::Red,
-                        };
-                        lines.push(Line::from(
-                            Span::styled(
-                                format!("── {text}"),
-                                Style::default().fg(color),
-                            ),
-                        ));
-                    }
-                    TranscriptItem::ThinkingBlock {
-                        text,
-                        is_streaming,
-                        is_expanded,
-                        scroll_offset,
-                        ..
-                    } => {
-                        // Peek ahead: if followed by AssistantMessage, render
-                        // the thinking block nested under the assistant.
-                        let has_next_assistant = idx + 1 < items.len()
-                            && matches!(items[idx + 1], TranscriptItem::AssistantMessage { .. });
-
-                        if has_next_assistant {
-                            // Skip standalone rendering — will be rendered
-                            // together with the assistant message below.
-                            idx += 1;
-                            continue;
-                        }
-
-                        // Standalone thinking block (no following assistant).
-                        let prefix = if *is_streaming { "⟳ " } else { "🧠" };
-                        let wc = text.split_whitespace().count();
-                        let think_lines = crate::text::wrap_text(text, available_width.saturating_sub(2));
-                        let total = think_lines.len();
-                        if *is_expanded {
-                            lines.push(Line::from(
-                                Span::styled(
-                                    format!("{prefix} Thinking ({} words):", wc),
-                                    Style::default()
-                                        .fg(Color::DarkGray)
-                                        .add_modifier(Modifier::ITALIC),
-                                ),
-                            ));
-                            let start = (*scroll_offset).min(total.saturating_sub(1));
-                            let display: Vec<&str> = think_lines.iter()
-                                .skip(start)
-                                .take(8)
-                                .map(|s| s.as_str())
-                                .collect();
-                            for w in &display {
-                                lines.push(Line::from(Span::styled(
-                                    format!("  {w}"),
-                                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
-                                )));
-                            }
-                            if total > 8 {
-                                let end = (start + display.len()).min(total);
-                                let page_start = start + 1;
-                                lines.push(Line::from(Span::styled(
-                                    format!("  ── {page_start}-{end} of {total} (Ctrl+O) ──"),
-                                    Style::default().fg(Color::Rgb(80, 80, 80)),
-                                )));
-                            }
-                        } else if !is_streaming {
-                            let word_count = text.split_whitespace().count();
-                            lines.push(Line::from(
-                                Span::styled(
-                                    format!("{prefix} Thinking: ({} words — Tab to expand)", word_count),
-                                    Style::default().fg(Color::DarkGray),
-                                ),
-                            ));
-                        }
-                    }
-                    TranscriptItem::UserMessage { text, .. } => {
-                        lines.push(Line::from(
-                            Span::styled("You:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                        ));
-                        for wrapped in crate::text::wrap_text(text, available_width.saturating_sub(4)) {
-                            lines.push(Line::from(vec![
-                                ratatui::text::Span::raw("  "),
-                                Span::styled(wrapped, Style::default().fg(Color::White)),
-                            ]));
-                        }
-                    }
-                    TranscriptItem::AssistantMessage {
-                        text,
-                        is_streaming,
-                        ..
-                    } => {
-                        let prefix = if *is_streaming { "⟳ " } else { "🤖" };
-                        lines.push(Line::from(
-                            Span::styled(
-                                format!("{prefix} Assistant:"),
-                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-                            ),
-                        ));
-
-                        // Check if the previous item is a ThinkingBlock — if so,
-                        // render it nested here under the assistant label.
-                        if idx > 0 {
-                            if let TranscriptItem::ThinkingBlock {
-                                text: think_text,
-                                is_streaming: think_streaming,
-                                is_expanded,
-                                scroll_offset,
-                                ..
-                            } = &items[idx - 1]
-                            {
-                                let tp = if *think_streaming { "⟳ " } else { "🧠" };
-                                let wc = think_text.split_whitespace().count();
-                                let think_lines = crate::text::wrap_text(think_text, available_width.saturating_sub(4));
-                                let total = think_lines.len();
-
-                                if *is_expanded {
-                                    lines.push(Line::from(
-                                        Span::styled(
-                                            format!("  {tp} Thinking ({} words):", wc),
-                                            Style::default()
-                                                .fg(Color::DarkGray)
-                                                .add_modifier(Modifier::ITALIC),
-                                        ),
-                                    ));
-                                    // During streaming, auto-follow the tail.
-                                    // After completion, use scroll_offset for manual navigation.
-                                    let start = if *think_streaming {
-                                        total.saturating_sub(8)
-                                    } else {
-                                        (*scroll_offset).min(total.saturating_sub(1))
-                                    };
-                                    let display: Vec<&str> = think_lines.iter()
-                                        .skip(start)
-                                        .take(8)
-                                        .map(|s| s.as_str())
-                                        .collect();
-                                    for w in &display {
-                                        lines.push(Line::from(
-                                            Span::styled(
-                                                format!("    {w}"),
-                                                Style::default()
-                                                    .fg(Color::DarkGray)
-                                                    .add_modifier(Modifier::ITALIC),
-                                            ),
-                                        ));
-                                    }
-                                    if total > 8 {
-                                        let end = (start + display.len()).min(total);
-                                        let page_start = start + 1;
-                                        lines.push(Line::from(
-                                            Span::styled(
-                                                format!("    ── {page_start}-{end} of {total} (Ctrl+O) ──"),
-                                                Style::default().fg(Color::Rgb(80, 80, 80)),
-                                            ),
-                                        ));
-                                    }
-                                } else if !think_streaming {
-                                    let wc = think_text.split_whitespace().count();
-                                    lines.push(Line::from(
-                                        Span::styled(
-                                            format!("  {tp} Thinking: ({} words — Tab to expand)", wc),
-                                            Style::default().fg(Color::DarkGray),
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-
-                        // Render markdown (indented under assistant heading)
-                        let md = crate::markdown::render_markdown(
-                            text,
-                            available_width.saturating_sub(4),
-                        );
-                        for md_line in md.lines {
-                            let mut spans = vec![ratatui::text::Span::raw("  ")];
-                            spans.extend(md_line.spans.clone());
-                            lines.push(ratatui::text::Line::from(spans));
-                        }
-                    }
-                    TranscriptItem::ToolCallBlock {
-                        tool_name,
-                        description,
-                        raw_args,
-                        is_running,
-                        is_success,
-                        is_expanded,
-                        output,
-                        ..
-                    } => {
-                        let icon = if *is_running {
-                            "⟳"
-                        } else {
-                            match is_success {
-                                Some(true) => "✓",
-                                Some(false) => "✗",
-                                None => "?",
-                            }
-                        };
-                        let status_color = if *is_running {
-                            Color::Yellow
-                        } else {
-                            match is_success {
-                                Some(true) => Color::Green,
-                                Some(false) => Color::Red,
-                                None => Color::Gray,
-                            }
-                        };
-
-                        lines.push(Line::from(
-                            Span::styled(
-                                format!("{icon} {tool_name} — {description}"),
-                                Style::default()
-                                    .fg(status_color)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ));
-
-                        if *is_expanded && !*is_running {
-                            // Show raw args (the actual command/parameters)
-                            if let Some(args) = raw_args {
-                                for arg_line in args.lines() {
-                                    lines.push(Line::from(
-                                        Span::styled(
-                                            format!("   args: {arg_line}"),
-                                            Style::default().fg(Color::DarkGray),
-                                        ),
-                                    ));
-                                }
-                            }
-                            // Show result status
-                            lines.push(Line::from(
-                                Span::styled(
-                                    format!("   result: {}",
-                                        match is_success {
-                                            Some(true) => "Success",
-                                            Some(false) => "Failed",
-                                            None => "Unknown",
-                                        }
-                                    ),
-                                    Style::default().fg(Color::DarkGray),
-                                ),
-                            ));
-                            // Show output on failure (or always if present)
-                            if let Some(out) = output {
-                                if !out.is_empty() {
-                                    lines.push(Line::from(
-                                        Span::styled("   output:", Style::default().fg(Color::DarkGray)),
-                                    ));
-                                    for out_line in out.lines().take(20) {
-                                        lines.push(Line::from(
-                                            Span::styled(
-                                                format!("     {out_line}"),
-                                                Style::default().fg(Color::DarkGray),
-                                            ),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                        if *is_running {
-                            lines.push(Line::from(
-                                Span::styled("   Running…", Style::default().fg(Color::Yellow)),
-                            ));
-                        }
-                    }
-                    TranscriptItem::DelegationNotice {
-                        from,
-                        to,
-                        reason,
-                        ..
-                    } => {
-                        lines.push(Line::from(
-                            Span::styled(
-                                format!("🔄 {from} → {to}: {reason}"),
-                                Style::default().fg(Color::Magenta),
-                            ),
-                        ));
-                    }
-                    TranscriptItem::MemoryNotice {
-                        before_tokens,
-                        after_tokens,
-                        ..
-                    } => {
-                        lines.push(Line::from(
-                            Span::styled(
-                                format!("💾 Memory: {before_tokens} → {after_tokens} tokens"),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        ));
-                    }
-                }
-                // Blank line between items
-                lines.push(Line::from(""));
-                // Thin separator between blocks
-                lines.push(Line::from(
-                    Span::styled(
-                        "─".repeat(available_width.min(80) as usize),
-                        Style::default().fg(Color::Rgb(60, 60, 60)),
-                    ),
-                ));
-                idx += 1;
-            }
-        }
-
-        // Apply scroll offset
-        let total_lines = lines.len();
-        let visible_lines = area.height as usize;
-        let max_offset = total_lines.saturating_sub(visible_lines);
-
-        // Auto-scroll to bottom if not manually scrolled.
-        // scroll.offset is "lines above the bottom" (0 = at bottom); convert to skip-from-top.
-        let offset = if scroll.manual_scroll {
-            max_offset.saturating_sub(scroll.offset)
-        } else {
-            // Auto-follow: show last N lines
-            max_offset
-        };
-
-        let visible_lines: Vec<Line> = lines
-            .into_iter()
-            .skip(offset)
-            .take(visible_lines)
-            .collect();
-
-        let transcript_widget = Paragraph::new(Text::from(visible_lines))
-            .block(Block::default().style(Style::default().bg(Color::Rgb(20, 20, 20))))
-            .wrap(Wrap { trim: false });
-
-        frame.render_widget(transcript_widget, area);
+        crate::chat::ChatView::render(area, frame.buffer_mut(), &self.transcript, &self.theme);
     }
 
     fn render_editor(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
-        use ratatui::style::{Color, Style};
+        use ratatui::style::Style;
         use ratatui::widgets::{Block, Borders, Paragraph};
 
         let is_running = matches!(self.state, AppState::Running { .. });
+        let is_focused = self.focus == crate::focus::Focus::Input;
 
+        // Build the text display
         let text = if self.editor.text().is_empty() {
-            format!("> {}", self.editor.placeholder())
+            if is_running {
+                format!("> Steering… (Enter to send guidance)")
+            } else {
+                format!("> {}", self.editor.placeholder())
+            }
         } else {
             format!("> {}", self.editor.text())
         };
 
         let style = if is_running {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(self.theme.colors.warning)
         } else {
-            Style::default().fg(Color::White)
+            self.theme.text_style()
         };
 
+        // Character counter
+        let max_chars = self.tui_config.input_max_chars;
+        let current_len = self.editor.text().len();
         let title = if is_running {
-            " Input (steer: type + Enter to guide agent) "
+            format!(" Input (steer) [{current_len}/{max_chars}] ")
         } else {
-            " Input "
+            format!(" Input [{current_len}/{max_chars}] ")
+        };
+
+        // Color for character counter based on fill level
+        let fill_ratio = current_len as f64 / max_chars as f64;
+        let border_color = if is_focused {
+            self.theme.colors.primary
+        } else if is_running {
+            self.theme.colors.warning
+        } else if fill_ratio > 0.95 {
+            self.theme.colors.error
+        } else if fill_ratio > 0.8 {
+            self.theme.colors.warning
+        } else {
+            self.theme.colors.border
         };
 
         let editor_widget = Paragraph::new(text)
@@ -1398,11 +1253,7 @@ impl App {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(title)
-                    .border_style(if is_running {
-                        Style::default().fg(Color::Yellow)
-                    } else {
-                        Style::default().fg(Color::Cyan)
-                    }),
+                    .border_style(Style::default().fg(border_color)),
             )
             .style(style);
 
