@@ -1,7 +1,6 @@
 //! OpenAI chat-completions provider.
 
 use crate::{estimate_tokens, message_text, ChatFuture, LlmClient, LlmError};
-use duga_config::ThinkingLevel;
 use duga_events::{Event, EventSink};
 use duga_types::llm::{LlmCallOptions, LlmResponse, TokenUsage};
 use duga_types::message::{AssistantMessage, ContentBlock, Message, Role};
@@ -18,7 +17,6 @@ pub struct OpenAiClient {
     model: String,
     api_key: String,
     base_url: String,
-    thinking_level: ThinkingLevel,
     http: reqwest::Client,
 }
 
@@ -28,20 +26,10 @@ impl OpenAiClient {
         api_key: impl Into<String>,
         base_url: Option<String>,
     ) -> Self {
-        Self::with_thinking(model, api_key, base_url, ThinkingLevel::Off)
-    }
-
-    pub fn with_thinking(
-        model: impl Into<String>,
-        api_key: impl Into<String>,
-        base_url: Option<String>,
-        thinking_level: ThinkingLevel,
-    ) -> Self {
         Self {
             model: model.into(),
             api_key: api_key.into(),
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.into()),
-            thinking_level,
             http: reqwest::Client::new(),
         }
     }
@@ -58,7 +46,7 @@ impl OpenAiClient {
                 ));
             }
         };
-        Ok(Self::with_thinking(model, api_key, base_url, ThinkingLevel::Off))
+        Ok(Self::new(model, api_key, base_url))
     }
 
     fn endpoint(&self) -> String {
@@ -79,7 +67,7 @@ impl LlmClient for OpenAiClient {
         event_sink: &'a dyn EventSink,
     ) -> ChatFuture<'a> {
         Box::pin(async move {
-            let mut request = OpenAiRequest::from_duga(&self.model, messages, tools, &self.thinking_level)?;
+            let mut request = OpenAiRequest::from_duga(&self.model, messages, tools)?;
             if options.streaming {
                 request.stream = Some(true);
                 request.stream_options = Some(OpenAiStreamOptions { include_usage: true });
@@ -233,8 +221,6 @@ struct OpenAiRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<OpenAiStreamOptions>,
@@ -250,7 +236,6 @@ impl OpenAiRequest {
         model: &str,
         messages: &[Message],
         tools: &[ToolSchema],
-        thinking_level: &ThinkingLevel,
     ) -> Result<Self, LlmError> {
         Ok(Self {
             model: model.into(),
@@ -259,7 +244,6 @@ impl OpenAiRequest {
                 .map(openai_message)
                 .collect::<Result<_, _>>()?,
             tools: tools.iter().map(OpenAiToolSpec::from_schema).collect(),
-            reasoning_effort: thinking_level.to_api_param().map(|s| s.to_string()),
             stream: None,
             stream_options: None,
         })
@@ -644,7 +628,6 @@ mod tests {
                 "read a file",
                 serde_json::json!({"type": "object"}),
             )],
-            &ThinkingLevel::Off,
         )
         .unwrap();
         let json = serde_json::to_value(request).unwrap();
@@ -652,21 +635,6 @@ mod tests {
         assert_eq!(json["model"], "gpt-4.1");
         assert_eq!(json["messages"][0]["role"], "system");
         assert_eq!(json["tools"][0]["function"]["name"], "read");
-        // reasoning_effort should be absent when Off
-        assert!(json.get("reasoning_effort").is_none());
-    }
-
-    #[test]
-    fn request_includes_reasoning_effort_when_thinking_enabled() {
-        let request = OpenAiRequest::from_duga(
-            "deepseek-v4-flash",
-            &[Message::user("hello")],
-            &[],
-            &ThinkingLevel::Low,
-        )
-        .unwrap();
-        let json = serde_json::to_value(request).unwrap();
-        assert_eq!(json["reasoning_effort"], "low");
     }
 
     #[test]
