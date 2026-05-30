@@ -320,31 +320,22 @@ impl App {
                 for idx in to_toggle {
                     self.transcript.toggle_tool_expand(idx);
                 }
-                // Also toggle thinking blocks
-                let any_thinking_expanded = self
-                    .transcript
-                    .items()
-                    .iter()
-                    .any(|item| {
-                        matches!(item, TranscriptItem::ThinkingBlock { is_expanded: true, is_streaming: false, .. })
-                    });
-                let think_target = !any_thinking_expanded;
-                let think_toggle: Vec<usize> = self
+                // Also advance thinking block pagination
+                let think_ids: Vec<usize> = self
                     .transcript
                     .items()
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, item)| {
-                        if let TranscriptItem::ThinkingBlock { is_expanded, is_streaming, .. } = item {
-                            if !is_streaming && *is_expanded != think_target {
-                                return Some(idx);
-                            }
+                        if matches!(item, TranscriptItem::ThinkingBlock { is_streaming: false, .. }) {
+                            Some(idx)
+                        } else {
+                            None
                         }
-                        None
                     })
                     .collect();
-                for idx in think_toggle {
-                    self.transcript.toggle_thinking_expand(idx);
+                for idx in think_ids {
+                    self.transcript.advance_thinking_scroll(idx, 8);
                 }
                 return;
             }
@@ -1061,6 +1052,7 @@ impl App {
                         text,
                         is_streaming,
                         is_expanded,
+                        scroll_offset,
                         ..
                     } => {
                         // Peek ahead: if followed by AssistantMessage, render
@@ -1077,36 +1069,34 @@ impl App {
 
                         // Standalone thinking block (no following assistant).
                         let prefix = if *is_streaming { "⟳ " } else { "🧠" };
-                        lines.push(Line::from(
-                            Span::styled(
-                                format!("{prefix} Thinking:"),
-                                Style::default()
-                                    .fg(Color::DarkGray)
-                                    .add_modifier(Modifier::ITALIC),
-                            ),
-                        ));
                         if *is_expanded {
+                            lines.push(Line::from(
+                                Span::styled(
+                                    format!("{prefix} Thinking:"),
+                                    Style::default()
+                                        .fg(Color::DarkGray)
+                                        .add_modifier(Modifier::ITALIC),
+                                ),
+                            ));
                             let think_lines = crate::text::wrap_text(text, available_width.saturating_sub(2));
-                            let max_think_lines = 8usize;
                             let total = think_lines.len();
-                            let display: Vec<&str> = if total > max_think_lines {
-                                if *is_streaming {
-                                    think_lines.iter().skip(total - max_think_lines).map(|s| s.as_str()).collect()
-                                } else {
-                                    think_lines.iter().take(max_think_lines).map(|s| s.as_str()).collect()
-                                }
-                            } else {
-                                think_lines.iter().map(|s| s.as_str()).collect()
-                            };
+                            let start = (*scroll_offset).min(total.saturating_sub(1));
+                            let display: Vec<&str> = think_lines.iter()
+                                .skip(start)
+                                .take(8)
+                                .map(|s| s.as_str())
+                                .collect();
                             for w in &display {
                                 lines.push(Line::from(Span::styled(
                                     format!("  {w}"),
                                     Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
                                 )));
                             }
-                            if total > max_think_lines {
+                            if total > 8 {
+                                let end = (start + display.len()).min(total);
+                                let page_start = start + 1;
                                 lines.push(Line::from(Span::styled(
-                                    format!("  ── {total} lines (Tab to collapse) ──"),
+                                    format!("  ── {page_start}-{end} of {total} (Tab) ──"),
                                     Style::default().fg(Color::Rgb(80, 80, 80)),
                                 )));
                             }
@@ -1114,7 +1104,7 @@ impl App {
                             let word_count = text.split_whitespace().count();
                             lines.push(Line::from(
                                 Span::styled(
-                                    format!("  ({} words — collapsed)", word_count),
+                                    format!("{prefix} Thinking: ({} words — Tab to expand)", word_count),
                                     Style::default().fg(Color::DarkGray),
                                 ),
                             ));
@@ -1150,33 +1140,29 @@ impl App {
                                 text: think_text,
                                 is_streaming: think_streaming,
                                 is_expanded,
+                                scroll_offset,
                                 ..
                             } = &items[idx - 1]
                             {
                                 let tp = if *think_streaming { "⟳ " } else { "🧠" };
-                                lines.push(Line::from(
-                                    Span::styled(
-                                        format!("  {tp} Thinking:"),
-                                        Style::default()
-                                            .fg(Color::DarkGray)
-                                            .add_modifier(Modifier::ITALIC),
-                                    ),
-                                ));
+
                                 if *is_expanded {
+                                    lines.push(Line::from(
+                                        Span::styled(
+                                            format!("  {tp} Thinking:"),
+                                            Style::default()
+                                                .fg(Color::DarkGray)
+                                                .add_modifier(Modifier::ITALIC),
+                                        ),
+                                    ));
                                     let think_lines = crate::text::wrap_text(think_text, available_width.saturating_sub(4));
-                                    let max_think_lines = 8usize;
                                     let total = think_lines.len();
-                                    let display: Vec<&str> = if total > max_think_lines {
-                                        // During streaming show the tail (latest reasoning);
-                                        // after completion show the head.
-                                        if *think_streaming {
-                                            think_lines.iter().skip(total - max_think_lines).map(|s| s.as_str()).collect()
-                                        } else {
-                                            think_lines.iter().take(max_think_lines).map(|s| s.as_str()).collect()
-                                        }
-                                    } else {
-                                        think_lines.iter().map(|s| s.as_str()).collect()
-                                    };
+                                    let start = (*scroll_offset).min(total.saturating_sub(1));
+                                    let display: Vec<&str> = think_lines.iter()
+                                        .skip(start)
+                                        .take(8)
+                                        .map(|s| s.as_str())
+                                        .collect();
                                     for w in &display {
                                         lines.push(Line::from(
                                             Span::styled(
@@ -1187,10 +1173,12 @@ impl App {
                                             ),
                                         ));
                                     }
-                                    if total > max_think_lines {
+                                    if total > 8 {
+                                        let end = (start + display.len()).min(total);
+                                        let page_start = start + 1;
                                         lines.push(Line::from(
                                             Span::styled(
-                                                format!("    ── {total} lines (Tab to collapse) ──"),
+                                                format!("    ── {page_start}-{end} of {total} (Tab) ──"),
                                                 Style::default().fg(Color::Rgb(80, 80, 80)),
                                             ),
                                         ));
@@ -1199,7 +1187,7 @@ impl App {
                                     let wc = think_text.split_whitespace().count();
                                     lines.push(Line::from(
                                         Span::styled(
-                                            format!("    ({} words — collapsed)", wc),
+                                            format!("  {tp} Thinking: ({} words — Tab to expand)", wc),
                                             Style::default().fg(Color::DarkGray),
                                         ),
                                     ));

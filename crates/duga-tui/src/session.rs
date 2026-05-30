@@ -233,6 +233,7 @@ pub fn load_session_transcript(path: &Path) -> Vec<TranscriptItem> {
                         text: delta,
                         is_streaming: false,
                         is_expanded: false,
+                        scroll_offset: 0,
                         timestamp: Instant::now(),
                     });
                 }

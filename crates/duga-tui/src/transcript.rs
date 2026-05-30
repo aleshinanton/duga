@@ -60,6 +60,8 @@ pub enum TranscriptItem {
         text: String,
         is_streaming: bool,
         is_expanded: bool,
+        /// Line offset for paginated view (0 = first page).
+        scroll_offset: usize,
         timestamp: Instant,
     },
 }
@@ -246,6 +248,7 @@ impl Transcript {
             text: delta.to_string(),
             is_streaming: true,
             is_expanded: true,
+            scroll_offset: 0,
             timestamp: Instant::now(),
         };
         self.streaming_thinking_index = Some(self.items.len());
@@ -261,11 +264,13 @@ impl Transcript {
             if let Some(TranscriptItem::ThinkingBlock {
                 is_streaming,
                 is_expanded,
+                scroll_offset,
                 ..
             }) = self.items.get_mut(idx)
             {
                 *is_streaming = false;
                 *is_expanded = false;
+                *scroll_offset = 0;
             }
         }
     }
@@ -277,9 +282,39 @@ impl Transcript {
 
     /// Toggle expand/collapse of a thinking block.
     pub fn toggle_thinking_expand(&mut self, idx: usize) {
-        if let Some(TranscriptItem::ThinkingBlock { is_expanded, .. }) = self.items.get_mut(idx) {
-            *is_expanded = !*is_expanded;
+        if let Some(TranscriptItem::ThinkingBlock { is_expanded, scroll_offset, .. }) = self.items.get_mut(idx) {
+            if *is_expanded {
+                *is_expanded = false;
+                *scroll_offset = 0;
+            } else {
+                *is_expanded = true;
+                *scroll_offset = 0;
+            }
         }
+    }
+
+    /// Advance scroll within a thinking block by one page. Returns true if it wrapped around
+    /// (collapsed), false if it advanced or stayed.
+    pub fn advance_thinking_scroll(&mut self, idx: usize, page_lines: usize) -> bool {
+        if let Some(TranscriptItem::ThinkingBlock { is_expanded, scroll_offset, text, .. }) = self.items.get_mut(idx) {
+            if !*is_expanded {
+                // Expand to first page
+                *is_expanded = true;
+                *scroll_offset = 0;
+                return false;
+            }
+            let total_lines = text.lines().count().max(1);
+            let next = *scroll_offset + page_lines;
+            if next >= total_lines {
+                // Wrapped around: collapse
+                *is_expanded = false;
+                *scroll_offset = 0;
+                return true;
+            }
+            *scroll_offset = next;
+            return false;
+        }
+        false
     }
 
     /// Update a tool call block (mark as finished, optionally set output).
