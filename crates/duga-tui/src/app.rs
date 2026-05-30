@@ -1069,17 +1069,18 @@ impl App {
 
                         // Standalone thinking block (no following assistant).
                         let prefix = if *is_streaming { "⟳ " } else { "🧠" };
+                        let wc = text.split_whitespace().count();
+                        let think_lines = crate::text::wrap_text(text, available_width.saturating_sub(2));
+                        let total = think_lines.len();
                         if *is_expanded {
                             lines.push(Line::from(
                                 Span::styled(
-                                    format!("{prefix} Thinking:"),
+                                    format!("{prefix} Thinking ({} words):", wc),
                                     Style::default()
                                         .fg(Color::DarkGray)
                                         .add_modifier(Modifier::ITALIC),
                                 ),
                             ));
-                            let think_lines = crate::text::wrap_text(text, available_width.saturating_sub(2));
-                            let total = think_lines.len();
                             let start = (*scroll_offset).min(total.saturating_sub(1));
                             let display: Vec<&str> = think_lines.iter()
                                 .skip(start)
@@ -1145,18 +1146,19 @@ impl App {
                             } = &items[idx - 1]
                             {
                                 let tp = if *think_streaming { "⟳ " } else { "🧠" };
+                                let wc = think_text.split_whitespace().count();
+                                let think_lines = crate::text::wrap_text(think_text, available_width.saturating_sub(4));
+                                let total = think_lines.len();
 
                                 if *is_expanded {
                                     lines.push(Line::from(
                                         Span::styled(
-                                            format!("  {tp} Thinking:"),
+                                            format!("  {tp} Thinking ({} words):", wc),
                                             Style::default()
                                                 .fg(Color::DarkGray)
                                                 .add_modifier(Modifier::ITALIC),
                                         ),
                                     ));
-                                    let think_lines = crate::text::wrap_text(think_text, available_width.saturating_sub(4));
-                                    let total = think_lines.len();
                                     let start = (*scroll_offset).min(total.saturating_sub(1));
                                     let display: Vec<&str> = think_lines.iter()
                                         .skip(start)
