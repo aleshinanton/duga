@@ -111,6 +111,7 @@ pub struct Keybindings {
     pub scroll_up: KeyPattern,
     pub scroll_down: KeyPattern,
     pub toggle_tool: KeyPattern,
+    pub toggle_think: KeyPattern,
 }
 
 impl Keybindings {
@@ -126,6 +127,7 @@ impl Keybindings {
             scroll_up: KeyPattern::parse("page-up").unwrap(),
             scroll_down: KeyPattern::parse("page-down").unwrap(),
             toggle_tool: KeyPattern::parse("tab").unwrap(),
+            toggle_think: KeyPattern::parse("ctrl-o").unwrap(),
         }
     }
 
@@ -156,6 +158,7 @@ pub enum GlobalAction {
     ScrollUp,
     ScrollDown,
     ToggleTool,
+    ToggleThink,
     None,
 }
 
@@ -181,6 +184,8 @@ impl Keybindings {
             GlobalAction::ScrollDown
         } else if self.toggle_tool.matches(event) {
             GlobalAction::ToggleTool
+        } else if self.toggle_think.matches(event) {
+            GlobalAction::ToggleThink
         } else {
             GlobalAction::None
         }

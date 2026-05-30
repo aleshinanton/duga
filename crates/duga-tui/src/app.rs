@@ -320,7 +320,9 @@ impl App {
                 for idx in to_toggle {
                     self.transcript.toggle_tool_expand(idx);
                 }
-                // Also advance thinking block pagination
+                return;
+            }
+            GlobalAction::ToggleThink => {
                 let think_ids: Vec<usize> = self
                     .transcript
                     .items()
@@ -1097,7 +1099,7 @@ impl App {
                                 let end = (start + display.len()).min(total);
                                 let page_start = start + 1;
                                 lines.push(Line::from(Span::styled(
-                                    format!("  ── {page_start}-{end} of {total} (Tab) ──"),
+                                    format!("  ── {page_start}-{end} of {total} (Ctrl+O) ──"),
                                     Style::default().fg(Color::Rgb(80, 80, 80)),
                                 )));
                             }
@@ -1180,7 +1182,7 @@ impl App {
                                         let page_start = start + 1;
                                         lines.push(Line::from(
                                             Span::styled(
-                                                format!("    ── {page_start}-{end} of {total} (Tab) ──"),
+                                                format!("    ── {page_start}-{end} of {total} (Ctrl+O) ──"),
                                                 Style::default().fg(Color::Rgb(80, 80, 80)),
                                             ),
                                         ));
