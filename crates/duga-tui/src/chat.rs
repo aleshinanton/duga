@@ -52,7 +52,7 @@ impl ChatView {
             }
 
             if idx > 0 && matches!(item, TranscriptItem::AssistantMessage { .. })
-                && matches!(items[idx - 1], TranscriptItem::ThinkingBlock { .. }) && idx > start {
+                && matches!(items[idx - 1], TranscriptItem::ThinkingBlock { .. }) {
                 idx += 1;
                 continue;
             }
