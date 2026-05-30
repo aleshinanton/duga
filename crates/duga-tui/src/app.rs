@@ -1040,7 +1040,9 @@ impl App {
                 ),
             ));
         } else {
-            for item in items {
+            let mut idx = 0;
+            while idx < items.len() {
+                let item = &items[idx];
                 match item {
                     TranscriptItem::SystemMessage { text, level, .. } => {
                         let color = match level {
@@ -1061,6 +1063,19 @@ impl App {
                         is_expanded,
                         ..
                     } => {
+                        // Peek ahead: if followed by AssistantMessage, render
+                        // the thinking block nested under the assistant.
+                        let has_next_assistant = idx + 1 < items.len()
+                            && matches!(items[idx + 1], TranscriptItem::AssistantMessage { .. });
+
+                        if has_next_assistant {
+                            // Skip standalone rendering — will be rendered
+                            // together with the assistant message below.
+                            idx += 1;
+                            continue;
+                        }
+
+                        // Standalone thinking block (no following assistant).
                         let prefix = if *is_streaming { "⟳ " } else { "🧠" };
                         lines.push(Line::from(
                             Span::styled(
@@ -1113,6 +1128,49 @@ impl App {
                                 Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                             ),
                         ));
+
+                        // Check if the previous item is a ThinkingBlock — if so,
+                        // render it nested here under the assistant label.
+                        if idx > 0 {
+                            if let TranscriptItem::ThinkingBlock {
+                                text: think_text,
+                                is_streaming: think_streaming,
+                                is_expanded,
+                                ..
+                            } = &items[idx - 1]
+                            {
+                                let tp = if *think_streaming { "⟳ " } else { "🧠" };
+                                lines.push(Line::from(
+                                    Span::styled(
+                                        format!("  {tp} Thinking:"),
+                                        Style::default()
+                                            .fg(Color::DarkGray)
+                                            .add_modifier(Modifier::ITALIC),
+                                    ),
+                                ));
+                                if *is_expanded {
+                                    for w in crate::text::wrap_text(think_text, available_width.saturating_sub(4)) {
+                                        lines.push(Line::from(
+                                            Span::styled(
+                                                format!("    {w}"),
+                                                Style::default()
+                                                    .fg(Color::DarkGray)
+                                                    .add_modifier(Modifier::ITALIC),
+                                            ),
+                                        ));
+                                    }
+                                } else if !think_streaming {
+                                    let wc = think_text.split_whitespace().count();
+                                    lines.push(Line::from(
+                                        Span::styled(
+                                            format!("    ({} words — collapsed)", wc),
+                                            Style::default().fg(Color::DarkGray),
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+
                         // Render as markdown
                         let md = crate::markdown::render_markdown(
                             text,
@@ -1236,6 +1294,7 @@ impl App {
                 }
                 // Blank line between items
                 lines.push(Line::from(""));
+                idx += 1;
             }
         }
 
