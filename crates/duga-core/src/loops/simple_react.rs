@@ -163,6 +163,7 @@ async fn run_simple_react(
 
         if assistant.is_termination() {
             ctx.memory.push_assistant(assistant.clone());
+            emit_final_snapshot(ctx).await?;
             ctx.event_sink
                 .emit(Event::StepFinished { step })
                 .await
@@ -208,6 +209,7 @@ async fn run_simple_react(
                     );
                     ctx.memory.push_tool_result(skipped);
                 }
+                emit_final_snapshot(ctx).await?;
                 return Ok(delegated_result);
             }
             DelegateOutcome::Error(error_result) => {
@@ -859,6 +861,7 @@ async fn complete_from_steer(
         reasoning_content: None,
     };
     ctx.memory.push_assistant(msg.clone());
+    emit_final_snapshot(ctx).await?;
     ctx.event_sink
         .emit(Event::AgentFinished {
             text: Some(answer),
@@ -871,6 +874,21 @@ async fn complete_from_steer(
         tool_calls: 0,
         loop_id: "simple_react".into(),
     })
+}
+
+/// Emit a final LlmRequest snapshot after the assistant response is in memory
+/// so that session files capture the complete conversation for history restoration.
+async fn emit_final_snapshot(ctx: &LoopContext<'_>) -> Result<(), AgentError> {
+    let messages = ctx.memory.messages();
+    let schemas = ctx.tools.schemas();
+    ctx.event_sink
+        .emit(Event::LlmRequest {
+            model: ctx.llm.model().into(),
+            messages,
+            tools: schemas,
+        })
+        .await
+        .map_err(|e| AgentError::EventSinkFailed(e.to_string()))
 }
 
 #[cfg(test)]
