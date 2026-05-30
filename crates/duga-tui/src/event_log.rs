@@ -98,7 +98,7 @@ impl EventLog {
     }
 
     /// Render the event log into the given area.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme) {
+    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme, scroll_offset: usize) {
         let block = Block::default()
             .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
             .title(format!("📋 Event Log ({}) ", self.entries.len()))
@@ -117,6 +117,7 @@ impl EventLog {
                 .entries
                 .iter()
                 .rev()
+                .skip(scroll_offset)
                 .take(max_lines)
                 .rev()
                 .map(|entry| {

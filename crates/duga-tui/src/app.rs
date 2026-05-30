@@ -102,6 +102,9 @@ pub struct App {
     /// Reasoning panel state.
     pub reasoning_panel: ReasoningPanel,
 
+    /// Scroll offset for sidebar panels.
+    pub sidebar_scroll: usize,
+
     /// Transcript of the conversation.
     pub transcript: Transcript,
     /// Multi-line input editor.
@@ -191,6 +194,7 @@ impl App {
             banner: ErrorBanner::new(banner_auto_dismiss_secs),
             event_log: EventLog::new(event_log_max),
             reasoning_panel: ReasoningPanel::new(),
+            sidebar_scroll: 0,
             transcript: Transcript::new(),
             editor: Editor::new(),
             overlays: OverlayManager::new(),
@@ -585,13 +589,22 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                     }
                 }
                 Focus::Sidebar => {
-                    // j/k scroll in sidebar
+                    // j/k scroll event log, g/G top/bottom
                     match key.code {
                         KeyCode::Char('j') if key.modifiers == KeyModifiers::NONE => {
-                            // Scroll event log would go here; for now just consume
+                            self.sidebar_scroll = self.sidebar_scroll.saturating_add(1);
                             return;
                         }
                         KeyCode::Char('k') if key.modifiers == KeyModifiers::NONE => {
+                            self.sidebar_scroll = self.sidebar_scroll.saturating_sub(1);
+                            return;
+                        }
+                        KeyCode::Char('g') if key.modifiers == KeyModifiers::NONE => {
+                            self.sidebar_scroll = 0; // bottom
+                            return;
+                        }
+                        KeyCode::Char('G') if key.modifiers == KeyModifiers::SHIFT => {
+                            self.sidebar_scroll = usize::MAX; // top
                             return;
                         }
                         _ => {}
@@ -1213,6 +1226,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 Some(reasoning_text),
                 reasoning_streaming,
                 &self.event_log,
+                self.sidebar_scroll,
                 &self.theme,
             );
         }

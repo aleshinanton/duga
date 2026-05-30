@@ -60,6 +60,7 @@ impl SidebarView {
         reasoning_text: Option<&str>,
         reasoning_is_streaming: bool,
         event_log: &EventLog,
+        scroll_offset: usize,
         theme: &Theme,
     ) {
         if area.width == 0 {
@@ -86,7 +87,7 @@ impl SidebarView {
 
         // Render event log panel
         if show_events {
-            event_log.render(events_rect, buf, theme);
+            event_log.render(events_rect, buf, theme, scroll_offset);
         }
 
         // If both collapsed, show empty state
@@ -118,7 +119,7 @@ fn compute_panels(
 
 /// Render empty sidebar message.
 fn render_empty_sidebar(area: Rect, buf: &mut Buffer, theme: &Theme) {
-    let text = "No sidebar content\n\nPress r for reasoning\ne for events";
+    let text = "No sidebar content\n\nCtrl+R for reasoning\nCtrl+E for events";
     let widget = Paragraph::new(text)
         .style(theme.text_dim_style());
     widget.render(area, buf);

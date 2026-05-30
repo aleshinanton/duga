@@ -200,7 +200,7 @@ fn push_thinking(out: &mut Vec<Line<'static>>, text: &str, streaming: bool, expa
         }
         v
     } else if !streaming {
-        vec![Line::from(Span::styled(format!("({wc} words — Tab to expand)"), theme.text_dim_style()))]
+        vec![Line::from(Span::styled(format!("({wc} words — Ctrl+R to expand)"), theme.text_dim_style()))]
     } else {
         vec![]
     };
@@ -239,9 +239,10 @@ fn push_assistant_with_thinking(
     let wc = think.split_whitespace().count();
 
     let mut body: Vec<Line<'static>> = Vec::new();
-    body.push(Line::from(Span::styled(format!("Reasoning ({} words):", wc), theme.muted_italic_style())));
 
     if te {
+        // Expanded: show header + lines
+        body.push(Line::from(Span::styled(format!("Reasoning ({} words):", wc), theme.muted_italic_style())));
         let start = if ts { total.saturating_sub(8) } else { so.min(total.saturating_sub(1)) };
         for line in think_lines.iter().skip(start).take(8) {
             body.push(Line::from(Span::styled(format!("  {line}"), theme.muted_italic_style())));
@@ -253,7 +254,14 @@ fn push_assistant_with_thinking(
             )));
         }
     } else if !ts {
-        body.push(Line::from(Span::styled(format!("({wc} words — Tab to expand)"), theme.text_dim_style())));
+        // Collapsed: single line with word count + expand hint
+        body.push(Line::from(Span::styled(
+            format!("Reasoning ({} words) — Ctrl+R to expand", wc),
+            theme.text_dim_style(),
+        )));
+    } else {
+        // Streaming but collapsed (shouldn't normally happen)
+        body.push(Line::from(Span::styled("Reasoning…", theme.muted_italic_style())));
     }
 
     // separator

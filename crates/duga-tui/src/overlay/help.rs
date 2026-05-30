@@ -62,11 +62,10 @@ impl HelpOverlay {
             HelpSection {
                 title: "Focus & Sidebar",
                 items: vec![
+                    HelpItem { key: "Tab / Shift+Tab".into(), description: "Cycle focus (Chat / Sidebar / Input)" },
                     HelpItem { key: "Ctrl+R".into(), description: "Toggle reasoning panel" },
                     HelpItem { key: "Ctrl+E".into(), description: "Toggle event log panel" },
-                    HelpItem { key: "F1".into(), description: "Toggle help" },
-                    HelpItem { key: "Ctrl+F".into(), description: "Search transcript" },
-                    HelpItem { key: "Ctrl+S".into(), description: "Browse & resume sessions" },
+                    HelpItem { key: "Esc".into(), description: "Return focus to Chat" },
                 ],
             },
             HelpSection {

@@ -109,22 +109,22 @@ impl FocusRouter {
                 FocusAction::Consumed
             }
 
-            // Ctrl+R: toggle reasoning panel (only when idle, sidebar visible)
+            // Ctrl+R: toggle reasoning panel (only when idle)
             KeyEvent {
                 code: KeyCode::Char('r'),
                 modifiers: KeyModifiers::CONTROL,
                 ..
-            } if sidebar_visible && !is_running => {
+            } if !is_running => {
                 *focus = Focus::Sidebar;
                 FocusAction::ToggleReasoning
             }
 
-            // Ctrl+E: toggle event log panel (only when idle, sidebar visible)
+            // Ctrl+E: toggle event log panel (only when idle)
             KeyEvent {
                 code: KeyCode::Char('e'),
                 modifiers: KeyModifiers::CONTROL,
                 ..
-            } if sidebar_visible && !is_running => {
+            } if !is_running => {
                 *focus = Focus::Sidebar;
                 FocusAction::ToggleEvents
             }
@@ -235,7 +235,8 @@ mod tests {
         let mut focus = Focus::Chat;
         let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
         let action = FocusRouter::route(&key, &mut focus, false, false, false);
-        assert_eq!(action, FocusAction::PassThrough);
+        // Ctrl+R always toggles reasoning (sidebar visibility is a UI concern, not a router concern)
+        assert_eq!(action, FocusAction::ToggleReasoning);
     }
 
     #[test]
