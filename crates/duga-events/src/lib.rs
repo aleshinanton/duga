@@ -51,6 +51,8 @@ pub enum Event {
         model: String,
         text: Option<String>,
         tool_calls: Vec<ToolCall>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<String>,
     },
     LlmTokenDelta {
         model: String,
@@ -420,6 +422,7 @@ mod tests {
             model: "test".into(),
             text: None,
             tool_calls: vec![call],
+            reasoning_content: None,
         })
         .await
         .unwrap();
@@ -478,6 +481,7 @@ mod tests {
             model: "test".into(),
             text: None,
             tool_calls: vec![call],
+            reasoning_content: None,
         })
         .await
         .unwrap();
@@ -522,12 +526,13 @@ mod tests {
         let msg = AssistantMessage {
             text: Some("hello".into()),
             tool_calls: vec![ToolCall::new("read", serde_json::json!({"path": "a"}))],
-            reasoning_content: None,
+            reasoning_content: Some("Let me think...".into()),
         };
         let event = Event::LlmResponse {
             model: "test".into(),
             text: msg.text,
             tool_calls: msg.tool_calls,
+            reasoning_content: msg.reasoning_content.clone(),
         };
 
         let json = serde_json::to_string(&event).unwrap();

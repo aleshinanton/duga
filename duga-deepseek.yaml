@@ -7,7 +7,8 @@
 provider: "openai"
 model: "deepseek-v4-flash"
 
-# DeepSeek V3 chat model (no thinking — avoids reasoning_content roundtrip).
+# DeepSeek V3 chat model.
+# Set thinking_level to "low"/"medium"/"high" to enable reasoning_effort on the API.
 thinking_level: "low"
 context_window: 1000000
 

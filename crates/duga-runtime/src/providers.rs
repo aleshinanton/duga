@@ -104,11 +104,13 @@ pub fn build_llm(provider: &str, model_name: &str, config: &Config) -> Result<Ar
         "openai" => {
             let base_url = resolve_base_url(config);
             let api_key = resolve_api_key(config, "OPENAI_API_KEY");
+            let thinking = config.thinking_level.clone();
             match api_key {
-                Some(key) => Ok(Arc::new(OpenAiClient::new(model_name, key, base_url))),
+                Some(key) => Ok(Arc::new(OpenAiClient::with_thinking(model_name, key, base_url, thinking))),
                 None if base_url.is_some() => {
                     // Local endpoint — empty key is fine
-                    Ok(Arc::new(OpenAiClient::new(model_name, "", base_url)))
+                    let thinking = config.thinking_level.clone();
+                    Ok(Arc::new(OpenAiClient::with_thinking(model_name, "", base_url, thinking)))
                 }
                 None => Err(anyhow::anyhow!(
                     "OPENAI_API_KEY is not set; set provider_api_key, provider_api_key_env, or provider_base_url for local endpoints"
@@ -123,10 +125,12 @@ pub fn build_llm(provider: &str, model_name: &str, config: &Config) -> Result<Ar
                         "ANTHROPIC_API_KEY is not set; set provider_api_key or provider_api_key_env"
                     )
                 })?;
-            Ok(Arc::new(AnthropicClient::new(
+            let thinking = config.thinking_level.clone();
+            Ok(Arc::new(AnthropicClient::with_thinking(
                 model_name,
                 api_key,
                 base_url,
+                thinking,
             )))
         }
         other => Err(anyhow::anyhow!(

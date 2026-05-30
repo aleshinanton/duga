@@ -672,6 +672,7 @@ dependencies = [
 name = "duga-llm"
 version = "0.1.0"
 dependencies = [
+ "duga-config",
  "duga-events",
  "duga-types",
  "futures",

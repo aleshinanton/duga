@@ -1,6 +1,7 @@
 //! Anthropic Messages API provider.
 
 use crate::{estimate_tokens, message_text, ChatFuture, LlmClient, LlmError};
+use duga_config::ThinkingLevel;
 use duga_events::{Event, EventSink};
 use duga_types::llm::{LlmCallOptions, LlmResponse, TokenUsage};
 use duga_types::message::{AssistantMessage, ContentBlock, Message, Role};
@@ -19,6 +20,7 @@ pub struct AnthropicClient {
     api_key: String,
     base_url: String,
     max_tokens: u32,
+    thinking_level: ThinkingLevel,
     http: reqwest::Client,
 }
 
@@ -28,11 +30,21 @@ impl AnthropicClient {
         api_key: impl Into<String>,
         base_url: Option<String>,
     ) -> Self {
+        Self::with_thinking(model, api_key, base_url, ThinkingLevel::Off)
+    }
+
+    pub fn with_thinking(
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+        base_url: Option<String>,
+        thinking_level: ThinkingLevel,
+    ) -> Self {
         Self {
             model: model.into(),
             api_key: api_key.into(),
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.into()),
             max_tokens: 4096,
+            thinking_level,
             http: reqwest::Client::new(),
         }
     }
@@ -63,7 +75,7 @@ impl LlmClient for AnthropicClient {
     ) -> ChatFuture<'a> {
         Box::pin(async move {
             let mut request =
-                AnthropicRequest::from_duga(&self.model, self.max_tokens, messages, tools);
+                AnthropicRequest::from_duga(&self.model, self.max_tokens, messages, tools, &self.thinking_level);
             if options.streaming {
                 request.stream = Some(true);
             }
@@ -233,6 +245,14 @@ fn map_status(status: StatusCode, body: String) -> LlmError {
 }
 
 #[derive(Debug, Serialize)]
+#[derive(Debug, Serialize)]
+struct AnthropicThinkingConfig {
+    #[serde(rename = "type")]
+    kind: String,
+    budget_tokens: u32,
+}
+
+#[derive(Debug, Serialize)]
 struct AnthropicRequest {
     model: String,
     max_tokens: u32,
@@ -242,11 +262,19 @@ struct AnthropicRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<AnthropicToolSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
 }
 
 impl AnthropicRequest {
-    fn from_duga(model: &str, max_tokens: u32, messages: &[Message], tools: &[ToolSchema]) -> Self {
+    fn from_duga(
+        model: &str,
+        max_tokens: u32,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        thinking_level: &ThinkingLevel,
+    ) -> Self {
         let system = messages
             .iter()
             .filter(|message| matches!(message.role, Role::System))
@@ -254,6 +282,12 @@ impl AnthropicRequest {
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>()
             .join("\n\n");
+        let thinking = thinking_level.anthropic_budget_tokens().map(|budget| {
+            AnthropicThinkingConfig {
+                kind: "enabled".into(),
+                budget_tokens: budget,
+            }
+        });
         Self {
             model: model.into(),
             max_tokens,
@@ -268,6 +302,7 @@ impl AnthropicRequest {
                 .map(anthropic_message)
                 .collect(),
             tools: tools.iter().map(AnthropicToolSpec::from_schema).collect(),
+            thinking,
             stream: None,
         }
     }

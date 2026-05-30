@@ -149,6 +149,7 @@ async fn run_simple_react(
                 model: ctx.llm.model().into(),
                 text: assistant.text.clone(),
                 tool_calls: assistant.tool_calls.clone(),
+                reasoning_content: assistant.reasoning_content.clone(),
             })
             .await
             .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;

@@ -17,12 +17,12 @@ impl ReplayMockLlm {
             .iter()
             .filter_map(|event| match &event.event {
                 Event::LlmResponse {
-                    text, tool_calls, ..
+                    text, tool_calls, reasoning_content, ..
                 } => Some(Ok(LlmResponse {
                     message: AssistantMessage {
                         text: text.clone(),
                         tool_calls: tool_calls.clone(),
-                        reasoning_content: None,
+                        reasoning_content: reasoning_content.clone(),
                     },
                     usage: TokenUsage {
                         prompt: 0,
@@ -77,6 +77,7 @@ mod tests {
                 model: "test-model".into(),
                 text: Some(text.into()),
                 tool_calls: vec![],
+                reasoning_content: None,
             },
         )
     }

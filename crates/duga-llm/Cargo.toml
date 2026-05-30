@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.77"
 
 [dependencies]
+duga-config = { path = "../duga-config" }
 duga-types = { path = "../duga-types" }
 duga-events = { path = "../duga-events" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "stream"] }

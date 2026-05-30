@@ -29,6 +29,30 @@ pub enum ThinkingLevel {
     High,
 }
 
+impl ThinkingLevel {
+    /// Returns the API parameter value for OpenAI / DeepSeek `reasoning_effort`.
+    /// Returns `None` when thinking is disabled (the field should be omitted).
+    pub fn to_api_param(&self) -> Option<&'static str> {
+        match self {
+            ThinkingLevel::Off => None,
+            ThinkingLevel::Low => Some("low"),
+            ThinkingLevel::Medium => Some("medium"),
+            ThinkingLevel::High => Some("high"),
+        }
+    }
+
+    /// Returns the Anthropic thinking budget in tokens.
+    /// Returns `None` when thinking is disabled.
+    pub fn anthropic_budget_tokens(&self) -> Option<u32> {
+        match self {
+            ThinkingLevel::Off => None,
+            ThinkingLevel::Low => Some(1024),
+            ThinkingLevel::Medium => Some(4096),
+            ThinkingLevel::High => Some(16384),
+        }
+    }
+}
+
 impl Default for ThinkingLevel {
     fn default() -> Self {
         Self::Off
