@@ -887,6 +887,18 @@ fn is_typing_key(key: &KeyEvent) -> bool {
         self.active_confirm_dialog = None;
         self.pending_confirm_tx = None;
         self.confirm_kind = None;
+
+        // Load conversation history for the next run in this session so
+        // that subsequent messages carry the full context.
+        if let Some(ref id) = self.current_session_id {
+            let path = self.sessions_dir.join(format!("{id}.jsonl"));
+            let history = load_conversation_history(
+                &path,
+                self.config.memory.context_window_size,
+                self.config.memory.max_context_tokens,
+            );
+            self.pending_history = history;
+        }
     }
 
     // ── Session management ──────────────────────────────────────────────
