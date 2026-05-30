@@ -253,8 +253,9 @@ impl OpenAiRequest {
 #[derive(Debug, Serialize)]
 struct OpenAiMessage {
     role: String,
+
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -277,9 +278,19 @@ fn openai_message(message: &Message) -> Result<OpenAiMessage, LlmError> {
         .collect::<Vec<_>>();
 
     match message.role {
-        Role::System | Role::User => Ok(OpenAiMessage {
-            role: message.role.to_string(),
-            content: Some(text),
+        // User messages use content-part arrays matching pi's format.
+        // System messages remain plain strings (OpenAI API requires it).
+        Role::User => Ok(OpenAiMessage {
+            role: "user".into(),
+            content: Some(serde_json::json!([{"type": "text", "text": text}])),
+            reasoning_content: None,
+            name: message.name.clone(),
+            tool_call_id: None,
+            tool_calls: None,
+        }),
+        Role::System => Ok(OpenAiMessage {
+            role: "system".into(),
+            content: Some(serde_json::Value::String(text)),
             reasoning_content: None,
             name: message.name.clone(),
             tool_call_id: None,
@@ -287,7 +298,11 @@ fn openai_message(message: &Message) -> Result<OpenAiMessage, LlmError> {
         }),
         Role::Assistant => Ok(OpenAiMessage {
             role: "assistant".into(),
-            content: if text.is_empty() { None } else { Some(text) },
+            content: if text.is_empty() {
+                None
+            } else {
+                Some(serde_json::Value::String(text))
+            },
             reasoning_content: message.reasoning_content.clone(),
             name: message.name.clone(),
             tool_call_id: None,
@@ -299,7 +314,7 @@ fn openai_message(message: &Message) -> Result<OpenAiMessage, LlmError> {
         }),
         Role::Tool => Ok(OpenAiMessage {
             role: "tool".into(),
-            content: Some(text),
+            content: Some(serde_json::Value::String(text)),
             reasoning_content: None,
             name: None,
             tool_call_id: Some(message.name.clone().ok_or_else(|| {
