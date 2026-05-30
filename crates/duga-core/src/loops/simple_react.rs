@@ -59,15 +59,7 @@ async fn run_simple_react(
         .await
         .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
 
-    // Set the task anchoring prefix so the LLM stays focused on the
-    // current task even when the context contains older topics.
-    ctx.memory.set_task_anchor(Some(task.clone()));
-
-    // Append a reminder suffix to the user message as a
-    // belt-and-suspenders measure for providers that may ignore
-    // system messages.
-    let anchored_task = format!("{task}\n\nReminder: Focus exclusively on the current task: {task}");
-    ctx.memory.push_user(anchored_task);
+    ctx.memory.push_user(task.clone());
 
     'outer: for step in 1..=ctx.config.limits.max_steps {
         if let Err(error) = check_limits(ctx.config, ctx.cancellation, started) {

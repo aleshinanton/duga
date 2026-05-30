@@ -65,6 +65,7 @@ pub fn load_conversation_history(
     }
 
     let history = normalize_tool_message_sequence(history);
+    let history = strip_stale_reminders(history);
 
     if history.is_empty() {
         None
@@ -105,4 +106,40 @@ pub fn normalize_tool_message_sequence(messages: Vec<Message>) -> Vec<Message> {
         }
     }
     out
+}
+
+/// Strip stale "Reminder: Focus exclusively on the current task: …" suffixes
+/// from historical user messages.  These were injected by a prior run and
+/// conflict with the new run's task anchor.
+fn strip_stale_reminders(messages: Vec<Message>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .map(|mut msg| {
+            if msg.role == Role::User {
+                msg.content = msg
+                    .content
+                    .into_iter()
+                    .map(|block| match block {
+                        ContentBlock::Text { text } => {
+                            let cleaned = strip_reminder_suffix(&text);
+                            ContentBlock::Text { text: cleaned }
+                        }
+                        other => other,
+                    })
+                    .collect();
+            }
+            msg
+        })
+        .collect()
+}
+
+/// Remove the "Reminder: Focus exclusively on the current task: …" suffix
+/// that simple_react appends to every user message.
+fn strip_reminder_suffix(text: &str) -> String {
+    let marker = "\n\nReminder: Focus exclusively on the current task:";
+    if let Some(pos) = text.rfind(marker) {
+        text[..pos].to_string()
+    } else {
+        text.to_string()
+    }
 }

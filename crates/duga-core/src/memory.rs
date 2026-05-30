@@ -85,9 +85,7 @@ impl Memory {
     /// token budget.  Passing `None` clears any existing anchor.
     pub fn set_task_anchor(&mut self, task: Option<String>) {
         self.task_anchor = task.map(|t| {
-            let mut msg = Message::system(format!(
-                "CURRENT TASK: {t}\nAll prior context is background only. Focus exclusively on the current task."
-            ));
+            let mut msg = Message::system(t);
             msg.pinned = true;
             msg
         });
@@ -683,8 +681,7 @@ mod tests {
         let messages = memory.messages();
         assert!(messages[0].role == Role::System);
         let text = message_text(&messages[0]);
-        assert!(text.contains("CURRENT TASK: test task"));
-        assert!(text.contains("Focus exclusively on the current task"));
+        assert_eq!(text, "test task", "anchor should be the raw task text");
         // System messages come after the anchor.
         assert_eq!(messages[1].role.to_string(), "system");
     }
@@ -731,7 +728,7 @@ mod tests {
         for msg in &calls[0] {
             let text = message_text(msg);
             assert!(
-                !text.contains("CURRENT TASK:"),
+                text != "my task",
                 "task anchor should not be in compression input, got: {text}"
             );
         }
@@ -761,7 +758,7 @@ mod tests {
         let messages = memory.messages();
         let anchor_text = message_text(&messages[0]);
         assert!(
-            anchor_text.contains("CURRENT TASK: critical task"),
+            anchor_text == "critical task",
             "anchor should survive budget enforcement"
         );
     }
@@ -871,7 +868,7 @@ mod tests {
             }))
             .collect::<Vec<_>>()
             .join("");
-        assert!(anchor_text.contains("CURRENT TASK"),
+        assert!(anchor_text.contains("task"),
             "task anchor must survive checkpoint/restore");
     }
 
