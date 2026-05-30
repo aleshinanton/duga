@@ -2,7 +2,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
 
@@ -125,7 +125,7 @@ fn push_item(out: &mut Vec<Line<'static>>, item: &TranscriptItem, w: usize, them
 fn push_card(out: &mut Vec<Line<'static>>, title: &str, body: &str, w: usize, theme: &Theme, streaming: bool, markdown: bool) {
     let style = Style::default().fg(theme.colors.text).bg(theme.colors.bg);
     let border_style = Style::default().fg(theme.colors.border).bg(theme.colors.bg);
-    let title_style = Style::default().fg(theme.colors.primary).bg(theme.colors.bg);
+    let _title_style = Style::default().fg(theme.colors.primary).bg(theme.colors.bg);
 
     let inner_w = w.saturating_sub(4);
 

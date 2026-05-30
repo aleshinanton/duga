@@ -26,7 +26,6 @@ use duga_runtime::{
     tool_guidance, ConfirmationMiddleware, ConfirmationPolicy,
 };
 use duga_sandbox::{CancellationToken, Workspace};
-use duga_types::message::Message;
 use std::sync::Arc;
 use teloxide::prelude::*;
 

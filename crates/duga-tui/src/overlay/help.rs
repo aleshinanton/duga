@@ -33,9 +33,6 @@ struct HelpColors {
     bg: ratatui::style::Color,
     dialog_bg: ratatui::style::Color,
     border: ratatui::style::Color,
-    title: ratatui::style::Color,
-    text: ratatui::style::Color,
-    dim: ratatui::style::Color,
 }
 
 impl HelpOverlay {
@@ -97,9 +94,6 @@ impl HelpOverlay {
                 bg: theme.colors.bg,
                 dialog_bg: theme.colors.surface,
                 border: theme.colors.primary,
-                title: theme.colors.primary,
-                text: theme.colors.text,
-                dim: theme.colors.text_dim,
             },
         }
     }
