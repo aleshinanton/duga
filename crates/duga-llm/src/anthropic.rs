@@ -245,7 +245,6 @@ fn map_status(status: StatusCode, body: String) -> LlmError {
 }
 
 #[derive(Debug, Serialize)]
-#[derive(Debug, Serialize)]
 struct AnthropicThinkingConfig {
     #[serde(rename = "type")]
     kind: String,
