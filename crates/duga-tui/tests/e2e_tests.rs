@@ -1129,13 +1129,15 @@ fn test_epic33_editor_in_focus_mode() {
 #[test]
 fn test_epic33_editor_not_in_focus_mode() {
     let (mut app, _rx) = make_test_app();
-    // When focus is Chat, typing should NOT go to editor
+    // When focus is Chat, typing auto-switches to Input and inserts
     app.focus = duga_tui::focus::Focus::Chat;
     app.handle_key(&crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('h'),
         crossterm::event::KeyModifiers::NONE,
     ));
-    assert_eq!(app.editor.text(), "");
+    // Auto-switch: typing in Chat mode switches focus to Input and inserts text
+    assert_eq!(app.focus, duga_tui::focus::Focus::Input);
+    assert_eq!(app.editor.text(), "h");
 }
 
 #[test]

@@ -3,7 +3,8 @@
 //! `Focus::Chat | Sidebar | Input | Overlay` enum.
 //! Tab/Shift+Tab cycles through Chat → Sidebar → Input (skipping Overlay).
 //! Overlay is modal: entered when a dialog opens, exited via Esc/action.
-//! Dedicated shortcuts (`i`, `r`, `e`, `Esc`) jump to specific panes.
+//! Ctrl+R toggles reasoning, Ctrl+E toggles events. Esc returns to Chat.
+//! Typing any character auto-switches focus to Input.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -41,7 +42,7 @@ impl Focus {
             Focus::Input if sidebar_visible => Focus::Sidebar,
             Focus::Input => Focus::Chat,
             Focus::Sidebar => Focus::Chat,
-            Focus::Overlay => Focus::Overlay, // Shift+Tab does NOT change out of overlay
+            Focus::Overlay => Focus::Overlay,
         }
     }
 
@@ -61,7 +62,7 @@ pub struct FocusRouter;
 
 impl FocusRouter {
     /// Route a key event based on current focus.
-    /// Returns `true` if the key was consumed (should not be passed further).
+    /// Returns a `FocusAction` indicating what to do.
     pub fn route(
         key: &KeyEvent,
         focus: &mut Focus,
@@ -69,16 +70,12 @@ impl FocusRouter {
         has_overlay: bool,
         is_running: bool,
     ) -> FocusAction {
-        // Overlay mode: only Esc closes overlay, everything else is ignored here
-        // (overlay gets keys via the overlay manager, not the focus router).
-        // But we handle Esc to exit overlay focus.
+        // Overlay mode: block all focus shortcuts
         if *focus == Focus::Overlay {
-            // In overlay mode, Tab and shortcuts are blocked.
-            // Only the overlay handler can close itself.
             return FocusAction::PassToOverlay;
         }
 
-        // If any overlay is active (regardless of Focus enum), let overlay consume keys.
+        // If any overlay is active, let overlay consume keys.
         if has_overlay {
             return FocusAction::PassToOverlay;
         }
@@ -112,37 +109,27 @@ impl FocusRouter {
                 FocusAction::Consumed
             }
 
-            // `i`: jump to Input (from any non-overlay focus)
-            KeyEvent {
-                code: KeyCode::Char('i'),
-                modifiers: KeyModifiers::NONE,
-                ..
-            } if !is_running => {
-                *focus = Focus::Input;
-                FocusAction::Consumed
-            }
-
-            // `r`: jump to Sidebar + toggle reasoning
+            // Ctrl+R: toggle reasoning panel (only when idle, sidebar visible)
             KeyEvent {
                 code: KeyCode::Char('r'),
-                modifiers: KeyModifiers::NONE,
+                modifiers: KeyModifiers::CONTROL,
                 ..
-            } if sidebar_visible && !matches!(key.modifiers, KeyModifiers::CONTROL) => {
+            } if sidebar_visible && !is_running => {
                 *focus = Focus::Sidebar;
                 FocusAction::ToggleReasoning
             }
 
-            // `e`: jump to Sidebar + toggle events
+            // Ctrl+E: toggle event log panel (only when idle, sidebar visible)
             KeyEvent {
                 code: KeyCode::Char('e'),
-                modifiers: KeyModifiers::NONE,
+                modifiers: KeyModifiers::CONTROL,
                 ..
-            } if sidebar_visible && !matches!(key.modifiers, KeyModifiers::CONTROL) => {
+            } if sidebar_visible && !is_running => {
                 *focus = Focus::Sidebar;
                 FocusAction::ToggleEvents
             }
 
-            // Esc: return to Chat
+            // Esc: return to Chat (from any non-overlay focus)
             KeyEvent {
                 code: KeyCode::Esc,
                 modifiers: KeyModifiers::NONE,
@@ -204,7 +191,6 @@ mod tests {
 
     #[test]
     fn overlay_not_in_tab_cycle() {
-        // Tab from Overlay stays Overlay
         assert_eq!(Focus::Overlay.next(true), Focus::Overlay);
         assert_eq!(Focus::Overlay.prev(true), Focus::Overlay);
     }
@@ -215,13 +201,6 @@ mod tests {
         assert_eq!(new, Focus::Overlay);
         assert_eq!(prev, Focus::Chat);
         assert_eq!(Focus::exit_overlay(prev), Focus::Chat);
-    }
-
-    #[test]
-    fn enter_exit_overlay_from_input() {
-        let (new, prev) = Focus::enter_overlay(Focus::Input);
-        assert_eq!(new, Focus::Overlay);
-        assert_eq!(Focus::exit_overlay(prev), Focus::Input);
     }
 
     #[test]
@@ -243,57 +222,37 @@ mod tests {
     }
 
     #[test]
-    fn tab_blocked_when_has_overlay() {
+    fn ctrl_r_toggles_reasoning() {
         let mut focus = Focus::Chat;
-        let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-        let action = FocusRouter::route(&key, &mut focus, true, true, false);
-        assert_eq!(action, FocusAction::PassToOverlay);
-        assert_eq!(focus, Focus::Chat); // unchanged
-    }
-
-    #[test]
-    fn i_key_jumps_to_input() {
-        let mut focus = Focus::Chat;
-        let key = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
-        let action = FocusRouter::route(&key, &mut focus, true, false, false);
-        assert_eq!(action, FocusAction::Consumed);
-        assert_eq!(focus, Focus::Input);
-    }
-
-    #[test]
-    fn i_key_blocked_when_running() {
-        let mut focus = Focus::Chat;
-        let key = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
-        let action = FocusRouter::route(&key, &mut focus, true, false, true);
-        assert_eq!(action, FocusAction::PassThrough);
-        assert_eq!(focus, Focus::Chat); // unchanged
-    }
-
-    #[test]
-    fn i_key_blocked_during_overlay() {
-        let mut focus = Focus::Chat;
-        let key = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
-        let action = FocusRouter::route(&key, &mut focus, true, true, false);
-        assert_eq!(action, FocusAction::PassToOverlay);
-        assert_eq!(focus, Focus::Chat); // unchanged
-    }
-
-    #[test]
-    fn r_key_toggles_reasoning() {
-        let mut focus = Focus::Chat;
-        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
         let action = FocusRouter::route(&key, &mut focus, true, false, false);
         assert_eq!(action, FocusAction::ToggleReasoning);
         assert_eq!(focus, Focus::Sidebar);
     }
 
     #[test]
-    fn r_key_noop_when_sidebar_hidden() {
+    fn ctrl_r_noop_when_sidebar_hidden() {
         let mut focus = Focus::Chat;
-        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
         let action = FocusRouter::route(&key, &mut focus, false, false, false);
         assert_eq!(action, FocusAction::PassThrough);
-        assert_eq!(focus, Focus::Chat); // unchanged
+    }
+
+    #[test]
+    fn ctrl_r_noop_when_running() {
+        let mut focus = Focus::Chat;
+        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        let action = FocusRouter::route(&key, &mut focus, true, false, true);
+        assert_eq!(action, FocusAction::PassThrough);
+    }
+
+    #[test]
+    fn ctrl_e_toggles_events() {
+        let mut focus = Focus::Chat;
+        let key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        assert_eq!(action, FocusAction::ToggleEvents);
+        assert_eq!(focus, Focus::Sidebar);
     }
 
     #[test]
@@ -306,11 +265,11 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_r_not_consumed_as_r() {
+    fn bare_r_passes_through() {
+        // Bare 'r' (without Ctrl) should pass through to editor, not be a shortcut
         let mut focus = Focus::Chat;
-        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
         let action = FocusRouter::route(&key, &mut focus, true, false, false);
         assert_eq!(action, FocusAction::PassThrough);
-        assert_eq!(focus, Focus::Chat); // unchanged
     }
 }

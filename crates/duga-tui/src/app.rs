@@ -305,6 +305,19 @@ impl App {
         (transcript_height / 2).max(1)
     }
 
+/// Returns true if the key event represents a typing/editing action
+/// (characters, backspace, delete, arrows, home, end) that should
+/// auto-switch focus to the Input pane.
+fn is_typing_key(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(_) if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT => true,
+        KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter => true,
+        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => true,
+        KeyCode::Home | KeyCode::End => true,
+        _ => false,
+    }
+}
+
     pub fn handle_key(&mut self, key: &KeyEvent) {
         // 0. Confirmation dialog takes priority over everything.
         if let Some(ref mut dialog) = self.active_confirm_dialog {
@@ -529,18 +542,69 @@ impl App {
             _ => {}
         }
 
-        // 4. Pass key to editor (only when Input has focus)
-        if !self.overlays.has_overlay() && self.focus == Focus::Input {
-            match self.editor.handle_key(key) {
-                EditorAction::Submit => {
-                    if matches!(self.state, AppState::Running { .. }) {
-                        self.send_steering();
-                    } else {
-                        self.submit_prompt();
+        // 4. Focus-aware key routing for editor + chat scrolling
+        if !self.overlays.has_overlay() {
+            match self.focus {
+                Focus::Chat => {
+                    // j/k scroll in Chat mode
+                    match key.code {
+                        KeyCode::Char('j') if key.modifiers == KeyModifiers::NONE => {
+                            self.transcript.scroll_mut().scroll_down(3);
+                            return;
+                        }
+                        KeyCode::Char('k') if key.modifiers == KeyModifiers::NONE => {
+                            self.transcript.scroll_mut().scroll_up(3);
+                            return;
+                        }
+                        KeyCode::Char('g') if key.modifiers == KeyModifiers::NONE => {
+                            self.transcript.scroll_mut().scroll_to_bottom();
+                            return;
+                        }
+                        _ => {}
+                    }
+                    // Any other character key: auto-switch to Input and insert
+                    if Self::is_typing_key(key) {
+                        self.focus = Focus::Input;
+                        self.editor.handle_key(key);
+                        return;
                     }
                 }
-                EditorAction::Ignored => {}
-                EditorAction::Consumed => {}
+                Focus::Input => {
+                    // All keys go to editor
+                    match self.editor.handle_key(key) {
+                        EditorAction::Submit => {
+                            if matches!(self.state, AppState::Running { .. }) {
+                                self.send_steering();
+                            } else {
+                                self.submit_prompt();
+                            }
+                        }
+                        EditorAction::Ignored => {}
+                        EditorAction::Consumed => {}
+                    }
+                }
+                Focus::Sidebar => {
+                    // j/k scroll in sidebar
+                    match key.code {
+                        KeyCode::Char('j') if key.modifiers == KeyModifiers::NONE => {
+                            // Scroll event log would go here; for now just consume
+                            return;
+                        }
+                        KeyCode::Char('k') if key.modifiers == KeyModifiers::NONE => {
+                            return;
+                        }
+                        _ => {}
+                    }
+                    // Any typing key: auto-switch to Input
+                    if Self::is_typing_key(key) {
+                        self.focus = Focus::Input;
+                        self.editor.handle_key(key);
+                        return;
+                    }
+                }
+                Focus::Overlay => {
+                    // Overlay handles its own keys; nothing to do here
+                }
             }
         }
     }
