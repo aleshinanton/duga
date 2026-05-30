@@ -19,6 +19,8 @@ pub struct ReasoningPanel {
     pub started_at: Option<Instant>,
     /// Whether reasoning completed.
     pub completed: bool,
+    /// Frozen duration captured at finish time (stops the timer).
+    pub duration_secs: Option<f64>,
 }
 
 impl ReasoningPanel {
@@ -34,6 +36,7 @@ impl ReasoningPanel {
 
     /// Mark reasoning as completed.
     pub fn finish(&mut self) {
+        self.duration_secs = self.started_at.map(|s| s.elapsed().as_secs_f64());
         self.completed = true;
     }
 
@@ -41,6 +44,7 @@ impl ReasoningPanel {
     pub fn reset(&mut self) {
         self.started_at = None;
         self.completed = false;
+        self.duration_secs = None;
     }
 
     /// Render the reasoning panel in the given area.
@@ -77,8 +81,10 @@ impl ReasoningPanel {
                 let mut lines = Vec::new();
                 let wc = t.split_whitespace().count();
 
-                // Duration
-                let duration_str = if let Some(started) = self.started_at {
+                // Duration (frozen when completed, live when streaming)
+                let duration_str = if let Some(frozen) = self.duration_secs {
+                    format!("{:.1}s", frozen)
+                } else if let Some(started) = self.started_at {
                     let elapsed = started.elapsed().as_secs_f64();
                     format!("{:.1}s", elapsed)
                 } else {

@@ -671,6 +671,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 // Auto-finish thinking if it was streaming
                 if self.transcript.thinking_is_streaming() {
                     self.transcript.finish_thinking();
+                    self.reasoning_panel.finish();
                 }
                 // Log to event log
                 self.event_log.push(LogEntry::new(
@@ -1181,17 +1182,20 @@ fn is_typing_key(key: &KeyEvent) -> bool {
 
     /// Render the entire TUI.
     pub fn render(&self, frame: &mut ratatui::Frame) {
-        use ratatui::text::{Line, Span};
-        use ratatui::widgets::Paragraph;
-
         let area = frame.area();
 
         // Compute pane rects from the layout manager
-        let pane_rects = self.layout_manager.compute(
+        let mut pane_rects = self.layout_manager.compute(
             area.width,
             area.height,
             self.banner.is_active(),
         );
+
+        // Collapse sidebar when both panels are hidden — let chat expand into that space
+        if !self.sidebar_state.has_content() && pane_rects.sidebar.width > 0 {
+            pane_rects.chat.width += pane_rects.sidebar.width;
+            pane_rects.sidebar.width = 0;
+        }
 
         // ── Status bar (header area) ──────────────────────────────────
         if pane_rects.header.height > 0 {
@@ -1234,23 +1238,6 @@ fn is_typing_key(key: &KeyEvent) -> bool {
         // ── Banner ────────────────────────────────────────────────────
         if pane_rects.banner.height > 0 {
             self.banner.render(pane_rects.banner, frame.buffer_mut(), &self.theme);
-        }
-
-        // ── Separator ─────────────────────────────────────────────────
-        let sep_area = ratatui::layout::Rect::new(
-            pane_rects.chat.x,
-            pane_rects.input.y.saturating_sub(1),
-            area.width,
-            1,
-        );
-        if sep_area.y < area.height {
-            let sep = Paragraph::new(Line::from(
-                Span::styled(
-                    "─".repeat(area.width as usize),
-                    self.theme.separator_style(),
-                ),
-            ));
-            frame.render_widget(sep, sep_area);
         }
 
         // ── Editor (input area) ───────────────────────────────────────
