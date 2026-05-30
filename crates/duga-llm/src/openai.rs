@@ -303,13 +303,12 @@ fn openai_message(message: &Message) -> Result<OpenAiMessage, LlmError> {
             } else {
                 Some(serde_json::Value::String(text))
             },
-            // reasoning_content is deliberately NOT echoed back to the API.
-            // DeepSeek models in thinking mode return reasoning_content in
-            // responses, but sending it back causes HTTP 400:
+            // DeepSeek models in thinking mode require reasoning_content
+            // to be echoed back in subsequent assistant messages.
+            // Without it, the API returns HTTP 400:
             //   "The `reasoning_content` in the thinking mode must be
             //    passed back to the API."
-            // This field is for API→client only, not client→API.
-            reasoning_content: None,
+            reasoning_content: message.reasoning_content.clone(),
             name: message.name.clone(),
             tool_call_id: None,
             tool_calls: if tool_calls.is_empty() {
