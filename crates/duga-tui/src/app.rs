@@ -329,7 +329,7 @@ impl App {
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, item)| {
-                        if matches!(item, TranscriptItem::ThinkingBlock { is_streaming: false, .. }) {
+                        if matches!(item, TranscriptItem::ThinkingBlock { .. }) {
                             Some(idx)
                         } else {
                             None
@@ -1161,7 +1161,13 @@ impl App {
                                                 .add_modifier(Modifier::ITALIC),
                                         ),
                                     ));
-                                    let start = (*scroll_offset).min(total.saturating_sub(1));
+                                    // During streaming, auto-follow the tail.
+                                    // After completion, use scroll_offset for manual navigation.
+                                    let start = if *think_streaming {
+                                        total.saturating_sub(8)
+                                    } else {
+                                        (*scroll_offset).min(total.saturating_sub(1))
+                                    };
                                     let display: Vec<&str> = think_lines.iter()
                                         .skip(start)
                                         .take(8)

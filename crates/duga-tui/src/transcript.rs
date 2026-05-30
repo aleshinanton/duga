@@ -296,14 +296,19 @@ impl Transcript {
     /// Advance scroll within a thinking block by one page. Returns true if it wrapped around
     /// (collapsed), false if it advanced or stayed.
     pub fn advance_thinking_scroll(&mut self, idx: usize, page_lines: usize) -> bool {
-        if let Some(TranscriptItem::ThinkingBlock { is_expanded, scroll_offset, text, .. }) = self.items.get_mut(idx) {
+        if let Some(TranscriptItem::ThinkingBlock { is_expanded, scroll_offset, text, is_streaming, .. }) = self.items.get_mut(idx) {
             if !*is_expanded {
-                // Expand to first page
                 *is_expanded = true;
-                *scroll_offset = 0;
+                if *is_streaming {
+                    let wrapped = crate::text::wrap_text(text, 60);
+                    let total = wrapped.len().max(1);
+                    *scroll_offset = total.saturating_sub(page_lines);
+                } else {
+                    *scroll_offset = 0;
+                }
                 return false;
             }
-            let total_lines = crate::text::wrap_text(text, 80).len().max(1);
+            let total_lines = crate::text::wrap_text(text, 60).len().max(1);
             let next = *scroll_offset + page_lines;
             if next >= total_lines {
                 // Wrapped around: collapse
