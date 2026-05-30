@@ -109,7 +109,10 @@ impl AnthropicClient {
         response: reqwest::Response,
         event_sink: &dyn EventSink,
     ) -> Result<LlmResponse, LlmError> {
-        let body = response.text().await.map_err(|e| LlmError::Transport(e.to_string()))?;
+        use futures::StreamExt;
+
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
         let mut acc_text = Vec::new();
         let mut acc_think = Vec::new();
         let mut acc_tools: Vec<(usize, String, String, String)> = Vec::new();
@@ -117,81 +120,90 @@ impl AnthropicClient {
         let mut input_tokens: u32 = 0;
         let mut output_tokens: u32 = 0;
 
-        for line in body.lines() {
-            let line = line.trim();
-            if line.is_empty() { continue; }
-            if let Some(data) = line.strip_prefix("data: ") {
-                if data == "[DONE]" { continue; }
-                let ev: serde_json::Value = serde_json::from_str(data)
-                    .map_err(|e| LlmError::Provider(format!("SSE parse: {e}")))?;
-                match ev["type"].as_str().unwrap_or("") {
-                    "content_block_start" => {
-                        let idx = ev["index"].as_u64().unwrap_or(0) as usize;
-                        if let Some(cb) = ev.get("content_block") {
-                            let ct = cb["type"].as_str().unwrap_or("").to_string();
-                            block_types.insert(idx, ct.clone());
-                            if ct == "tool_use" {
-                                let name = cb["name"].as_str().unwrap_or("unknown").to_string();
-                                let id = cb["id"].as_str().unwrap_or("").to_string();
-                                if let Some(e) = acc_tools.iter_mut().find(|(i,_,_,_)| *i==idx) {
-                                    e.1 = id; e.2 = name;
-                                } else {
-                                    acc_tools.push((idx, id, name, String::new()));
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| LlmError::Transport(e.to_string()))?;
+            let text = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&text);
+
+            // Process complete lines from buffer
+            while let Some(nl) = buffer.find('\n') {
+                let line = buffer[..nl].trim().to_string();
+                buffer = buffer[nl + 1..].to_string();
+                if line.is_empty() { continue; }
+
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data == "[DONE]" { continue; }
+                    let ev: serde_json::Value = serde_json::from_str(data)
+                        .map_err(|e| LlmError::Provider(format!("SSE parse: {e}")))?;
+                    match ev["type"].as_str().unwrap_or("") {
+                        "content_block_start" => {
+                            let idx = ev["index"].as_u64().unwrap_or(0) as usize;
+                            if let Some(cb) = ev.get("content_block") {
+                                let ct = cb["type"].as_str().unwrap_or("").to_string();
+                                block_types.insert(idx, ct.clone());
+                                if ct == "tool_use" {
+                                    let name = cb["name"].as_str().unwrap_or("unknown").to_string();
+                                    let id = cb["id"].as_str().unwrap_or("").to_string();
+                                    if let Some(e) = acc_tools.iter_mut().find(|(i,_,_,_)| *i==idx) {
+                                        e.1 = id; e.2 = name;
+                                    } else {
+                                        acc_tools.push((idx, id, name, String::new()));
+                                    }
                                 }
                             }
                         }
-                    }
-                    "content_block_delta" => {
-                        let idx = ev["index"].as_u64().unwrap_or(0) as usize;
-                        if let Some(d) = ev.get("delta") {
-                            match d["type"].as_str().unwrap_or("") {
-                                "thinking_delta" => {
-                                    if let Some(t) = d["thinking"].as_str() {
-                                        acc_think.push(t.to_string());
-                                        event_sink.emit(Event::LlmThinkingDelta {
-                                            model: self.model.clone(), delta: t.to_string(),
-                                        }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
-                                    }
-                                }
-                                "text_delta" => {
-                                    if let Some(t) = d["text"].as_str() {
-                                        acc_text.push(t.to_string());
-                                        event_sink.emit(Event::LlmTokenDelta {
-                                            model: self.model.clone(), delta: t.to_string(),
-                                        }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
-                                    }
-                                }
-                                "input_json_delta" => {
-                                    if let Some(p) = d["partial_json"].as_str() {
-                                        if let Some(pos) = acc_tools.iter().position(|(i,_,_,_)| *i==idx) {
-                                            acc_tools[pos].3.push_str(p);
-                                        } else {
-                                            acc_tools.push((idx, format!("toolu_{idx:02}"), "unknown".into(), p.to_string()));
+                        "content_block_delta" => {
+                            let idx = ev["index"].as_u64().unwrap_or(0) as usize;
+                            if let Some(d) = ev.get("delta") {
+                                match d["type"].as_str().unwrap_or("") {
+                                    "thinking_delta" => {
+                                        if let Some(t) = d["thinking"].as_str() {
+                                            acc_think.push(t.to_string());
+                                            event_sink.emit(Event::LlmThinkingDelta {
+                                                model: self.model.clone(), delta: t.to_string(),
+                                            }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
                                         }
                                     }
+                                    "text_delta" => {
+                                        if let Some(t) = d["text"].as_str() {
+                                            acc_text.push(t.to_string());
+                                            event_sink.emit(Event::LlmTokenDelta {
+                                                model: self.model.clone(), delta: t.to_string(),
+                                            }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
+                                        }
+                                    }
+                                    "input_json_delta" => {
+                                        if let Some(p) = d["partial_json"].as_str() {
+                                            if let Some(pos) = acc_tools.iter().position(|(i,_,_,_)| *i==idx) {
+                                                acc_tools[pos].3.push_str(p);
+                                            } else {
+                                                acc_tools.push((idx, format!("toolu_{idx:02}"), "unknown".into(), p.to_string()));
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
-                                _ => {}
                             }
                         }
-                    }
-                    "message_delta" => {
-                        if let Some(u) = ev.get("usage") {
-                            output_tokens = u["output_tokens"].as_u64().unwrap_or(0) as u32;
-                        }
-                    }
-                    "message_start" => {
-                        if let Some(m) = ev.get("message") {
-                            if let Some(u) = m.get("usage") {
-                                input_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
+                        "message_delta" => {
+                            if let Some(u) = ev.get("usage") {
+                                output_tokens = u["output_tokens"].as_u64().unwrap_or(0) as u32;
                             }
                         }
+                        "message_start" => {
+                            if let Some(m) = ev.get("message") {
+                                if let Some(u) = m.get("usage") {
+                                    input_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
+                                }
+                            }
+                        }
+                        "error" => {
+                            return Err(LlmError::Provider(
+                                ev["error"]["message"].as_str().unwrap_or("SSE error").to_string()
+                            ));
+                        }
+                        _ => {}
                     }
-                    "error" => {
-                        return Err(LlmError::Provider(
-                            ev["error"]["message"].as_str().unwrap_or("SSE error").to_string()
-                        ));
-                    }
-                    _ => {}
                 }
             }
         }

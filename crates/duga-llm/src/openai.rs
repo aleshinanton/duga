@@ -123,52 +123,63 @@ impl OpenAiClient {
         response: reqwest::Response,
         event_sink: &dyn EventSink,
     ) -> Result<LlmResponse, LlmError> {
-        let body = response.text().await.map_err(|e| LlmError::Transport(e.to_string()))?;
+        use futures::StreamExt;
+
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
         let mut content = String::new();
         let mut reasoning = String::new();
         let mut acc_tools: Vec<OpenAiStreamToolCall> = Vec::new();
         let mut input_tokens: u32 = 0;
         let mut output_tokens: u32 = 0;
 
-        for line in body.lines() {
-            let line = line.trim();
-            if line.is_empty() { continue; }
-            if let Some(data) = line.strip_prefix("data: ") {
-                if data == "[DONE]" { continue; }
-                let chunk: serde_json::Value = serde_json::from_str(data)
-                    .map_err(|e| LlmError::Provider(format!("SSE parse: {e}")))?;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| LlmError::Transport(e.to_string()))?;
+            let text = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&text);
 
-                if let Some(u) = chunk.get("usage") {
-                    input_tokens = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
-                    output_tokens = u["completion_tokens"].as_u64().unwrap_or(0) as u32;
-                }
+            while let Some(nl) = buffer.find('\n') {
+                let line = buffer[..nl].trim().to_string();
+                buffer = buffer[nl + 1..].to_string();
+                if line.is_empty() { continue; }
 
-                if let Some(choices) = chunk.get("choices").and_then(|c| c.as_array()) {
-                    for choice in choices {
-                        if let Some(delta) = choice.get("delta") {
-                            if let Some(rc) = delta["reasoning_content"].as_str() {
-                                reasoning.push_str(rc);
-                                event_sink.emit(Event::LlmThinkingDelta {
-                                    model: self.model.clone(), delta: rc.to_string(),
-                                }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
-                            }
-                            if let Some(t) = delta["content"].as_str() {
-                                content.push_str(t);
-                                event_sink.emit(Event::LlmTokenDelta {
-                                    model: self.model.clone(), delta: t.to_string(),
-                                }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
-                            }
-                            if let Some(tcs) = delta["tool_calls"].as_array() {
-                                for tc in tcs {
-                                    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
-                                    while acc_tools.len() <= idx {
-                                        acc_tools.push(OpenAiStreamToolCall::default());
-                                    }
-                                    let e = &mut acc_tools[idx];
-                                    if let Some(id) = tc["id"].as_str() { e.id = Some(id.to_string()); }
-                                    if let Some(fn_info) = tc.get("function") {
-                                        if let Some(n) = fn_info["name"].as_str() { e.name = Some(n.to_string()); }
-                                        if let Some(a) = fn_info["arguments"].as_str() { e.arguments.push_str(a); }
+                if let Some(data) = line.strip_prefix("data: ") {
+                    if data == "[DONE]" { continue; }
+                    let chunk: serde_json::Value = serde_json::from_str(data)
+                        .map_err(|e| LlmError::Provider(format!("SSE parse: {e}")))?;
+
+                    if let Some(u) = chunk.get("usage") {
+                        input_tokens = u["prompt_tokens"].as_u64().unwrap_or(0) as u32;
+                        output_tokens = u["completion_tokens"].as_u64().unwrap_or(0) as u32;
+                    }
+
+                    if let Some(choices) = chunk.get("choices").and_then(|c| c.as_array()) {
+                        for choice in choices {
+                            if let Some(delta) = choice.get("delta") {
+                                if let Some(rc) = delta["reasoning_content"].as_str() {
+                                    reasoning.push_str(rc);
+                                    event_sink.emit(Event::LlmThinkingDelta {
+                                        model: self.model.clone(), delta: rc.to_string(),
+                                    }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
+                                }
+                                if let Some(t) = delta["content"].as_str() {
+                                    content.push_str(t);
+                                    event_sink.emit(Event::LlmTokenDelta {
+                                        model: self.model.clone(), delta: t.to_string(),
+                                    }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
+                                }
+                                if let Some(tcs) = delta["tool_calls"].as_array() {
+                                    for tc in tcs {
+                                        let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                                        while acc_tools.len() <= idx {
+                                            acc_tools.push(OpenAiStreamToolCall::default());
+                                        }
+                                        let e = &mut acc_tools[idx];
+                                        if let Some(id) = tc["id"].as_str() { e.id = Some(id.to_string()); }
+                                        if let Some(fn_info) = tc.get("function") {
+                                            if let Some(n) = fn_info["name"].as_str() { e.name = Some(n.to_string()); }
+                                            if let Some(a) = fn_info["arguments"].as_str() { e.arguments.push_str(a); }
+                                        }
                                     }
                                 }
                             }

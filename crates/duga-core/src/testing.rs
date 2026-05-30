@@ -171,11 +171,11 @@ impl LlmClient for MockLlm {
                 .ok_or_else(|| LlmError::Provider("mock exhausted".into()))??;
             if options.streaming {
                 if let Some(reasoning) = &response.message.reasoning_content {
-                    for word in reasoning.split_whitespace() {
+                    for ch in reasoning.chars() {
                         event_sink
                             .emit(Event::LlmThinkingDelta {
                                 model: self.model.clone(),
-                                delta: word.into(),
+                                delta: ch.to_string(),
                             })
                             .await
                             .map_err(|e| LlmError::Provider(e.to_string()))?;
@@ -321,7 +321,9 @@ mod tests {
         let events = sink.events();
         assert!(matches!(events[0], Event::LlmThinkingDelta { .. }));
         assert!(matches!(events.last().unwrap(), Event::LlmTokenDelta { .. }));
-        assert_eq!(events.len(), 11);
+        // "Let me think step by step" → 25 chars + \n separator = 26 thinking deltas
+        // "the answer is 42" → 4 words = 4 text deltas; total: 30
+        assert_eq!(events.len(), 30);
     }
 
     #[tokio::test]
