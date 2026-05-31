@@ -461,6 +461,7 @@ mod tests {
                 "read a file",
                 serde_json::json!({"type": "object"}),
             )],
+            &ThinkingLevel::Off,
         );
         let json = serde_json::to_value(request).unwrap();
 
