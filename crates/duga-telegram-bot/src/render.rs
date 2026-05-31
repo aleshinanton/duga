@@ -80,6 +80,10 @@ impl TelegramEventRenderer {
                     description,
                     ..
                 } => {
+                    // Skip think tool labels — thinking content goes to the final message.
+                    if tool_name == "think" {
+                        continue;
+                    }
                     self.tool_info.insert(
                         tool_call_id.clone(),
                         (tool_name.clone(), description.clone()),
@@ -101,6 +105,10 @@ impl TelegramEventRenderer {
                         .get(&tool_call_id)
                         .map(|(n, d)| (n.as_str(), d.as_str()))
                         .unwrap_or(("tool", description.as_str()));
+                    // Skip think tool labels — thinking content goes to the final message.
+                    if tool_name == "think" {
+                        continue;
+                    }
                     let display_desc = if stored_description.is_empty() {
                         &description
                     } else {
@@ -123,7 +131,6 @@ impl TelegramEventRenderer {
                 }
                 FrontendEvent::LlmThinkingDelta { delta, .. } => {
                     self.thinking_buffer.push_str(&delta);
-                    let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::Error { message } => {
                     self.error_message = Some(message);
