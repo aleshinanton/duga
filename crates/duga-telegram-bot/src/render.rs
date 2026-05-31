@@ -302,69 +302,30 @@ impl TelegramEventRenderer {
 
         // Send the final answer as a clean new message.
         if let Some(text) = final_text {
-            let use_collapse = text.len() > 300;
-            if use_collapse {
-                tracing::info!(
-                    "sending final answer (collapsed, {} chars, {} chunks)",
-                    text.len(),
-                    chunk_message(&text).len()
-                );
-                // Chunk raw text first (avoids splitting HTML tags), then
-                // convert each chunk to Telegram HTML and wrap in a
-                // collapsible blockquote.  Chunks split on paragraph
-                // boundaries so Markdown structure is preserved.
-                let text_chunks = chunk_message(&text);
-                for (i, chunk) in text_chunks.iter().enumerate() {
-                    let html = markdown_to_telegram_html(&sanitize_tool_call_syntax(chunk));
-                    let collapsed = format!(
-                        "<blockquote expandable>{}</blockquote>",
-                        html
-                    );
-                    match self
-                        .bot
-                        .send_message(self.chat_id, &collapsed)
-                        .parse_mode(ParseMode::Html)
-                        .await
-                    {
-                        Ok(_) => tracing::info!("final answer chunk {i} sent"),
-                        Err(e) => {
-                            tracing::error!("final answer chunk {i} failed: {e}");
-                            // Retry without HTML parse mode as fallback.
-                            let _ = self
-                                .bot
-                                .send_message(self.chat_id, &collapsed)
-                                .await;
-                        }
+            let formatted = format_final_message(&text);
+            let chunks = chunk_message(&formatted);
+            tracing::info!(
+                "sending final answer ({} chars, {} chunks)",
+                text.len(),
+                chunks.len()
+            );
+            for (i, chunk) in chunks.iter().enumerate() {
+                match self
+                    .bot
+                    .send_message(self.chat_id, chunk)
+                    .parse_mode(ParseMode::Html)
+                    .await
+                {
+                    Ok(_) => tracing::info!("final answer chunk {i} sent"),
+                    Err(e) => {
+                        tracing::error!("final answer chunk {i} HTML failed: {e}, retrying plain");
+                        let _ = self
+                            .bot
+                            .send_message(self.chat_id, chunk)
+                            .await;
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
-            } else {
-                let formatted = format_final_message(&text);
-                let chunks = chunk_message(&formatted);
-                tracing::info!(
-                    "sending final answer ({} chars, {} chunks)",
-                    text.len(),
-                    chunks.len()
-                );
-                for (i, chunk) in chunks.iter().enumerate() {
-                    match self
-                        .bot
-                        .send_message(self.chat_id, chunk)
-                        .parse_mode(ParseMode::Html)
-                        .await
-                    {
-                        Ok(_) => tracing::info!("final answer chunk {i} sent"),
-                        Err(e) => {
-                            tracing::error!("final answer chunk {i} failed: {e}");
-                            // Retry without HTML parse mode as fallback.
-                            let _ = self
-                                .bot
-                                .send_message(self.chat_id, chunk)
-                                .await;
-                        }
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
     }
