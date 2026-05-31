@@ -85,7 +85,7 @@ telegram:
     # Your Telegram @username (without @)
     - antonaleshin
   send_tool_events: true
-  send_final_only: false
+  send_final_only: true
   events_dir: "./events"
   data_dir: "./data"
   attachments:

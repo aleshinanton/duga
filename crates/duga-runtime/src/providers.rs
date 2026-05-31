@@ -172,8 +172,10 @@ mod tests {
         fn drop(&mut self) {
             for (key, value) in &self.saved {
                 match value {
-                    Some(value) => std::env::set_var(key, value),
-                    None => std::env::remove_var(key),
+                    // TODO: Audit that the environment access only happens in single-threaded code.
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    // TODO: Audit that the environment access only happens in single-threaded code.
+                    None => unsafe { std::env::remove_var(key) },
                 }
             }
         }
@@ -275,12 +277,15 @@ mod tests {
         let _env = EnvGuard::new(&["CUSTOM_KEY", "OPENAI_API_KEY"]);
         let mut config = test_config("test");
         config.provider_api_key = Some("sk-literal".into());
-        std::env::set_var("CUSTOM_KEY", "sk-from-env");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("CUSTOM_KEY", "sk-from-env") };
         config.provider_api_key_env = Some("CUSTOM_KEY".into());
-        std::env::remove_var("OPENAI_API_KEY");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
 
         let result = resolve_api_key(&config, "OPENAI_API_KEY");
-        std::env::remove_var("CUSTOM_KEY");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("CUSTOM_KEY") };
 
         assert_eq!(result, Some("sk-literal".into()));
     }
@@ -290,12 +295,15 @@ mod tests {
         let _env = EnvGuard::new(&["CUSTOM_KEY", "OPENAI_API_KEY"]);
         let mut config = test_config("test");
         config.provider_api_key = None;
-        std::env::set_var("CUSTOM_KEY", "sk-from-env");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("CUSTOM_KEY", "sk-from-env") };
         config.provider_api_key_env = Some("CUSTOM_KEY".into());
-        std::env::remove_var("OPENAI_API_KEY");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
 
         let result = resolve_api_key(&config, "OPENAI_API_KEY");
-        std::env::remove_var("CUSTOM_KEY");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("CUSTOM_KEY") };
 
         assert_eq!(result, Some("sk-from-env".into()));
     }
@@ -304,9 +312,11 @@ mod tests {
     fn resolve_api_key_falls_back_to_default_env() {
         let _env = EnvGuard::new(&["OPENAI_API_KEY"]);
         let config = test_config("test");
-        std::env::set_var("OPENAI_API_KEY", "sk-default");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("OPENAI_API_KEY", "sk-default") };
         let result = resolve_api_key(&config, "OPENAI_API_KEY");
-        std::env::remove_var("OPENAI_API_KEY");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
         assert_eq!(result, Some("sk-default".into()));
     }
 
@@ -315,11 +325,13 @@ mod tests {
         let _env = EnvGuard::new(&["CUSTOM_URL", "BASE_URL"]);
         let mut config = test_config("test");
         config.provider_base_url = Some("http://literal:8080/v1".into());
-        std::env::set_var("CUSTOM_URL", "http://from-env:8080/v1");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("CUSTOM_URL", "http://from-env:8080/v1") };
         config.provider_base_url_env = Some("CUSTOM_URL".into());
 
         let result = resolve_base_url(&config);
-        std::env::remove_var("CUSTOM_URL");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("CUSTOM_URL") };
 
         assert_eq!(result, Some("http://literal:8080/v1".into()));
     }
@@ -329,11 +341,13 @@ mod tests {
         let _env = EnvGuard::new(&["CUSTOM_URL", "BASE_URL"]);
         let mut config = test_config("test");
         config.provider_base_url = None;
-        std::env::set_var("CUSTOM_URL", "http://from-env:8080/v1");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("CUSTOM_URL", "http://from-env:8080/v1") };
         config.provider_base_url_env = Some("CUSTOM_URL".into());
 
         let result = resolve_base_url(&config);
-        std::env::remove_var("CUSTOM_URL");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("CUSTOM_URL") };
 
         assert_eq!(result, Some("http://from-env:8080/v1".into()));
     }
@@ -342,9 +356,11 @@ mod tests {
     fn resolve_base_url_falls_back_to_default_env() {
         let _env = EnvGuard::new(&["BASE_URL"]);
         let config = test_config("test");
-        std::env::set_var("BASE_URL", "http://default:8080/v1");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("BASE_URL", "http://default:8080/v1") };
         let result = resolve_base_url(&config);
-        std::env::remove_var("BASE_URL");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("BASE_URL") };
         assert_eq!(result, Some("http://default:8080/v1".into()));
     }
 
@@ -352,7 +368,8 @@ mod tests {
     fn resolve_base_url_none_when_nothing_set() {
         let _env = EnvGuard::new(&["BASE_URL"]);
         let config = test_config("test");
-        std::env::remove_var("BASE_URL");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("BASE_URL") };
         let result = resolve_base_url(&config);
         assert_eq!(result, None);
     }

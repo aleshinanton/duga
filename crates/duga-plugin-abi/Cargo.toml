@@ -1,8 +1,8 @@
 [package]
 name = "duga-plugin-abi"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.77"
+edition = "2024"
+rust-version = "1.85"
 description = "WIT contract and shared plugin ABI types for duga"
 license = "MIT"
 

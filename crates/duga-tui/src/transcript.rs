@@ -336,9 +336,9 @@ impl Transcript {
         if let Some(idx) = self.tool_call_index.get(tool_call_id) {
             if let Some(TranscriptItem::ToolCallBlock {
                 is_running,
-                is_success: ref mut succ,
+                is_success: succ,
                 is_expanded,
-                ref mut output,
+                output,
                 ..
             }) = self.items.get_mut(*idx)
             {

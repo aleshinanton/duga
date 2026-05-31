@@ -57,8 +57,10 @@ impl Drop for EnvGuard {
     fn drop(&mut self) {
         for (key, value) in &self.saved {
             match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
+                // TODO: Audit that the environment access only happens in single-threaded code.
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                // TODO: Audit that the environment access only happens in single-threaded code.
+                None => unsafe { std::env::remove_var(key) },
             }
         }
     }
@@ -113,13 +115,16 @@ async fn test_empty_api_key_accepted_with_base_url() {
     let _env = EnvGuard::new(&["BASE_URL", "OPENAI_API_KEY"]);
     // Set BASE_URL but no API key
     let base_url = "http://localhost:11434/v1";
-    std::env::set_var("BASE_URL", base_url);
-    std::env::remove_var("OPENAI_API_KEY");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("BASE_URL", base_url) };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("OPENAI_API_KEY") };
 
     let result = OpenAiClient::from_env("gpt-4");
 
     // Clean up
-    std::env::remove_var("BASE_URL");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("BASE_URL") };
 
     // Should succeed because BASE_URL is set (local endpoint)
     assert!(result.is_ok(), "empty API key should be accepted with BASE_URL");
@@ -128,8 +133,10 @@ async fn test_empty_api_key_accepted_with_base_url() {
 #[tokio::test]
 async fn test_missing_api_key_rejected_without_base_url() {
     let _env = EnvGuard::new(&["BASE_URL", "OPENAI_API_KEY"]);
-    std::env::remove_var("OPENAI_API_KEY");
-    std::env::remove_var("BASE_URL");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("OPENAI_API_KEY") };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("BASE_URL") };
 
     let result = OpenAiClient::from_env("gpt-4");
 
@@ -145,12 +152,15 @@ async fn test_missing_api_key_rejected_without_base_url() {
 #[tokio::test]
 async fn test_api_key_accepted() {
     let _env = EnvGuard::new(&["BASE_URL", "OPENAI_API_KEY"]);
-    std::env::set_var("OPENAI_API_KEY", "sk-test-123");
-    std::env::remove_var("BASE_URL");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("OPENAI_API_KEY", "sk-test-123") };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("BASE_URL") };
 
     let result = OpenAiClient::from_env("gpt-4");
 
-    std::env::remove_var("OPENAI_API_KEY");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("OPENAI_API_KEY") };
 
     assert!(result.is_ok(), "valid API key should succeed");
 }

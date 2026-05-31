@@ -336,7 +336,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn test_subprocess_environment_is_cleared() {
-        std::env::set_var("DUGA_SECRET_TEST", "secret");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DUGA_SECRET_TEST", "secret") };
 
         let binary = which::which("sh").unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -357,7 +358,8 @@ mod tests {
         .await
         .unwrap();
 
-        std::env::remove_var("DUGA_SECRET_TEST");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("DUGA_SECRET_TEST") };
         assert_eq!(result.output, "unset");
     }
 

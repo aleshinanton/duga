@@ -109,14 +109,16 @@ mod tests {
         let mut warnings = Vec::new();
         let allowed: HashSet<String> = ["GITHUB_TOKEN".into()].iter().cloned().collect();
         // Ensure the var exists in the environment for the test
-        std::env::set_var("GITHUB_TOKEN", "ghp_test123");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("GITHUB_TOKEN", "ghp_test123") };
         let _env = build(&allowed, &mut warnings);
 
         assert!(!warnings.is_empty());
         assert!(warnings[0].contains("GITHUB_TOKEN"));
 
         // Clean up
-        std::env::remove_var("GITHUB_TOKEN");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("GITHUB_TOKEN") };
     }
 
     #[test]

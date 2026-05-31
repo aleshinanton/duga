@@ -978,7 +978,8 @@ plugins:
     #[test]
     fn tilde_expands_from_home() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("HOME", dir.path());
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("HOME", dir.path()) };
         let expanded = expand_tilde(Path::new("~/demo")).unwrap();
         assert_eq!(expanded, dir.path().join("demo"));
     }

@@ -1,8 +1,8 @@
 [package]
 name = "duga-tools-builtin"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.77"
+edition = "2024"
+rust-version = "1.85"
 description = "Built-in tools for duga: read, write, edit, shell, search, think"
 license = "MIT"
 

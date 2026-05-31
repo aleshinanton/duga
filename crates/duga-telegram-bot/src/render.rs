@@ -5,7 +5,7 @@
 //! in this worker task — never in the agent loop.
 
 use crate::formatting::{
-    chunk_message, escape_html, escape_telegram_plain_text, format_final_message,
+    chunk_message, escape_html, format_final_message,
     markdown_to_telegram_html, sanitize_tool_call_syntax,
 };
 use duga_runtime::events::FrontendEvent;
