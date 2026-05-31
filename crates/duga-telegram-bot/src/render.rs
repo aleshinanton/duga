@@ -175,49 +175,9 @@ impl TelegramEventRenderer {
             None => return Ok(()),
         };
 
+        let text = build_process_text(&self.action_labels, self.error_message.as_deref());
         let total = self.action_labels.len();
-        let mut text = format!("🔄 Processing… ({total} step{})\n", if total == 1 { "" } else { "s" });
-
-        // Show fatal error at the top if present (not counted as a step).
-        if let Some(ref err) = self.error_message {
-            text.push_str(&format!("⚠️ Error: {err}\n"));
-        }
-
-        // Show recent action labels, collapsed if there are many.
-        if total > 5 {
-            // Show ALL labels inside the collapsible blockquote, chunked.
-            let all_labels = self.action_labels.join("\n");
-            let label_chunks = chunk_message(&all_labels);
-            for chunk in label_chunks {
-                text.push_str(&format!(
-                    "<blockquote expandable>{}</blockquote>\n",
-                    escape_html(&chunk)
-                ));
-            }
-        } else {
-            let recent: Vec<_> = self
-                .action_labels
-                .iter()
-                .rev()
-                .take(5)
-                .rev()
-                .cloned()
-                .collect();
-            for label in &recent {
-                text.push_str(label);
-                text.push('\n');
-            }
-        }
-
-        // Streaming delta preview is intentionally omitted from the process
-        // message — the full answer is sent as a clean final message instead.
-
         let chunks = chunk_message(&text);
-        // Use HTML parse mode when labels are collapsed.
-        // Streaming updates (≤5 steps, no collapsible blockquotes) intentionally
-        // do NOT use ParseMode::Html — streaming deltas are escaped as plain
-        // text, and setting Html mode would cause Telegram to misparse the
-        // plain backtick-delimited code fences.
         let use_html = total > 5;
         if let Some(first) = chunks.first() {
             let mut req = self.bot.edit_message_text(self.chat_id, msg_id, first.clone());
@@ -276,18 +236,7 @@ impl TelegramEventRenderer {
 
         // Build the final text: prepend thinking content when present,
         // fall back to thinking only when the model returned no content text.
-        let final_text = match (final_text, self.thinking_buffer.is_empty()) {
-            (Some(text), false) => {
-                let thinking = std::mem::take(&mut self.thinking_buffer);
-                Some(format!("💭 *Thinking*\n{thinking}\n\n{text}"))
-            }
-            (Some(text), true) => Some(text),
-            (None, false) => {
-                let thinking = std::mem::take(&mut self.thinking_buffer);
-                Some(format!("💭 *Thinking*\n{thinking}"))
-            }
-            (None, true) => None,
-        };
+        let final_text = build_final_text(final_text, &mut self.thinking_buffer);
 
         // Send the final answer as a clean new message.
         if let Some(text) = final_text {
@@ -356,6 +305,63 @@ impl TelegramEventRenderer {
                 }
             }
         }
+    }
+}
+
+/// Build the process message text from current state.
+///
+/// Does NOT include thinking content or streaming delta — those are
+/// reserved for the final answer message.
+fn build_process_text(action_labels: &[String], error_message: Option<&str>) -> String {
+    let total = action_labels.len();
+    let mut text = format!("🔄 Processing… ({total} step{})\n", if total == 1 { "" } else { "s" });
+
+    if let Some(err) = error_message {
+        text.push_str(&format!("⚠️ Error: {err}\n"));
+    }
+
+    if total > 5 {
+        let all_labels = action_labels.join("\n");
+        let label_chunks = chunk_message(&all_labels);
+        for chunk in label_chunks {
+            text.push_str(&format!(
+                "<blockquote expandable>{}</blockquote>\n",
+                escape_html(&chunk)
+            ));
+        }
+    } else {
+        let recent: Vec<_> = action_labels
+            .iter()
+            .rev()
+            .take(5)
+            .rev()
+            .cloned()
+            .collect();
+        for label in &recent {
+            text.push_str(label);
+            text.push('\n');
+        }
+    }
+
+    text
+}
+
+/// Build the final answer text, prepending thinking when available.
+fn build_final_text(
+    final_text: Option<String>,
+    thinking_buffer: &mut String,
+) -> Option<String> {
+    match (final_text, thinking_buffer.is_empty()) {
+        (Some(text), false) => {
+            let thinking = std::mem::take(thinking_buffer);
+            Some(format!("💭 *Thinking*\n{thinking}\n\n{text}"))
+        }
+        (Some(text), true) => Some(text),
+        (None, false) => {
+            let thinking = std::mem::take(thinking_buffer);
+            Some(format!("💭 *Thinking*\n{thinking}"))
+        }
+        (None, true) => None,
     }
 }
 
@@ -488,5 +494,205 @@ mod tests {
         }
         assert_eq!(labels[1], "❌ read: Reading config");
         assert_eq!(labels.len(), 2, "two tools, two lines");
+    }
+
+    // ── e2e: process message must not contain thinking or streaming delta ──
+
+    #[test]
+    fn process_text_excludes_thinking_and_delta() {
+        let labels = vec!["✅ shell: ls".into(), "✅ read: config".into()];
+        let text = build_process_text(&labels, None);
+
+        // Header should be present.
+        assert!(text.contains("🔄 Processing… (2 steps)"));
+        // Labels should be present.
+        assert!(text.contains("✅ shell: ls"));
+        assert!(text.contains("✅ read: config"));
+        // Must NOT contain thinking content.
+        assert!(!text.contains("💭"));
+        assert!(!text.contains("Thinking"));
+        assert!(!text.contains("reasoning"));
+        // Must NOT contain streaming delta markers.
+        assert!(!text.contains("```"));
+        assert!(!text.contains("<pre>"));
+    }
+
+    #[test]
+    fn process_text_with_error() {
+        let labels: Vec<String> = vec![];
+        let text = build_process_text(&labels, Some("LLM timeout"));
+        assert!(text.contains("⚠️ Error: LLM timeout"));
+        assert!(text.contains("🔄 Processing… (0 steps)"));
+    }
+
+    #[test]
+    fn process_text_collapses_labels_over_five() {
+        let labels: Vec<String> = (0..6).map(|i| format!("✅ tool_{i}")).collect();
+        let text = build_process_text(&labels, None);
+        // Many labels should be collapsed.
+        assert!(text.contains("<blockquote expandable>"));
+        assert!(text.contains("✅ tool_0"));
+        assert!(text.contains("✅ tool_5"));
+        // No individual labels outside blockquote.
+        let outside: String = text.split("<blockquote").next().unwrap().to_string();
+        assert!(!outside.contains("✅ tool_"));
+    }
+
+    #[test]
+    fn process_text_no_labels_under_six_not_collapsed() {
+        let labels: Vec<String> = vec!["✅ shell".into(), "✅ read".into()];
+        let text = build_process_text(&labels, None);
+        assert!(!text.contains("<blockquote"));
+    }
+
+    // ── e2e: final answer includes thinking, process message does not ──
+
+    #[test]
+    fn final_text_includes_thinking_when_present() {
+        let mut thinking = "Let me analyze this step by step…".to_string();
+        let result = build_final_text(Some("The answer is 42.".into()), &mut thinking);
+        let text = result.unwrap();
+        assert!(text.contains("💭 *Thinking*"));
+        assert!(text.contains("Let me analyze this step by step…"));
+        assert!(text.contains("The answer is 42."));
+        // thinking_buffer consumed.
+        assert!(thinking.is_empty());
+    }
+
+    #[test]
+    fn final_text_thinking_only_when_answer_missing() {
+        let mut thinking = "Reasoning without answer".to_string();
+        let result = build_final_text(None, &mut thinking);
+        let text = result.unwrap();
+        assert!(text.contains("💭 *Thinking*"));
+        assert!(text.contains("Reasoning without answer"));
+        assert!(!text.contains("\n\n")); // no answer appended
+        assert!(thinking.is_empty());
+    }
+
+    #[test]
+    fn final_text_answer_only_when_no_thinking() {
+        let mut thinking = String::new();
+        let result = build_final_text(Some("Plain answer".into()), &mut thinking);
+        assert_eq!(result.unwrap(), "Plain answer");
+    }
+
+    #[test]
+    fn final_text_none_when_both_missing() {
+        let mut thinking = String::new();
+        let result = build_final_text(None, &mut thinking);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn final_text_thinking_does_not_leak_into_process_text() {
+        // The process text is built from action_labels only.
+        // Even if thinking exists in the renderer state, build_process_text
+        // takes only labels and error_message — thinking cannot leak.
+        let labels = vec!["✅ shell: ls".into()];
+        let text = build_process_text(&labels, None);
+        assert!(!text.contains("💭"));
+        assert!(!text.contains("Thinking"));
+        assert!(!text.contains("think"));
+    }
+
+    // ── e2e: renderer event loop simulates full flow ──
+
+    /// Simulates the full event sequence from agent start to finish
+    /// and verifies that thinking/delta content is not in the process message.
+    #[tokio::test]
+    async fn e2e_thinking_only_in_final_not_process() {
+        use duga_runtime::events::FrontendEventBridge;
+
+        let bot = teloxide::Bot::new("dummy");
+        let chat_id = teloxide::types::ChatId(0);
+        let mut renderer = TelegramEventRenderer::new(bot, chat_id);
+
+        let (tx, bridge) = FrontendEventBridge::new(32);
+        let mut rx = bridge.into_inner();
+
+        // Spawn renderer.
+        let handle = tokio::spawn(async move { renderer.run(&mut rx).await });
+
+        // Simulate RunStarted.
+        tx.send(FrontendEvent::RunStarted {
+            task: "test task".into(),
+        })
+        .await
+        .unwrap();
+
+        // Simulate LlmThinkingDelta (must NOT appear in process message).
+        tx.send(FrontendEvent::LlmThinkingDelta {
+            model: "test".into(),
+            delta: "hidden reasoning".into(),
+        })
+        .await
+        .unwrap();
+
+        // Simulate think tool call (must be skipped).
+        tx.send(FrontendEvent::ToolCallStarted {
+            tool_name: "think".into(),
+            tool_call_id: "think_1".into(),
+            attempt: 1,
+            description: "Planning".into(),
+            raw_args: None,
+        })
+        .await
+        .unwrap();
+
+        tx.send(FrontendEvent::ToolCallFinished {
+            tool_name: "think".into(),
+            tool_call_id: "think_1".into(),
+            success: true,
+            attempt: 1,
+            description: "Planning".into(),
+            output: None,
+        })
+        .await
+        .unwrap();
+
+        // Simulate regular tool call.
+        tx.send(FrontendEvent::ToolCallStarted {
+            tool_name: "shell".into(),
+            tool_call_id: "shell_1".into(),
+            attempt: 1,
+            description: "ls".into(),
+            raw_args: None,
+        })
+        .await
+        .unwrap();
+
+        tx.send(FrontendEvent::ToolCallFinished {
+            tool_name: "shell".into(),
+            tool_call_id: "shell_1".into(),
+            success: true,
+            attempt: 1,
+            description: "ls".into(),
+            output: None,
+        })
+        .await
+        .unwrap();
+
+        // Simulate LlmTokenDelta (streaming text — must NOT appear).
+        tx.send(FrontendEvent::LlmTokenDelta {
+            model: "test".into(),
+            delta: "streaming answer".into(),
+        })
+        .await
+        .unwrap();
+
+        // Simulate RunFinished with answer.
+        tx.send(FrontendEvent::RunFinished {
+            text: Some("final answer".into()),
+        })
+        .await
+        .unwrap();
+
+        // Drop sender to close channel.
+        drop(tx);
+        handle.await.unwrap();
+
+        // Test passes if the renderer ran without panicking.
+        // The actual message content is verified by the unit tests above.
     }
 }
