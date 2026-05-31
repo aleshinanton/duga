@@ -461,6 +461,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 return;
             }
             GlobalAction::ToggleThink => {
+                // Toggle thinking blocks (Ctrl+O)
                 let think_ids: Vec<usize> = self
                     .transcript
                     .items()
@@ -476,6 +477,33 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                     .collect();
                 for idx in think_ids {
                     self.transcript.advance_thinking_scroll(idx, 8);
+                }
+
+                // Also toggle tool call blocks (Ctrl+O expands/collapses both)
+                let any_expanded = self
+                    .transcript
+                    .items()
+                    .iter()
+                    .any(|item| {
+                        matches!(item, TranscriptItem::ToolCallBlock { is_expanded: true, .. })
+                    });
+                let target = !any_expanded;
+                let to_toggle: Vec<usize> = self
+                    .transcript
+                    .items()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, item)| {
+                        if let TranscriptItem::ToolCallBlock { is_expanded, .. } = item {
+                            if *is_expanded != target {
+                                return Some(idx);
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                for idx in to_toggle {
+                    self.transcript.toggle_tool_expand(idx);
                 }
                 return;
             }
@@ -1216,7 +1244,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
     // ── Rendering ───────────────────────────────────────────────────────
 
     /// Render the entire TUI.
-    pub fn render(&self, frame: &mut ratatui::Frame) {
+    pub fn render(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.area();
 
         // Compute pane rects from the layout manager
@@ -1299,29 +1327,12 @@ fn is_typing_key(key: &KeyEvent) -> bool {
         crate::chat::ChatView::render(inner, frame.buffer_mut(), &self.transcript, &self.theme);
     }
 
-    fn render_editor(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+    fn render_editor(&mut self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
         use ratatui::style::Style;
         use ratatui::widgets::{Block, Borders, Paragraph};
 
         let is_running = matches!(self.state, AppState::Running { .. });
         let is_focused = self.focus == crate::focus::Focus::Input;
-
-        // Build the text display
-        let text = if self.editor.text().is_empty() {
-            if is_running {
-                format!("> Steering… (Enter to send guidance)")
-            } else {
-                format!("> {}", self.editor.placeholder())
-            }
-        } else {
-            format!("> {}", self.editor.text())
-        };
-
-        let style = if is_running {
-            Style::default().fg(self.theme.colors.warning)
-        } else {
-            self.theme.text_style()
-        };
 
         // Character counter
         let max_chars = self.tui_config.input_max_chars;
@@ -1346,16 +1357,48 @@ fn is_typing_key(key: &KeyEvent) -> bool {
             self.theme.colors.border
         };
 
-        let editor_widget = Paragraph::new(text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
-                    .title(title)
-                    .border_style(Style::default().fg(border_color)),
-            )
-            .style(style);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_set(ratatui::symbols::border::ROUNDED)
+            .title(title)
+            .border_style(Style::default().fg(border_color));
+        let inner = block.inner(area);
 
-        frame.render_widget(editor_widget, area);
+        // Available space for text: inner width minus "> " prompt prefix.
+        let text_width = inner.width.saturating_sub(2);
+        let visible_rows = inner.height as usize;
+
+        // Auto-scroll to keep cursor visible.
+        if visible_rows > 0 {
+            self.editor.scroll_to_cursor(text_width, visible_rows);
+        }
+
+        // Render the block border first.
+        frame.render_widget(block, area);
+
+        // Build the display text (pre-wrapped + scrolled).
+        let style = if is_running {
+            Style::default().fg(self.theme.colors.warning)
+        } else {
+            self.theme.text_style()
+        };
+
+        let display_text = if self.editor.text().is_empty() {
+            if is_running {
+                "> Steering… (Enter to send guidance)".to_string()
+            } else {
+                format!("> {}", self.editor.placeholder())
+            }
+        } else {
+            let visible = self.editor.visible_text(text_width, visible_rows);
+            if visible.is_empty() {
+                String::new()
+            } else {
+                format!("> {}", visible)
+            }
+        };
+
+        frame.render_widget(Paragraph::new(display_text).style(style), inner);
     }
 }
 

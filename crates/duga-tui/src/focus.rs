@@ -18,9 +18,9 @@ pub enum Focus {
 }
 
 impl Focus {
-    /// Default focus is Chat.
+    /// Default focus is Input.
     pub fn default() -> Self {
-        Self::Chat
+        Self::Input
     }
 
     /// Tab order: Chat → Sidebar → Input → Chat.

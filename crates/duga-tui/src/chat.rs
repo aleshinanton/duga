@@ -28,33 +28,19 @@ impl ChatView {
             return;
         }
 
-        let (start, end) = transcript.estimate_visible_range(area.height);
         let avail_w = area.width.saturating_sub(2) as usize;
 
-        // Build content lines
+        // Build content lines from ALL items — we clip by line offset below.
         let mut content: Vec<Line<'static>> = Vec::new();
-        let mut idx = start;
-        while idx < end {
-            let item = &items[idx];
+        for item in items {
             push_item(&mut content, item, avail_w, theme);
-            idx += 1;
         }
 
-        let n_lines = content.len() as u16;
-        // Render into temp buffer to get scrollable height
-        let tmp_h = n_lines.max(area.height);
-        let mut tmp = Buffer::empty(Rect::new(0, 0, area.width, tmp_h));
-
-        for (i, line) in content.iter().enumerate() {
-            let y = i as u16;
-            if y < tmp_h {
-                line.clone().render(Rect::new(0, y, area.width, 1), &mut tmp);
-            }
-        }
-
-        // Now render a Paragraph from this buffer, scrolled
+        // Line-based scrolling: skip the top `offset` lines to show the
+        // visible portion.  offset = 0 means "show the bottom of the content"
+        // (auto-follow), while larger offsets scroll up into older lines.
         let visible = area.height as usize;
-        let total = n_lines as usize;
+        let total = content.len();
         let max_off = total.saturating_sub(visible);
         let offset = if scroll.manual_scroll { max_off.saturating_sub(scroll.offset) } else { max_off };
 
@@ -87,9 +73,24 @@ fn push_item(out: &mut Vec<Line<'static>>, item: &TranscriptItem, w: usize, them
         TranscriptItem::ThinkingBlock { text, is_streaming, is_expanded, scroll_offset, .. } => {
             push_thinking(out, text, *is_streaming, *is_expanded, *scroll_offset, w, theme);
         }
-        TranscriptItem::ToolCallBlock { tool_name, description, is_running, is_success, .. } => {
+        TranscriptItem::ToolCallBlock { tool_name, description, is_running, is_success, is_expanded, raw_args, output, .. } => {
             let icon = if *is_running { "..." } else if *is_success == Some(true) { "OK" } else if *is_success == Some(false) { "FAIL" } else { "?" };
-            push_card(out, &format!("{icon} {tool_name}"), description, w, theme, *is_running, false);
+            let body = if *is_expanded {
+                let mut b = String::new();
+                b.push_str(description);
+                if let Some(args) = raw_args {
+                    b.push_str("\n\nArgs:\n");
+                    b.push_str(args);
+                }
+                if let Some(out) = output {
+                    b.push_str("\n\nOutput:\n");
+                    b.push_str(out);
+                }
+                b
+            } else {
+                description.clone()
+            };
+            push_card(out, &format!("{icon} {tool_name}"), &body, w, theme, *is_running, false);
         }
         TranscriptItem::DelegationNotice { from, to, reason, .. } => {
             push_card(out, &format!(">> {from} -> {to}"), reason, w, theme, false, false);

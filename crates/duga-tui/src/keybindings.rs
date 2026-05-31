@@ -126,7 +126,7 @@ impl Keybindings {
             steer: Self::parse_or_default(&config.steer, "ctrl-g"),
             scroll_up: KeyPattern::parse("page-up").unwrap(),
             scroll_down: KeyPattern::parse("page-down").unwrap(),
-            toggle_tool: KeyPattern::parse("tab").unwrap(),
+            toggle_tool: KeyPattern::parse("ctrl-t").unwrap(),
             toggle_think: KeyPattern::parse("ctrl-o").unwrap(),
         }
     }

@@ -1,10 +1,12 @@
 //! Multi-line input editor for the TUI.
 //!
 //! Supports: multi-line input with word-wrap, cursor movement,
-//! history navigation (Up/Down), paste, placeholder text,
-//! history navigation (Up/Down), paste, and placeholder text.
+//! history navigation (Up/Down), paste, placeholder text.
+//! Scroll offset is automatically adjusted during rendering so
+//! the cursor line stays within the visible input area.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use unicode_width::UnicodeWidthChar;
 
 /// Multi-line input editor with history and cursor tracking.
 #[derive(Clone, Debug)]
@@ -396,6 +398,48 @@ impl Editor {
         }
         self.buffer.len()
     }
+
+    // ── Scroll-aware rendering helpers ─────────────────────────────────
+
+    /// Compute the wrapped-line index (0-based) that the cursor falls on
+    /// for the given display width per line.
+    pub fn cursor_wrapped_line(&self, text_width: u16) -> usize {
+        let before = &self.buffer[..self.cursor];
+        wrap_position(before, text_width).0
+    }
+
+    /// Total number of wrapped lines for the full buffer at `text_width`.
+    pub fn wrapped_line_count(&self, text_width: u16) -> usize {
+        line_count(&self.buffer, text_width)
+    }
+
+    /// Adjust `scroll_offset` so the cursor line is visible within
+    /// `visible_rows`.  Call this once per frame before extracting
+    /// visible text.
+    pub fn scroll_to_cursor(&mut self, text_width: u16, visible_rows: usize) {
+        if visible_rows == 0 {
+            return;
+        }
+        let cursor_line = self.cursor_wrapped_line(text_width);
+        if cursor_line < self.scroll_offset {
+            self.scroll_offset = cursor_line;
+        } else if cursor_line >= self.scroll_offset + visible_rows {
+            self.scroll_offset = cursor_line - visible_rows + 1;
+        }
+        // Clamp: don't scroll past total line count.
+        let total = self.wrapped_line_count(text_width);
+        let max_offset = total.saturating_sub(visible_rows);
+        if self.scroll_offset > max_offset {
+            self.scroll_offset = max_offset;
+        }
+    }
+
+    /// Return the text that should be visible given the current scroll
+    /// offset.  The returned string is pre-wrapped at `text_width` so
+    /// each embedded newline corresponds to one display row.
+    pub fn visible_text(&self, text_width: u16, visible_rows: usize) -> String {
+        extract_lines(&self.buffer, text_width, self.scroll_offset, visible_rows)
+    }
 }
 
 impl Default for Editor {
@@ -413,6 +457,95 @@ pub enum EditorAction {
     Ignored,
     /// User pressed Enter to submit the input.
     Submit,
+}
+
+// ── Wrapping helpers (free functions) ──────────────────────────────────────
+
+/// Count the number of wrapped lines for `text` at the given display width.
+fn line_count(text: &str, width: u16) -> usize {
+    if width == 0 || text.is_empty() {
+        return 1; // one (possibly empty) line
+    }
+    let mut lines = 1usize;
+    let mut col = 0usize;
+    for ch in text.chars() {
+        if ch == '\n' {
+            lines += 1;
+            col = 0;
+        } else {
+            let w = ch.width().unwrap_or(0).max(1);
+            if col + w > width as usize {
+                lines += 1;
+                col = w;
+            } else {
+                col += w;
+            }
+        }
+    }
+    lines
+}
+
+/// Walk `text` and return the (line_index, column) after the last character.
+fn wrap_position(text: &str, width: u16) -> (usize, usize) {
+    if width == 0 || text.is_empty() {
+        if text.lines().count() == 0 {
+            return (0, 0);
+        }
+        let last = text.lines().last().unwrap_or("");
+        return (text.lines().count().saturating_sub(1), last.len());
+    }
+    let mut line = 0usize;
+    let mut col = 0usize;
+    for ch in text.chars() {
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            let w = ch.width().unwrap_or(0).max(1);
+            if col + w > width as usize {
+                line += 1;
+                col = w;
+            } else {
+                col += w;
+            }
+        }
+    }
+    (line, col)
+}
+
+/// Wrap `text` into lines according to display width, then return only
+/// `count` lines starting at `skip`.
+fn extract_lines(text: &str, width: u16, skip: usize, count: usize) -> String {
+    let all = wrap_lines(text, width);
+    if skip >= all.len() {
+        return String::new();
+    }
+    let end = (skip + count).min(all.len());
+    all[skip..end].join("\n")
+}
+
+/// Wrap `text` at `width` columns, returning a vector of display lines.
+fn wrap_lines(text: &str, width: u16) -> Vec<String> {
+    let w = width as usize;
+    if w == 0 || text.is_empty() {
+        return text.lines().map(|s| s.to_string()).collect();
+    }
+    let mut lines: Vec<String> = vec![String::new()];
+    for ch in text.chars() {
+        if ch == '\n' {
+            lines.push(String::new());
+        } else {
+            let cw = ch.width().unwrap_or(0).max(1);
+            let current = lines.last_mut().unwrap();
+            // Measure current line display width.
+            let cur_w: usize = current.chars().map(|c| c.width().unwrap_or(0).max(1)).sum();
+            if cur_w + cw > w {
+                lines.push(String::new());
+            }
+            lines.last_mut().unwrap().push(ch);
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -502,4 +635,78 @@ mod tests {
         let text = editor.take_text();
         assert_eq!(text, "   "); // Still returned, but not added to history
     }
+
+    // ── Scroll / wrapping tests ───────────────────────────────────────
+
+    #[test]
+    fn cursor_wrapped_line_single_line() {
+        let mut editor = Editor::new();
+        editor.insert_text("hello");
+        assert_eq!(editor.cursor_wrapped_line(80), 0);
+    }
+
+    #[test]
+    fn cursor_wrapped_line_with_wrap() {
+        let mut editor = Editor::new();
+        // "abcdefghij" wraps at width 3 → lines: abc, def, ghi, j
+        editor.insert_text("abcdefghij");
+        editor.move_home(); // cursor at 0
+        assert_eq!(editor.cursor_wrapped_line(3), 0);
+        // At byte 4 the character 'd' has wrapped to line 1.
+        for _ in 0..4 {
+            editor.move_right();
+        }
+        assert_eq!(editor.cursor_wrapped_line(3), 1); // 'd' starts line 1
+    }
+
+    #[test]
+    fn scroll_to_cursor_basic() {
+        let mut editor = Editor::new();
+        // Fill with many lines
+        for _ in 0..10 {
+            editor.insert_text("line\n");
+        }
+        assert_eq!(editor.scroll_offset(), 0);
+        // Cursor at end (line 10), visible_rows = 2
+        editor.scroll_to_cursor(80, 2);
+        assert_eq!(editor.scroll_offset(), 9); // cursor at line 10, visible [9,10]
+    }
+
+    #[test]
+    fn scroll_to_cursor_does_not_overscroll() {
+        let mut editor = Editor::new();
+        editor.insert_text("short");
+        assert_eq!(editor.scroll_offset(), 0);
+        editor.scroll_to_cursor(80, 4);
+        assert_eq!(editor.scroll_offset(), 0); // fits in view
+    }
+
+    #[test]
+    fn visible_text_extracts_correct_slice() {
+        let mut editor = Editor::new();
+        editor.insert_text("line1\nline2\nline3\nline4");
+        editor.scroll_offset = 1; // skip first line
+        let visible = editor.visible_text(80, 2);
+        assert_eq!(visible, "line2\nline3");
+    }
+
+    #[test]
+    fn visible_text_wrapping() {
+        let mut editor = Editor::new();
+        editor.insert_text("abcdefghij"); // 10 chars
+        // At width 3, wraps to 4 lines: abc, def, ghi, j
+        let visible = editor.visible_text(3, 2);
+        assert_eq!(visible, "abc\ndef");
+    }
+
+    #[test]
+    fn visible_text_with_scroll_and_wrap() {
+        let mut editor = Editor::new();
+        editor.insert_text("abcdefghijklmno"); // 15 chars
+        // At width 3, wraps to 5 lines: abc, def, ghi, jkl, mno
+        editor.scroll_offset = 1; // skip "abc"
+        let visible = editor.visible_text(3, 2);
+        assert_eq!(visible, "def\nghi");
+    }
 }
+

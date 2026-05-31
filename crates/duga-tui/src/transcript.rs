@@ -79,7 +79,7 @@ pub enum SystemLevel {
 /// Scroll state for the transcript pane.
 #[derive(Clone, Debug)]
 pub struct ScrollState {
-    /// Number of items scrolled above the visible area.
+    /// Number of lines scrolled above the bottom of the viewport.
     pub offset: usize,
     /// Whether the user has manually scrolled (auto-follow disabled).
     pub manual_scroll: bool,
@@ -93,13 +93,13 @@ impl ScrollState {
         }
     }
 
-    /// Scroll up by n items.
+    /// Scroll up by n lines.
     pub fn scroll_up(&mut self, n: usize) {
         self.offset = self.offset.saturating_add(n);
         self.manual_scroll = true;
     }
 
-    /// Scroll down by n items.
+    /// Scroll down by n lines.
     pub fn scroll_down(&mut self, n: usize) {
         self.offset = self.offset.saturating_sub(n);
         if self.offset == 0 {
@@ -348,6 +348,8 @@ impl Transcript {
                 // Expand on failure, collapse on success
                 if !is_success {
                     *is_expanded = true;
+                } else {
+                    *is_expanded = false;
                 }
             }
         }
