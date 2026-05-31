@@ -131,7 +131,6 @@ impl TelegramEventRenderer {
                 }
                 FrontendEvent::LlmTokenDelta { delta, .. } => {
                     self.delta_buffer.push_str(&delta);
-                    let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::LlmThinkingDelta { delta, .. } => {
                     self.thinking_buffer.push_str(&delta);
@@ -210,18 +209,8 @@ impl TelegramEventRenderer {
             }
         }
 
-        // Show streaming delta if present.
-        if !self.delta_buffer.is_empty() {
-            let escaped = escape_telegram_plain_text(&self.delta_buffer);
-            let truncated: String = if escaped.len() > 200 {
-                escaped.chars().take(197).collect::<String>() + "…"
-            } else {
-                escaped
-            };
-            text.push_str("\n```\n");
-            text.push_str(&truncated);
-            text.push_str("\n```");
-        }
+        // Streaming delta preview is intentionally omitted from the process
+        // message — the full answer is sent as a clean final message instead.
 
         let chunks = chunk_message(&text);
         // Use HTML parse mode when labels are collapsed.
