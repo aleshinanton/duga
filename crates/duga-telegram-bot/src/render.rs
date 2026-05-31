@@ -32,8 +32,6 @@ pub struct TelegramEventRenderer {
     tool_label_index: HashMap<String, usize>,
     /// Fatal error message (shown separately, not counted as a step).
     error_message: Option<String>,
-    /// Whether thinking/reasoning deltas are currently streaming.
-    thinking_active: bool,
     /// Whether the run has completed.
     finished: bool,
 }
@@ -50,7 +48,6 @@ impl TelegramEventRenderer {
             tool_info: HashMap::new(),
             tool_label_index: HashMap::new(),
             error_message: None,
-            thinking_active: false,
             finished: false,
         }
     }
@@ -91,7 +88,6 @@ impl TelegramEventRenderer {
                     if tool_name == "think" {
                         continue;
                     }
-                    self.thinking_active = false;
                     self.tool_info.insert(
                         tool_call_id.clone(),
                         (tool_name.clone(), description.clone()),
@@ -134,14 +130,10 @@ impl TelegramEventRenderer {
                     let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::LlmTokenDelta { delta, .. } => {
-                    self.thinking_active = false;
                     self.delta_buffer.push_str(&delta);
-                    let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::LlmThinkingDelta { delta, .. } => {
-                    self.thinking_active = true;
                     self.thinking_buffer.push_str(&delta);
-                    let _ = self.edit_process_message().await;
                 }
                 FrontendEvent::Error { message } => {
                     self.error_message = Some(message);
@@ -183,11 +175,7 @@ impl TelegramEventRenderer {
             None => return Ok(()),
         };
 
-        let text = build_process_text(
-            &self.action_labels,
-            self.error_message.as_deref(),
-            self.thinking_active,
-        );
+        let text = build_process_text(&self.action_labels, self.error_message.as_deref());
         let total = self.action_labels.len();
         let chunks = chunk_message(&text);
         let use_html = total > 5;
@@ -322,19 +310,11 @@ impl TelegramEventRenderer {
 
 /// Build the process message text from current state.
 ///
-/// Shows "💭 Thinking…" when the LLM is streaming reasoning content.
-/// Does NOT include streaming delta — that's reserved for the final answer.
-fn build_process_text(
-    action_labels: &[String],
-    error_message: Option<&str>,
-    thinking_active: bool,
-) -> String {
+/// Does NOT include thinking content or streaming delta — those are
+/// reserved for the final answer message.
+fn build_process_text(action_labels: &[String], error_message: Option<&str>) -> String {
     let total = action_labels.len();
     let mut text = format!("🔄 Processing… ({total} step{})\n", if total == 1 { "" } else { "s" });
-
-    if thinking_active {
-        text.push_str("💭 Thinking…\n");
-    }
 
     if let Some(err) = error_message {
         text.push_str(&format!("⚠️ Error: {err}\n"));
@@ -366,8 +346,7 @@ fn build_process_text(
     text
 }
 
-/// Build the final answer text, appending thinking when available.
-/// The "💭 Thinking" indicator appears in the process message instead.
+/// Build the final answer text, prepending thinking when available.
 fn build_final_text(
     final_text: Option<String>,
     thinking_buffer: &mut String,
@@ -375,12 +354,12 @@ fn build_final_text(
     match (final_text, thinking_buffer.is_empty()) {
         (Some(text), false) => {
             let thinking = std::mem::take(thinking_buffer);
-            Some(format!("{thinking}\n\n{text}"))
+            Some(format!("💭 *Thinking*\n{thinking}\n\n{text}"))
         }
         (Some(text), true) => Some(text),
         (None, false) => {
             let thinking = std::mem::take(thinking_buffer);
-            Some(thinking)
+            Some(format!("💭 *Thinking*\n{thinking}"))
         }
         (None, true) => None,
     }
@@ -522,38 +501,26 @@ mod tests {
     #[test]
     fn process_text_excludes_thinking_and_delta() {
         let labels = vec!["✅ shell: ls".into(), "✅ read: config".into()];
-        let text = build_process_text(&labels, None, false);
+        let text = build_process_text(&labels, None);
 
         // Header should be present.
         assert!(text.contains("🔄 Processing… (2 steps)"));
         // Labels should be present.
         assert!(text.contains("✅ shell: ls"));
         assert!(text.contains("✅ read: config"));
+        // Must NOT contain thinking content.
+        assert!(!text.contains("💭"));
+        assert!(!text.contains("Thinking"));
+        assert!(!text.contains("reasoning"));
         // Must NOT contain streaming delta markers.
         assert!(!text.contains("```"));
         assert!(!text.contains("<pre>"));
     }
 
     #[test]
-    fn process_text_shows_thinking_when_active() {
-        let labels: Vec<String> = vec![];
-        let text = build_process_text(&labels, None, true);
-        assert!(text.contains("💭 Thinking…"));
-        assert!(text.contains("🔄 Processing… (0 steps)"));
-    }
-
-    #[test]
-    fn process_text_hides_thinking_when_not_active() {
-        let labels: Vec<String> = vec![];
-        let text = build_process_text(&labels, None, false);
-        assert!(!text.contains("💭 Thinking…"));
-        assert!(text.contains("🔄 Processing… (0 steps)"));
-    }
-
-    #[test]
     fn process_text_with_error() {
         let labels: Vec<String> = vec![];
-        let text = build_process_text(&labels, Some("LLM timeout"), false);
+        let text = build_process_text(&labels, Some("LLM timeout"));
         assert!(text.contains("⚠️ Error: LLM timeout"));
         assert!(text.contains("🔄 Processing… (0 steps)"));
     }
@@ -561,7 +528,7 @@ mod tests {
     #[test]
     fn process_text_collapses_labels_over_five() {
         let labels: Vec<String> = (0..6).map(|i| format!("✅ tool_{i}")).collect();
-        let text = build_process_text(&labels, None, false);
+        let text = build_process_text(&labels, None);
         // Many labels should be collapsed.
         assert!(text.contains("<blockquote expandable>"));
         assert!(text.contains("✅ tool_0"));
@@ -574,7 +541,7 @@ mod tests {
     #[test]
     fn process_text_no_labels_under_six_not_collapsed() {
         let labels: Vec<String> = vec!["✅ shell".into(), "✅ read".into()];
-        let text = build_process_text(&labels, None, false);
+        let text = build_process_text(&labels, None);
         assert!(!text.contains("<blockquote"));
     }
 
@@ -585,8 +552,7 @@ mod tests {
         let mut thinking = "Let me analyze this step by step…".to_string();
         let result = build_final_text(Some("The answer is 42.".into()), &mut thinking);
         let text = result.unwrap();
-        // Thinking content is included but without the "💭 *Thinking*" label.
-        assert!(!text.contains("💭 *Thinking*"));
+        assert!(text.contains("💭 *Thinking*"));
         assert!(text.contains("Let me analyze this step by step…"));
         assert!(text.contains("The answer is 42."));
         // thinking_buffer consumed.
@@ -598,8 +564,7 @@ mod tests {
         let mut thinking = "Reasoning without answer".to_string();
         let result = build_final_text(None, &mut thinking);
         let text = result.unwrap();
-        // No "💭 *Thinking*" label.
-        assert!(!text.contains("💭 *Thinking*"));
+        assert!(text.contains("💭 *Thinking*"));
         assert!(text.contains("Reasoning without answer"));
         assert!(!text.contains("\n\n")); // no answer appended
         assert!(thinking.is_empty());
@@ -621,18 +586,14 @@ mod tests {
 
     #[test]
     fn final_text_thinking_does_not_leak_into_process_text() {
-        // Process text shows "💭 Thinking…" only when the thinking_active flag is set.
-        // When thinking is not active, no thinking indicator appears.
+        // The process text is built from action_labels only.
+        // Even if thinking exists in the renderer state, build_process_text
+        // takes only labels and error_message — thinking cannot leak.
         let labels = vec!["✅ shell: ls".into()];
-
-        // thinking_active = true → "💭 Thinking…" appears.
-        let text_active = build_process_text(&labels, None, true);
-        assert!(text_active.contains("💭 Thinking…"));
-
-        // thinking_active = false → no thinking indicator.
-        let text_inactive = build_process_text(&labels, None, false);
-        assert!(!text_inactive.contains("💭 Thinking…"));
-        assert!(!text_inactive.contains("think"));
+        let text = build_process_text(&labels, None);
+        assert!(!text.contains("💭"));
+        assert!(!text.contains("Thinking"));
+        assert!(!text.contains("think"));
     }
 
     // ── e2e: renderer event loop simulates full flow ──
