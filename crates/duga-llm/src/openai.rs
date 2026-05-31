@@ -298,16 +298,18 @@ fn openai_message(message: &Message) -> Result<OpenAiMessage, LlmError> {
         }),
         Role::Assistant => Ok(OpenAiMessage {
             role: "assistant".into(),
-            content: if text.is_empty() {
-                None
-            } else {
-                Some(serde_json::Value::String(text))
-            },
-            // DeepSeek models in thinking mode require reasoning_content
-            // to be echoed back in subsequent assistant messages.
-            // Without it, the API returns HTTP 400:
+            // DeepSeek models in thinking mode require both:
+            // - reasoning_content echoed back in subsequent assistant messages
+            // - content explicitly set to null when the message carries
+            //   reasoning_content but no visible text (absent ≠ null)
+            // Without these, the API returns HTTP 400:
             //   "The `reasoning_content` in the thinking mode must be
             //    passed back to the API."
+            content: Some(if text.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(text)
+            }),
             reasoning_content: message.reasoning_content.clone(),
             name: message.name.clone(),
             tool_call_id: None,
