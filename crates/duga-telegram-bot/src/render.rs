@@ -199,22 +199,7 @@ impl TelegramEventRenderer {
             }
         }
 
-        // Show streaming thinking if present (collapsed, truncated).
-        if !self.thinking_buffer.is_empty() {
-            let escaped = escape_telegram_plain_text(&self.thinking_buffer);
-            let truncated: String = if escaped.len() > 300 {
-                escaped.chars().take(297).collect::<String>() + "…"
-            } else {
-                escaped
-            };
-            text.push_str(&format!(
-                "<blockquote expandable>💭 {}</blockquote>\n",
-                escape_html(&truncated)
-            ));
-        }
-
         // Show streaming delta if present.
-        let use_html = total > 5 || !self.thinking_buffer.is_empty();
         if !self.delta_buffer.is_empty() {
             let escaped = escape_telegram_plain_text(&self.delta_buffer);
             let truncated: String = if escaped.len() > 200 {
@@ -222,18 +207,18 @@ impl TelegramEventRenderer {
             } else {
                 escaped
             };
-            if use_html {
-                // HTML mode: use <pre> instead of backtick fences to avoid
-                // Telegram misparsing code fences in HTML parse mode.
-                text.push_str(&format!("\n<pre>{}</pre>", escape_html(&truncated)));
-            } else {
-                text.push_str("\n```\n");
-                text.push_str(&truncated);
-                text.push_str("\n```");
-            }
+            text.push_str("\n```\n");
+            text.push_str(&truncated);
+            text.push_str("\n```");
         }
 
         let chunks = chunk_message(&text);
+        // Use HTML parse mode when labels are collapsed.
+        // Streaming updates (≤5 steps, no collapsible blockquotes) intentionally
+        // do NOT use ParseMode::Html — streaming deltas are escaped as plain
+        // text, and setting Html mode would cause Telegram to misparse the
+        // plain backtick-delimited code fences.
+        let use_html = total > 5;
         if let Some(first) = chunks.first() {
             let mut req = self.bot.edit_message_text(self.chat_id, msg_id, first.clone());
             if use_html {
@@ -284,28 +269,22 @@ impl TelegramEventRenderer {
             }
         }
 
-        // Send thinking as a separate collapsed message when present.
-        if !self.thinking_buffer.is_empty() {
-            let thinking_text = std::mem::take(&mut self.thinking_buffer);
-            let thinking_chunks = chunk_message(&thinking_text);
-            for chunk in thinking_chunks {
-                let html = escape_html(&chunk);
-                let collapsed = format!(
-                    "<blockquote expandable>💭 Thinking\n\n{}</blockquote>",
-                    html
-                );
-                let _ = self
-                    .bot
-                    .send_message(self.chat_id, collapsed)
-                    .parse_mode(ParseMode::Html)
-                    .await;
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Build the final text: prepend thinking content when present,
+        // fall back to thinking only when the model returned no content text.
+        let final_text = match (final_text, self.thinking_buffer.is_empty()) {
+            (Some(text), false) => {
+                let thinking = std::mem::take(&mut self.thinking_buffer);
+                Some(format!("💭 *Thinking*\n{thinking}\n\n{text}"))
             }
-        }
+            (Some(text), true) => Some(text),
+            (None, false) => {
+                let thinking = std::mem::take(&mut self.thinking_buffer);
+                Some(format!("💭 *Thinking*\n{thinking}"))
+            }
+            (None, true) => None,
+        };
 
         // Send the final answer as a clean new message.
-        // If final_text is None but we had thinking content, skip (thinking
-        // was sent above).  If final_text is present, always send it.
         if let Some(text) = final_text {
             let use_collapse = text.len() > 300;
             if use_collapse {
