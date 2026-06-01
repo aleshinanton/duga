@@ -251,6 +251,22 @@ impl App {
         self.sidebar_state.toggle_reasoning();
     }
 
+    /// Cycle the thinking/reasoning effort level through Off → Low → Medium → High → Off.
+    pub fn cycle_thinking_level(&mut self) {
+        use duga_config::ThinkingLevel;
+        self.config.thinking_level = match self.config.thinking_level {
+            ThinkingLevel::Off => ThinkingLevel::Low,
+            ThinkingLevel::Low => ThinkingLevel::Medium,
+            ThinkingLevel::Medium => ThinkingLevel::High,
+            ThinkingLevel::High => ThinkingLevel::Off,
+        };
+        self.event_log.push(LogEntry::new(
+            LogLevel::Info,
+            "⚙",
+            format!("Thinking: {:?}", self.config.thinking_level),
+        ));
+    }
+
     /// Handle a single `AppEvent` and update internal state.
     pub fn update(&mut self, event: AppEvent) {
         // Poll for pending confirmation requests before processing events.
@@ -386,6 +402,10 @@ fn is_typing_key(key: &KeyEvent) -> bool {
             }
             FocusAction::ToggleEvents => {
                 self.sidebar_state.toggle_events();
+                return;
+            }
+            FocusAction::CycleThinkingEffort => {
+                self.cycle_thinking_level();
                 return;
             }
             FocusAction::PassThrough => {}
@@ -1572,5 +1592,35 @@ plugins:
             KeyModifiers::CONTROL,
         ));
         assert!(app.transcript.len() > 0); // Has the "cleared" message
+    }
+
+    #[test]
+    fn cycle_thinking_level_cycles_off_low_medium_high() {
+        let mut app = make_app();
+        use duga_config::ThinkingLevel;
+        app.config.thinking_level = ThinkingLevel::Off;
+        app.cycle_thinking_level();
+        assert_eq!(app.config.thinking_level, ThinkingLevel::Low);
+        app.cycle_thinking_level();
+        assert_eq!(app.config.thinking_level, ThinkingLevel::Medium);
+        app.cycle_thinking_level();
+        assert_eq!(app.config.thinking_level, ThinkingLevel::High);
+        app.cycle_thinking_level();
+        assert_eq!(app.config.thinking_level, ThinkingLevel::Off);
+    }
+
+    #[test]
+    fn shift_tab_handles_cycle_thinking_effort() {
+        let mut app = make_app();
+        use duga_config::ThinkingLevel;
+        let initial = app.config.thinking_level;
+        app.handle_key(&KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+        // Should have cycled to the next level
+        assert_eq!(app.config.thinking_level, match initial {
+            ThinkingLevel::Off => ThinkingLevel::Low,
+            ThinkingLevel::Low => ThinkingLevel::Medium,
+            ThinkingLevel::Medium => ThinkingLevel::High,
+            ThinkingLevel::High => ThinkingLevel::Off,
+        });
     }
 }

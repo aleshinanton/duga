@@ -1,7 +1,8 @@
 //! Focus model — keyboard navigation router.
 //!
 //! `Focus::Chat | Sidebar | Input | Overlay` enum.
-//! Tab/Shift+Tab cycles through Chat → Sidebar → Input (skipping Overlay).
+//! Tab cycles through Chat → Sidebar → Input → Chat (skipping Overlay).
+//! Shift+Tab cycles reasoning effort (Off → Low → Medium → High → Off).
 //! Overlay is modal: entered when a dialog opens, exited via Esc/action.
 //! Ctrl+R toggles reasoning, Ctrl+E toggles events. Esc returns to Chat.
 //! Typing any character auto-switches focus to Input.
@@ -91,13 +92,12 @@ impl FocusRouter {
                 FocusAction::Consumed
             }
 
-            // Shift+Tab: cycle to previous focus
+            // Shift+Tab: cycle reasoning/thinking effort
             KeyEvent {
                 code: KeyCode::BackTab,
                 ..
             } => {
-                *focus = focus.prev(sidebar_visible);
-                FocusAction::Consumed
+                FocusAction::CycleThinkingEffort
             }
             // Shift+Tab via Shift modifier on Tab key
             KeyEvent {
@@ -105,8 +105,7 @@ impl FocusRouter {
                 modifiers,
                 ..
             } if modifiers.contains(KeyModifiers::SHIFT) => {
-                *focus = focus.prev(sidebar_visible);
-                FocusAction::Consumed
+                FocusAction::CycleThinkingEffort
             }
 
             // Ctrl+R: toggle reasoning panel (only when idle)
@@ -157,6 +156,8 @@ pub enum FocusAction {
     ToggleReasoning,
     /// Toggle events panel (sidebar focus + toggle).
     ToggleEvents,
+    /// Cycle thinking/reasoning effort level.
+    CycleThinkingEffort,
 }
 
 #[cfg(test)]
@@ -272,5 +273,24 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
         let action = FocusRouter::route(&key, &mut focus, true, false, false);
         assert_eq!(action, FocusAction::PassThrough);
+    }
+
+    #[test]
+    fn shift_tab_cycles_thinking_effort() {
+        let mut focus = Focus::Chat;
+        let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        assert_eq!(action, FocusAction::CycleThinkingEffort);
+        // Focus should NOT change on Shift+Tab
+        assert_eq!(focus, Focus::Chat);
+    }
+
+    #[test]
+    fn shift_tab_with_shift_modifier_also_cycles_thinking_effort() {
+        let mut focus = Focus::Input;
+        let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
+        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        assert_eq!(action, FocusAction::CycleThinkingEffort);
+        assert_eq!(focus, Focus::Input);
     }
 }

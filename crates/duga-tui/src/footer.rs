@@ -15,7 +15,7 @@ impl FooterView {
     pub fn render(area: Rect, buf: &mut Buffer, app: &App, theme: &Theme) {
         let shortcuts = match &app.state {
             AppState::Idle => vec![
-                "F1 Help", "Ctrl+L Clear", "Tab Next Pane", "Ctrl+R Reasoning", "Ctrl+E Events", "Ctrl+Q Quit",
+                "F1 Help", "Ctrl+L Clear", "Tab Next Pane", "Shift+Tab Effort", "Ctrl+R Reasoning", "Ctrl+E Events", "Ctrl+Q Quit",
             ],
             AppState::Running { cancel_requested: true, .. } => vec![
                 "Cancelling…", "Ctrl+R Retry", "Esc Back", "Ctrl+Q Force Quit",
