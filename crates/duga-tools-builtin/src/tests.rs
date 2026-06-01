@@ -62,12 +62,18 @@ fn setup_with_aux(aux_dir: &TempDir) -> (TempDir, Arc<Workspace>, ToolDispatcher
     let l = OutputLimits::default();
     let dp = ToolDispatcher::new();
     let aux_roots = vec![aux_dir.path().to_path_buf()];
-    dp.register_erased(ErasedTool::erase(ReadTool::new().with_aux_roots(aux_roots.clone())))
-        .unwrap();
-    dp.register_erased(ErasedTool::erase(WriteTool::new().with_aux_roots(aux_roots.clone())))
-        .unwrap();
-    dp.register_erased(ErasedTool::erase(EditTool::new().with_aux_roots(aux_roots.clone())))
-        .unwrap();
+    dp.register_erased(ErasedTool::erase(
+        ReadTool::new().with_aux_roots(aux_roots.clone()),
+    ))
+    .unwrap();
+    dp.register_erased(ErasedTool::erase(
+        WriteTool::new().with_aux_roots(aux_roots.clone()),
+    ))
+    .unwrap();
+    dp.register_erased(ErasedTool::erase(
+        EditTool::new().with_aux_roots(aux_roots.clone()),
+    ))
+    .unwrap();
     dp.register_erased(ErasedTool::erase(ShellTool::with_sandbox(
         r.clone(),
         ws.clone(),
@@ -240,33 +246,36 @@ async fn test_errors() {
     let (_d, ws, dp) = setup();
     let c = CancellationToken::new();
     let s = NullSink;
-    assert!(dp
-        .dispatch(
+    assert!(
+        dp.dispatch(
             &ToolCall::new("write", json!({"path":"../x","content":"x"})),
             &ws,
             c.clone(),
             &s
         )
         .await
-        .is_err());
-    assert!(dp
-        .dispatch(
+        .is_err()
+    );
+    assert!(
+        dp.dispatch(
             &ToolCall::new("read", json!({"path":"no"})),
             &ws,
             c.clone(),
             &s
         )
         .await
-        .is_err());
-    assert!(dp
-        .dispatch(
+        .is_err()
+    );
+    assert!(
+        dp.dispatch(
             &ToolCall::new("search", json!({"query":"["})),
             &ws,
             c.clone(),
             &s
         )
         .await
-        .is_err());
+        .is_err()
+    );
 }
 
 // ── E2E tests: aux_roots (data dir access) ─────────────────────────────
@@ -294,12 +303,13 @@ async fn test_aux_read_file_outside_workspace() {
     assert_eq!(r.output, r#"{"key": "value"}"#);
 }
 
-/// Write a file to aux_roots when parent dir exists there but not in workspace.
+/// Write a file to aux_roots only when explicitly addressed by absolute path.
 #[tokio::test]
 async fn test_aux_write_file_outside_workspace() {
     let aux_dir = TempDir::new().unwrap();
     // Create a subdirectory in aux_dir (simulates data/ dir structure)
     std::fs::create_dir_all(aux_dir.path().join("logs")).unwrap();
+    let aux_path = aux_dir.path().join("logs/output.log");
 
     let (_ws_dir, ws, dp) = setup_with_aux(&aux_dir);
     let c = CancellationToken::new();
@@ -309,7 +319,7 @@ async fn test_aux_write_file_outside_workspace() {
         .dispatch(
             &ToolCall::new(
                 "write",
-                json!({"path": "logs/output.log", "content": "log entry"}),
+                json!({"path": aux_path.to_str().unwrap(), "content": "log entry"}),
             ),
             &ws,
             c.clone(),
@@ -325,22 +335,21 @@ async fn test_aux_write_file_outside_workspace() {
     assert_eq!(content, "log entry");
 }
 
-/// Write prefers workspace over aux_roots when path exists in both.
+/// Relative writes prefer workspace over aux_roots even when only aux has the parent dir.
 #[tokio::test]
-async fn test_write_prefers_workspace_over_aux() {
+async fn test_write_relative_prefers_workspace_over_aux_parent() {
     let aux_dir = TempDir::new().unwrap();
-    std::fs::write(aux_dir.path().join("shared.txt"), "aux version").unwrap();
+    std::fs::create_dir_all(aux_dir.path().join("logs")).unwrap();
 
     let (_ws_dir, ws, dp) = setup_with_aux(&aux_dir);
     let c = CancellationToken::new();
     let s = NullSink;
 
-    // Write to workspace via the tool — should go to workspace, not aux
     let r = dp
         .dispatch(
             &ToolCall::new(
                 "write",
-                json!({"path": "shared.txt", "content": "workspace version"}),
+                json!({"path": "logs/output.log", "content": "workspace version"}),
             ),
             &ws,
             c.clone(),
@@ -350,9 +359,9 @@ async fn test_write_prefers_workspace_over_aux() {
         .unwrap();
     assert!(r.success);
 
-    // aux file should be unchanged
-    let aux_content = std::fs::read_to_string(aux_dir.path().join("shared.txt")).unwrap();
-    assert_eq!(aux_content, "aux version");
+    assert!(!aux_dir.path().join("logs/output.log").exists());
+    let ws_content = std::fs::read_to_string(ws.root_path().join("logs/output.log")).unwrap();
+    assert_eq!(ws_content, "workspace version");
 }
 
 /// Read prefers workspace over aux_roots.
@@ -468,8 +477,7 @@ async fn test_edit_prefers_workspace_over_aux() {
     assert_eq!(aux_content, "aux content");
 
     // workspace file modified (read via workspace root path)
-    let ws_content =
-        std::fs::read_to_string(ws.root_path().join("both.txt")).unwrap();
+    let ws_content = std::fs::read_to_string(ws.root_path().join("both.txt")).unwrap();
     assert_eq!(ws_content, "modified content");
 }
 
@@ -671,12 +679,13 @@ async fn test_aux_write_rejects_symlink_components() {
     let c = CancellationToken::new();
     let s = NullSink;
 
-    // Try to write through the symlink
+    // Try to write through the symlink via explicit aux-root addressing.
+    let target = aux_dir.path().join("link/escape.txt");
     let err = dp
         .dispatch(
             &ToolCall::new(
                 "write",
-                json!({"path": "link/escape.txt", "content": "pwned"}),
+                json!({"path": target.to_str().unwrap(), "content": "pwned"}),
             ),
             &ws,
             c.clone(),

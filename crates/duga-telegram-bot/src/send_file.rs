@@ -6,9 +6,9 @@
 
 use duga_config::TelegramSendFileConfig;
 use duga_sandbox::Workspace;
+use duga_tools::Tool;
 use duga_tools::context::ToolContext;
 use duga_tools::result::ToolCallResult;
-use duga_tools::Tool;
 use duga_types::error::ToolError;
 use duga_types::tool_call::CallId;
 use duga_types::tool_result::ToolResult;
@@ -33,7 +33,9 @@ pub enum SendMethod {
 /// Arguments for the `send_file` tool.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SendFileArgs {
-    #[schemars(description = "Brief human-readable description of what this step does (shown to user)")]
+    #[schemars(
+        description = "Brief human-readable description of what this step does (shown to user)"
+    )]
     pub label: String,
     /// Path to the file in the workspace to send.
     pub path: String,
@@ -73,7 +75,12 @@ impl SendFileTool {
 
     /// Determine the send method based on file extension and the `as_photo` hint.
     fn get_send_method(path: &Path, as_photo: bool) -> SendMethod {
-        match path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref() {
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .as_deref()
+        {
             Some("jpg") | Some("jpeg") | Some("png") | Some("webp") => {
                 if as_photo {
                     SendMethod::Photo
@@ -82,7 +89,9 @@ impl SendFileTool {
                 }
             }
             Some("mp3") | Some("flac") | Some("m4a") | Some("wav") => SendMethod::Audio,
-            Some("mp4") | Some("mov") | Some("webm") | Some("avi") | Some("mkv") => SendMethod::Video,
+            Some("mp4") | Some("mov") | Some("webm") | Some("avi") | Some("mkv") => {
+                SendMethod::Video
+            }
             Some("gif") => SendMethod::Animation,
             Some("ogg") => SendMethod::Voice,
             _ => SendMethod::Document,
@@ -133,7 +142,11 @@ impl SendFileTool {
                 return Ok(result);
             }
             // Try aux_roots.
-            if !self.aux_roots.is_empty() && !raw.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            if !self.aux_roots.is_empty()
+                && !raw
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
                 for aux in &self.aux_roots {
                     let aux_full = aux.join(&raw);
                     if aux_full.is_file() {
@@ -298,9 +311,17 @@ impl Tool for SendFileTool {
 
         // Check file size (use full_path for aux-root files).
         let file_size = if is_aux {
-            std::fs::metadata(&full_path).ok().map(|m| m.len()).unwrap_or(0)
+            std::fs::metadata(&full_path)
+                .ok()
+                .map(|m| m.len())
+                .unwrap_or(0)
         } else {
-            self.workspace.root_dir().metadata(&resolved).ok().map(|m| m.len()).unwrap_or(0)
+            self.workspace
+                .root_dir()
+                .metadata(&resolved)
+                .ok()
+                .map(|m| m.len())
+                .unwrap_or(0)
         };
         let max_bytes = (self.config.max_file_size_mb as u64) * 1024 * 1024;
         if file_size > max_bytes {
@@ -336,9 +357,12 @@ impl Tool for SendFileTool {
         } else {
             self.workspace.root_path().join(&resolved)
         };
-        let file_name = resolved.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let input_file = teloxide::types::InputFile::file(&read_path)
-            .file_name(file_name);
+        let file_name = resolved
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let input_file = teloxide::types::InputFile::file(&read_path).file_name(file_name);
 
         // Prepare caption (Telegram limit: 1024 chars).
         let caption = args.caption.as_deref().map(|c| {
@@ -356,51 +380,55 @@ impl Tool for SendFileTool {
                 if let Some(ref cap) = caption {
                     req = req.caption(cap);
                 }
-                req.await.map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
+                req.await
+                    .map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
             }
             SendMethod::Photo => {
                 let mut req = self.bot.send_photo(self.chat_id, input_file);
                 if let Some(ref cap) = caption {
                     req = req.caption(cap);
                 }
-                req.await.map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
+                req.await
+                    .map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
             }
             SendMethod::Audio => {
                 let mut req = self.bot.send_audio(self.chat_id, input_file);
                 if let Some(ref cap) = caption {
                     req = req.caption(cap);
                 }
-                req.await.map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
+                req.await
+                    .map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
             }
             SendMethod::Video => {
                 let mut req = self.bot.send_video(self.chat_id, input_file);
                 if let Some(ref cap) = caption {
                     req = req.caption(cap);
                 }
-                req.await.map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
+                req.await
+                    .map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
             }
             SendMethod::Animation => {
                 let mut req = self.bot.send_animation(self.chat_id, input_file);
                 if let Some(ref cap) = caption {
                     req = req.caption(cap);
                 }
-                req.await.map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
+                req.await
+                    .map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
             }
             SendMethod::Voice => {
                 let mut req = self.bot.send_voice(self.chat_id, input_file);
                 if let Some(ref cap) = caption {
                     req = req.caption(cap);
                 }
-                req.await.map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
+                req.await
+                    .map_err(|e| ToolError::Denied(format!("Telegram API error: {e}")))
             }
         };
 
         match result {
             Ok(_msg) => {
                 let duration = start.elapsed().as_millis() as u64;
-                let file_label = resolved.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy();
+                let file_label = resolved.file_name().unwrap_or_default().to_string_lossy();
                 let size_label = if file_size < 1024 {
                     format!("{} B", file_size)
                 } else if file_size < 1024 * 1024 {
@@ -425,19 +453,17 @@ impl Tool for SendFileTool {
                     truncated: false,
                 })
             }
-            Err(e) => {
-                Ok(ToolResult {
-                    tool_call_id: CallId::new(),
-                    success: false,
-                    output: format!("Error sending file: {e}"),
-                    steering_hint: None,
-                    metadata: serde_json::json!({"error": e.to_string()}),
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    stdout_bytes: 0,
-                    stderr_bytes: 0,
-                    truncated: false,
-                })
-            }
+            Err(e) => Ok(ToolResult {
+                tool_call_id: CallId::new(),
+                success: false,
+                output: format!("Error sending file: {e}"),
+                steering_hint: None,
+                metadata: serde_json::json!({"error": e.to_string()}),
+                duration_ms: start.elapsed().as_millis() as u64,
+                stdout_bytes: 0,
+                stderr_bytes: 0,
+                truncated: false,
+            }),
         }
     }
 }
@@ -558,11 +584,17 @@ mod tests {
 
     #[test]
     fn test_send_method_name() {
-        assert_eq!(SendFileTool::send_method_name(&SendMethod::Document), "document");
+        assert_eq!(
+            SendFileTool::send_method_name(&SendMethod::Document),
+            "document"
+        );
         assert_eq!(SendFileTool::send_method_name(&SendMethod::Photo), "photo");
         assert_eq!(SendFileTool::send_method_name(&SendMethod::Audio), "audio");
         assert_eq!(SendFileTool::send_method_name(&SendMethod::Video), "video");
-        assert_eq!(SendFileTool::send_method_name(&SendMethod::Animation), "animation");
+        assert_eq!(
+            SendFileTool::send_method_name(&SendMethod::Animation),
+            "animation"
+        );
         assert_eq!(SendFileTool::send_method_name(&SendMethod::Voice), "voice");
     }
 
@@ -577,6 +609,13 @@ mod tests {
             workspace,
             aux_roots,
         }
+    }
+
+    fn assert_same_existing_path(actual: &Path, expected: &Path) {
+        assert_eq!(
+            actual.canonicalize().unwrap(),
+            expected.canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -604,7 +643,7 @@ mod tests {
         let (resolved, is_aux, full) = tool.resolve_send_path("video.mp4").unwrap();
         assert!(is_aux);
         assert_eq!(resolved, PathBuf::from("video.mp4"));
-        assert_eq!(full, aux.path().join("video.mp4"));
+        assert_same_existing_path(&full, &aux.path().join("video.mp4"));
     }
 
     #[test]
@@ -620,7 +659,7 @@ mod tests {
         let (resolved, is_aux, full) = tool.resolve_send_path("/workspace/video.mp4").unwrap();
         assert!(is_aux);
         assert_eq!(resolved, PathBuf::from("video.mp4"));
-        assert_eq!(full, aux.path().join("video.mp4"));
+        assert_same_existing_path(&full, &aux.path().join("video.mp4"));
     }
 
     #[test]
@@ -644,7 +683,11 @@ mod tests {
 
         let tool = make_tool(ws, vec![aux.path().to_path_buf()]);
         let err = tool.resolve_send_path("nonexistent.bin").unwrap_err();
-        assert!(err.contains("file not found"), "expected 'file not found', got: {}", err);
+        assert!(
+            err.contains("file not found"),
+            "expected 'file not found', got: {}",
+            err
+        );
     }
 
     #[test]
@@ -660,7 +703,7 @@ mod tests {
         let (resolved, is_aux, full) = tool.resolve_send_path("shared.txt").unwrap();
         assert!(!is_aux, "workspace should take priority over aux_root");
         assert_eq!(resolved, PathBuf::from("shared.txt"));
-        assert_eq!(full, dir.path().join("shared.txt"));
+        assert_same_existing_path(&full, &dir.path().join("shared.txt"));
     }
 
     #[test]
@@ -670,8 +713,14 @@ mod tests {
         let ws = Arc::new(Workspace::open(dir.path()).unwrap());
 
         let tool = make_tool(ws, vec![aux.path().to_path_buf()]);
-        let err = tool.resolve_send_path("/workspace/missing.mp4").unwrap_err();
-        assert!(err.contains("file not found"), "expected 'file not found', got: {}", err);
+        let err = tool
+            .resolve_send_path("/workspace/missing.mp4")
+            .unwrap_err();
+        assert!(
+            err.contains("file not found"),
+            "expected 'file not found', got: {}",
+            err
+        );
     }
 
     #[test]
@@ -716,6 +765,6 @@ mod tests {
         let (resolved, is_aux, full) = tool.resolve_send_path("downloads/clip.mp4").unwrap();
         assert!(is_aux);
         assert_eq!(resolved, PathBuf::from("downloads/clip.mp4"));
-        assert_eq!(full, aux.path().join("downloads/clip.mp4"));
+        assert_same_existing_path(&full, &aux.path().join("downloads/clip.mp4"));
     }
 }

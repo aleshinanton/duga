@@ -9,11 +9,9 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use duga_config::{Config, TuiConfig};
-use duga_core::steering::{SteeringReceiver, SteeringSender};
 use duga_core::LoopResult;
-use duga_runtime::{
-    ConfirmationDecision, FrontendEvent, FrontendEventBridge, FrontendEventSink,
-};
+use duga_core::steering::{SteeringReceiver, SteeringSender};
+use duga_runtime::{ConfirmationDecision, FrontendEvent, FrontendEventBridge, FrontendEventSink};
 use duga_sandbox::CancellationToken;
 use duga_types::error::AgentError;
 use duga_types::message::Message;
@@ -22,13 +20,15 @@ use tokio::sync::{mpsc, oneshot};
 use crate::banner::ErrorBanner;
 use crate::editor::{Editor, EditorAction};
 use crate::event_log::{EventLog, LogEntry, LogLevel};
-use crate::focus::{Focus, FocusRouter, FocusAction};
+use crate::focus::{Focus, FocusAction, FocusRouter};
 use crate::keybindings::{GlobalAction, Keybindings};
 use crate::layout::LayoutManager;
 use crate::overlay::{self, Overlay, OverlayManager};
 use crate::reasoning_panel::ReasoningPanel;
-use crate::session::{SessionInfo, delete_session, list_sessions, load_conversation_history,
-    load_session_transcript, upsert_session_index, touch_session};
+use crate::session::{
+    SessionInfo, delete_session, list_sessions, load_conversation_history, load_session_transcript,
+    touch_session, upsert_session_index,
+};
 use crate::sidebar::SidebarState;
 use crate::theme::Theme;
 use crate::transcript::{SystemLevel, Transcript, TranscriptItem};
@@ -135,7 +135,8 @@ pub struct App {
     /// Steering sender for injecting guidance mid-run.
     active_steer: Option<SteeringSender>,
     /// Receiver for pending confirmation requests from the agent.
-    confirmation_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::confirmation::PendingConfirmation>>,
+    confirmation_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<crate::confirmation::PendingConfirmation>>,
     /// Oneshot sender to respond to the active confirmation.
     pending_confirm_tx: Option<oneshot::Sender<ConfirmationDecision>>,
     /// Last known terminal dimensions.
@@ -336,24 +337,31 @@ impl App {
         }
     }
 
-/// Returns true if the key event represents a typing/editing action
-/// (characters, backspace, delete, arrows, home, end) that should
-/// auto-switch focus to the Input pane.
-fn is_typing_key(key: &KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Char(_) if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT => true,
-        KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter => true,
-        KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => true,
-        KeyCode::Home | KeyCode::End => true,
-        _ => false,
+    /// Returns true if the key event represents a typing/editing action
+    /// (characters, backspace, delete, arrows, home, end) that should
+    /// auto-switch focus to the Input pane.
+    fn is_typing_key(key: &KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char(_)
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                true
+            }
+            KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter => true,
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => true,
+            KeyCode::Home | KeyCode::End => true,
+            _ => false,
+        }
     }
-}
 
     pub fn handle_key(&mut self, key: &KeyEvent) {
         // 0. Confirmation dialog takes priority over everything.
         if let Some(ref mut dialog) = self.active_confirm_dialog {
             let action = dialog.handle_key(key);
-            if matches!(action, overlay::OverlayAction::Close | overlay::OverlayAction::Consumed) {
+            if matches!(
+                action,
+                overlay::OverlayAction::Close | overlay::OverlayAction::Consumed
+            ) {
                 self.process_confirm_result();
                 return;
             }
@@ -377,9 +385,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
         }
 
         // 1.5. Focus routing (Tab, dedicated shortcuts, Esc)
-        let sidebar_visible = self
-            .layout_manager
-            .is_sidebar_visible(self.term_width);
+        let sidebar_visible = self.layout_manager.is_sidebar_visible(self.term_width);
         let has_overlay = self.overlays.has_overlay();
         let is_running = matches!(self.state, AppState::Running { .. });
 
@@ -453,13 +459,15 @@ fn is_typing_key(key: &KeyEvent) -> bool {
             }
             GlobalAction::ToggleTool => {
                 // Toggle tool call blocks
-                let any_expanded = self
-                    .transcript
-                    .items()
-                    .iter()
-                    .any(|item| {
-                        matches!(item, TranscriptItem::ToolCallBlock { is_expanded: true, .. })
-                    });
+                let any_expanded = self.transcript.items().iter().any(|item| {
+                    matches!(
+                        item,
+                        TranscriptItem::ToolCallBlock {
+                            is_expanded: true,
+                            ..
+                        }
+                    )
+                });
                 let target = !any_expanded;
                 let to_toggle: Vec<usize> = self
                     .transcript
@@ -500,13 +508,15 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 }
 
                 // Also toggle tool call blocks (Ctrl+O expands/collapses both)
-                let any_expanded = self
-                    .transcript
-                    .items()
-                    .iter()
-                    .any(|item| {
-                        matches!(item, TranscriptItem::ToolCallBlock { is_expanded: true, .. })
-                    });
+                let any_expanded = self.transcript.items().iter().any(|item| {
+                    matches!(
+                        item,
+                        TranscriptItem::ToolCallBlock {
+                            is_expanded: true,
+                            ..
+                        }
+                    )
+                });
                 let target = !any_expanded;
                 let to_toggle: Vec<usize> = self
                     .transcript
@@ -562,7 +572,9 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 let sessions = list_sessions(&self.sessions_dir);
                 self.push_overlay(Box::new(
                     overlay::session_picker::SessionPickerOverlay::new(
-                        sessions, tx, Some(delete_tx),
+                        sessions,
+                        tx,
+                        Some(delete_tx),
                     ),
                 ));
                 return;
@@ -705,10 +717,15 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 if let Some(t) = text {
                     if !t.is_empty() {
                         let is_duplicate = had_streaming
-                            && self.transcript.items().last()
-                                .map(|item| matches!(item,
+                            && self
+                                .transcript
+                                .items()
+                                .last()
+                                .map(|item| {
+                                    matches!(item,
                                     TranscriptItem::AssistantMessage { text: existing, .. }
-                                    if existing == &t))
+                                    if existing == &t)
+                                })
                                 .unwrap_or(false);
 
                         if !is_duplicate {
@@ -777,12 +794,15 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 self.event_log.push(LogEntry::new(
                     level,
                     icon,
-                    format!("Tool: {tool_name} {} — {description}",
-                        if success { "ok" } else { "failed" }),
+                    format!(
+                        "Tool: {tool_name} {} — {description}",
+                        if success { "ok" } else { "failed" }
+                    ),
                 ));
 
                 // Update existing tool block if found
-                self.transcript.update_tool_call(&tool_call_id, success, output.clone());
+                self.transcript
+                    .update_tool_call(&tool_call_id, success, output.clone());
                 // If FinalOnly mode and tool wasn't shown during running, show now
                 if self.tool_event_format == duga_config::ToolEventFormat::FinalOnly {
                     // Check if this tool was added during ToolCallStarted
@@ -827,11 +847,8 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                 }
             }
             FrontendEvent::Error { message } => {
-                self.event_log.push(LogEntry::new(
-                    LogLevel::Error,
-                    "✗",
-                    message.clone(),
-                ));
+                self.event_log
+                    .push(LogEntry::new(LogLevel::Error, "✗", message.clone()));
                 self.transcript.push(TranscriptItem::SystemMessage {
                     text: message.clone(),
                     level: SystemLevel::Error,
@@ -851,7 +868,10 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                     format!("{from} → {to}: {reason}"),
                 ));
                 // Update status bar to show the new loop.
-                if let AppState::Running { ref mut loop_name, .. } = self.state {
+                if let AppState::Running {
+                    ref mut loop_name, ..
+                } = self.state
+                {
                     *loop_name = to.clone();
                 }
                 self.transcript.push(TranscriptItem::DelegationNotice {
@@ -978,7 +998,8 @@ fn is_typing_key(key: &KeyEvent) -> bool {
         self.scroll_to_bottom();
 
         // Populate reasoning panel with thinking blocks from the session.
-        self.reasoning_panel.load_from_transcript_items(self.transcript.items());
+        self.reasoning_panel
+            .load_from_transcript_items(self.transcript.items());
 
         // Load conversation history for memory restoration on the next run.
         let history = load_conversation_history(
@@ -1027,9 +1048,10 @@ fn is_typing_key(key: &KeyEvent) -> bool {
             }
         }
 
-        let session_path = self.current_session_id.as_ref().map(|id| {
-            self.sessions_dir.join(format!("{id}.jsonl"))
-        });
+        let session_path = self
+            .current_session_id
+            .as_ref()
+            .map(|id| self.sessions_dir.join(format!("{id}.jsonl")));
         let history = self.pending_history.take();
 
         let cancellation = CancellationToken::new();
@@ -1073,10 +1095,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
             )
             .await;
 
-            let _ = event_tx.send(AppEvent::RunFinished {
-                run_id,
-                result,
-            });
+            let _ = event_tx.send(AppEvent::RunFinished { run_id, result });
         });
     }
 
@@ -1099,7 +1118,10 @@ fn is_typing_key(key: &KeyEvent) -> bool {
                     crate::banner::BannerLevel::Cancel,
                     "Request cancelled. Press Ctrl+R to retry.".into(),
                 );
-                let (run_id, loop_name) = if let AppState::Running { run_id, loop_name, .. } = &self.state {
+                let (run_id, loop_name) = if let AppState::Running {
+                    run_id, loop_name, ..
+                } = &self.state
+                {
                     (*run_id, loop_name.clone())
                 } else {
                     return;
@@ -1189,9 +1211,7 @@ fn is_typing_key(key: &KeyEvent) -> bool {
             format!("Delete session \"{title}\"? This cannot be undone."),
         );
         self.active_confirm_dialog = Some(dialog);
-        self.confirm_kind = Some(ConfirmKind::DeleteSession {
-            session_id,
-        });
+        self.confirm_kind = Some(ConfirmKind::DeleteSession { session_id });
     }
 
     /// Check if the confirmation dialog was dismissed and send the response.
@@ -1268,11 +1288,9 @@ fn is_typing_key(key: &KeyEvent) -> bool {
         let area = frame.area();
 
         // Compute pane rects from the layout manager
-        let mut pane_rects = self.layout_manager.compute(
-            area.width,
-            area.height,
-            self.banner.is_active(),
-        );
+        let mut pane_rects =
+            self.layout_manager
+                .compute(area.width, area.height, self.banner.is_active());
 
         // Collapse sidebar when both panels are hidden — let chat expand into that space
         if !self.sidebar_state.has_content() && pane_rects.sidebar.width > 0 {
@@ -1303,7 +1321,8 @@ fn is_typing_key(key: &KeyEvent) -> bool {
 
         // ── Banner ────────────────────────────────────────────────────
         if pane_rects.banner.height > 0 {
-            self.banner.render(pane_rects.banner, frame.buffer_mut(), &self.theme);
+            self.banner
+                .render(pane_rects.banner, frame.buffer_mut(), &self.theme);
         }
 
         // ── Editor (input area) ───────────────────────────────────────
@@ -1311,7 +1330,12 @@ fn is_typing_key(key: &KeyEvent) -> bool {
 
         // ── Footer ───────────────────────────────────────────────────
         if pane_rects.footer.height > 0 {
-            crate::footer::FooterView::render(pane_rects.footer, frame.buffer_mut(), self, &self.theme);
+            crate::footer::FooterView::render(
+                pane_rects.footer,
+                frame.buffer_mut(),
+                self,
+                &self.theme,
+            );
         }
 
         // ── Overlays ──────────────────────────────────────────────────
@@ -1464,7 +1488,7 @@ agent:
 sandbox:
   timeout: 10s
   allowed_binaries:
-    - /usr/bin/echo
+    - echo
 workspace:
   root: {root}
 environment:
@@ -1519,10 +1543,9 @@ plugins:
     fn editor_submits_prompt() {
         let mut app = make_app();
         app.editor.insert_text("hello world");
-        let action = app.editor.handle_key(&KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        ));
+        let action = app
+            .editor
+            .handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(action, EditorAction::Submit);
     }
 
@@ -1587,10 +1610,7 @@ plugins:
             timestamp: Instant::now(),
         });
         assert_eq!(app.transcript.len(), 1);
-        app.handle_key(&KeyEvent::new(
-            KeyCode::Char('l'),
-            KeyModifiers::CONTROL,
-        ));
+        app.handle_key(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
         assert!(app.transcript.len() > 0); // Has the "cleared" message
     }
 
@@ -1616,11 +1636,14 @@ plugins:
         let initial = app.config.thinking_level;
         app.handle_key(&KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
         // Should have cycled to the next level
-        assert_eq!(app.config.thinking_level, match initial {
-            ThinkingLevel::Off => ThinkingLevel::Low,
-            ThinkingLevel::Low => ThinkingLevel::Medium,
-            ThinkingLevel::Medium => ThinkingLevel::High,
-            ThinkingLevel::High => ThinkingLevel::Off,
-        });
+        assert_eq!(
+            app.config.thinking_level,
+            match initial {
+                ThinkingLevel::Off => ThinkingLevel::Low,
+                ThinkingLevel::Low => ThinkingLevel::Medium,
+                ThinkingLevel::Medium => ThinkingLevel::High,
+                ThinkingLevel::High => ThinkingLevel::Off,
+            }
+        );
     }
 }

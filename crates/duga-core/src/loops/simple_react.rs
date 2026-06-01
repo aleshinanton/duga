@@ -7,7 +7,7 @@
 use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
-use crate::steering::{apply_context_event, check_steer, SteerAction, SteeringContextEvent};
+use crate::steering::{SteerAction, SteeringContextEvent, apply_context_event, check_steer};
 use duga_events::Event;
 use duga_llm::LlmClient;
 use duga_sandbox::CancellationToken;
@@ -53,9 +53,7 @@ async fn run_simple_react(
     tracing::info!(task = %task, loop_id = "simple_react", "Agent run started");
     ctx.tools.reset_limits();
     ctx.event_sink
-        .emit(Event::AgentStarted {
-            task: task.clone(),
-        })
+        .emit(Event::AgentStarted { task: task.clone() })
         .await
         .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
 
@@ -186,21 +184,25 @@ async fn run_simple_react(
         // and OpenAI rejects requests where an assistant has unresolved tool_calls.
         let mut delegate_skip_id: Option<duga_types::tool_call::CallId> = None;
         match try_handle_delegate(&assistant.tool_calls, &task, ctx).await? {
-            DelegateOutcome::Success(delegated_result) => {
-                // Push assistant + delegate tool result so conversation is valid.
+            DelegateOutcome::Success {
+                result: delegated_result,
+                tool_result: delegate_result,
+            } => {
+                let delegate_call_id = delegate_result.tool_call_id.clone();
+                // Push assistant + one result per tool call so conversation is valid.
                 ctx.memory.push_assistant(assistant.clone());
-                // Push skipped results for any remaining tool calls.
                 for call in &assistant.tool_calls {
-                    if call.tool == "delegate" {
-                        continue;
+                    if call.id == delegate_call_id {
+                        ctx.memory.push_tool_result(delegate_result.clone());
+                    } else {
+                        let skipped = ToolResult::from_outcome(
+                            call.id.clone(),
+                            &call.tool,
+                            Err(ToolError::Cancelled),
+                            Instant::now(),
+                        );
+                        ctx.memory.push_tool_result(skipped);
                     }
-                    let skipped = ToolResult::from_outcome(
-                        call.id.clone(),
-                        &call.tool,
-                        Err(ToolError::Cancelled),
-                        Instant::now(),
-                    );
-                    ctx.memory.push_tool_result(skipped);
                 }
                 emit_final_snapshot(ctx).await?;
                 return Ok(delegated_result);
@@ -335,7 +337,10 @@ enum DelegateOutcome {
     /// No delegate call found — proceed normally.
     NotFound,
     /// Delegation succeeded — this is the final answer.
-    Success(LoopResult),
+    Success {
+        result: LoopResult,
+        tool_result: ToolResult,
+    },
     /// Delegation failed — push this error tool result after push_assistant.
     Error(ToolResult),
 }
@@ -418,29 +423,10 @@ async fn try_handle_delegate(
 
     // Use the actual task as the reason — never trust the LLM's reason
     // field since it can hallucinate content from previous conversations.
-    let reason = format!(
-        "{}…",
-        task.chars().take(80).collect::<String>().trim()
-    );
+    let reason = format!("{}…", task.chars().take(80).collect::<String>().trim());
 
     // Build child context with incremented depth.
     let new_depth = ctx.delegation_depth + 1;
-    let mut child_ctx = LoopContext {
-        config: ctx.config,
-        memory: ctx.memory,
-        llm: ctx.llm,
-        tools: ctx.tools,
-        workspace: ctx.workspace,
-        event_sink: ctx.event_sink,
-        summarizer: ctx.summarizer,
-        cancellation: ctx.cancellation,
-        registry: ctx.registry,
-        max_refinement_iterations: ctx.max_refinement_iterations,
-        max_delegation_depth: ctx.max_delegation_depth,
-        delegation_depth: new_depth,
-        steer: None,
-        steer_limits: None,
-    };
 
     // Emit delegation event.
     ctx.event_sink
@@ -453,10 +439,31 @@ async fn try_handle_delegate(
         .await
         .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
 
-    // Run the target loop (memory does NOT have the delegate assistant yet).
-    let delegated_result = target
-        .run(task.to_string(), &mut child_ctx)
-        .await?;
+    // Run the target loop against a temporary memory tail. The child sees the
+    // valid parent context up to this point, but its messages are removed before
+    // the parent assistant + delegate result are appended contiguously.
+    let checkpoint = ctx.memory.checkpoint();
+    let delegated_result = {
+        let mut child_ctx = LoopContext {
+            config: ctx.config,
+            memory: ctx.memory,
+            llm: ctx.llm,
+            tools: ctx.tools,
+            workspace: ctx.workspace,
+            event_sink: ctx.event_sink,
+            summarizer: ctx.summarizer,
+            cancellation: ctx.cancellation,
+            registry: ctx.registry,
+            max_refinement_iterations: ctx.max_refinement_iterations,
+            max_delegation_depth: ctx.max_delegation_depth,
+            delegation_depth: new_depth,
+            steer: None,
+            steer_limits: None,
+        };
+        target.run(task.to_string(), &mut child_ctx).await
+    };
+    ctx.memory.restore(checkpoint);
+    let delegated_result = delegated_result?;
 
     // Build the tool result for the delegate call (caller pushes after assistant).
     let tool_result = duga_types::tool_result::ToolResultBuilder::new()
@@ -465,9 +472,10 @@ async fn try_handle_delegate(
         .output(delegated_result.message.text.clone().unwrap_or_default())
         .build()
         .unwrap();
-    ctx.memory.push_tool_result(tool_result);
-
-    Ok(DelegateOutcome::Success(delegated_result))
+    Ok(DelegateOutcome::Success {
+        result: delegated_result,
+        tool_result,
+    })
 }
 
 // ── Public helpers for specialized loops ─────────────────────────────────
@@ -482,7 +490,9 @@ async fn try_handle_delegate(
 /// bounded by the remaining runtime.
 /// Filter `delegate` from tool schemas — specialized loops should not
 /// offer delegation since only `SimpleReActLoop` handles it.
-pub fn schemas_without_delegate(schemas: &[duga_types::tool_schema::ToolSchema]) -> Vec<duga_types::tool_schema::ToolSchema> {
+pub fn schemas_without_delegate(
+    schemas: &[duga_types::tool_schema::ToolSchema],
+) -> Vec<duga_types::tool_schema::ToolSchema> {
     schemas
         .iter()
         .filter(|s| s.name != "delegate")
@@ -534,11 +544,7 @@ pub async fn dispatch_tool_with_events(
         // Timeout bounded by config.max_runtime — but we don't have a
         // loop_started Instant here.  Use a generous 60s timeout that the
         // cancellation token can still interrupt.
-        let outcome = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            dispatch,
-        )
-        .await;
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), dispatch).await;
 
         match outcome {
             Ok(Ok(result)) => {
@@ -570,12 +576,8 @@ pub async fn dispatch_tool_with_events(
                 last_error = Some(error);
             }
             Ok(Err(error)) => {
-                let result = ToolResult::from_outcome(
-                    call.id.clone(),
-                    &call.tool,
-                    Err(error),
-                    start,
-                );
+                let result =
+                    ToolResult::from_outcome(call.id.clone(), &call.tool, Err(error), start);
                 ctx.event_sink
                     .emit(Event::ToolCallFinished {
                         result: result.clone(),
@@ -588,14 +590,9 @@ pub async fn dispatch_tool_with_events(
             }
             Err(_timeout) => {
                 // Timeout — return the last error if any, or a timeout error
-                let error = last_error
-                    .unwrap_or_else(|| duga_types::error::ToolError::Timeout);
-                let result = ToolResult::from_outcome(
-                    call.id.clone(),
-                    &call.tool,
-                    Err(error),
-                    start,
-                );
+                let error = last_error.unwrap_or(duga_types::error::ToolError::Timeout);
+                let result =
+                    ToolResult::from_outcome(call.id.clone(), &call.tool, Err(error), start);
                 ctx.event_sink
                     .emit(Event::ToolCallFinished {
                         result: result.clone(),
@@ -856,9 +853,7 @@ async fn complete_from_steer(
     ctx.memory.push_assistant(msg.clone());
     emit_final_snapshot(ctx).await?;
     ctx.event_sink
-        .emit(Event::AgentFinished {
-            text: Some(answer),
-        })
+        .emit(Event::AgentFinished { text: Some(answer) })
         .await
         .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
     Ok(LoopResult {
@@ -892,8 +887,8 @@ mod tests {
     use crate::summarizer::Summarizer;
     use crate::testing::{CapturingEventSink, MockTool};
     use duga_events::{EventSink, NullSink};
-    use duga_llm::dummy::DummyClient;
     use duga_llm::LlmClient;
+    use duga_llm::dummy::DummyClient;
     use duga_tools::{ErasedTool, ToolDispatcher};
     use duga_types::llm::{LlmResponse, TokenUsage};
     use duga_types::message::{AssistantMessage, ContentBlock, Message};
@@ -907,8 +902,38 @@ mod tests {
             &'a self,
             _messages: &'a [Message],
         ) -> crate::summarizer::SummaryFuture<'a> {
-            Box::pin(async {
-                Ok(duga_types::llm::SummaryMessage::new("summary".into()))
+            Box::pin(async { Ok(duga_types::llm::SummaryMessage::new("summary".into())) })
+        }
+    }
+
+    struct MemoryMutatingLoop;
+
+    impl Loop for MemoryMutatingLoop {
+        fn id(&self) -> &'static str {
+            "problem_solving"
+        }
+
+        fn name(&self) -> &'static str {
+            "Problem Solving"
+        }
+
+        fn description(&self) -> &'static str {
+            "test loop"
+        }
+
+        fn run<'a>(&'a self, _task: String, ctx: &'a mut LoopContext<'a>) -> LoopRunFuture<'a> {
+            Box::pin(async move {
+                ctx.memory.push_user("child-only message".into());
+                Ok(LoopResult {
+                    message: AssistantMessage {
+                        text: Some("delegated answer".into()),
+                        tool_calls: vec![],
+                        reasoning_content: None,
+                    },
+                    steps: 1,
+                    tool_calls: 0,
+                    loop_id: "problem_solving".into(),
+                })
             })
         }
     }
@@ -966,13 +991,7 @@ mod tests {
         let tools = Arc::new(ToolDispatcher::new());
 
         let config = AgentConfig::default();
-        let mut memory = crate::Memory::new(
-            vec![Message::system("system")],
-            10000,
-            0.8,
-            0,
-            0,
-        );
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
         let dir = tempfile::tempdir().unwrap();
         let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
         let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
@@ -1025,13 +1044,7 @@ mod tests {
             .unwrap();
 
         let config = AgentConfig::default();
-        let mut memory = crate::Memory::new(
-            vec![Message::system("system")],
-            10000,
-            0.8,
-            0,
-            0,
-        );
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
         let dir = tempfile::tempdir().unwrap();
         let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
         let sink: Arc<dyn EventSink> = Arc::new(NullSink);
@@ -1063,18 +1076,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delegation_restores_child_memory_and_appends_delegate_result_after_parent_assistant() {
+        let delegate_call =
+            ToolCall::new("delegate", serde_json::json!({"loop": "problem_solving"}));
+        let llm: Arc<dyn LlmClient> = Arc::new(DummyClient::with_response(
+            "dummy",
+            llm_response(AssistantMessage {
+                text: None,
+                tool_calls: vec![delegate_call.clone()],
+                reasoning_content: None,
+            }),
+        ));
+        let tools = Arc::new(ToolDispatcher::new());
+
+        let config = AgentConfig::default();
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
+        let sink: Arc<dyn EventSink> = Arc::new(NullSink);
+        let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
+        let mut registry = LoopRegistry::new();
+        registry.register(Box::new(MemoryMutatingLoop)).unwrap();
+        let registry = Arc::new(registry);
+        let cancellation = duga_sandbox::CancellationToken::new();
+
+        let mut ctx = make_ctx(
+            &config,
+            &mut memory,
+            &llm,
+            &tools,
+            &workspace,
+            &sink,
+            &summarizer,
+            &registry,
+            &cancellation,
+        );
+
+        let result = SimpleReActLoop.run("task".into(), &mut ctx).await.unwrap();
+        assert_eq!(result.message.text, Some("delegated answer".into()));
+
+        let messages = memory.messages();
+        assert!(!messages.iter().any(
+            |message| matches!(message.content.first(), Some(ContentBlock::Text { text }) if text == "child-only message")
+        ));
+        let assistant_idx = messages
+            .iter()
+            .position(|message| {
+                matches!(
+                    message.content.first(),
+                    Some(ContentBlock::ToolCall(call)) if call.id == delegate_call.id
+                )
+            })
+            .unwrap();
+        assert!(
+            matches!(messages[assistant_idx + 1].content.first(), Some(ContentBlock::Text { text }) if text == "delegated answer")
+        );
+    }
+
+    #[tokio::test]
     async fn cancellation_before_run_is_fatal() {
         let tools = Arc::new(ToolDispatcher::new());
         let llm: Arc<dyn LlmClient> = Arc::new(DummyClient::default());
 
         let config = AgentConfig::default();
-        let mut memory = crate::Memory::new(
-            vec![Message::system("system")],
-            10000,
-            0.8,
-            0,
-            0,
-        );
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
         let dir = tempfile::tempdir().unwrap();
         let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
         let sink: Arc<dyn EventSink> = Arc::new(NullSink);
@@ -1128,10 +1193,7 @@ mod tests {
         let tools = Arc::new(ToolDispatcher::new());
 
         let config = AgentConfig::default();
-        let mut memory = crate::Memory::new(
-            vec![Message::system("system")],
-            10000, 0.8, 0, 0,
-        );
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
         let dir = tempfile::tempdir().unwrap();
         let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
         let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
@@ -1139,8 +1201,15 @@ mod tests {
         let cancellation = duga_sandbox::CancellationToken::new();
 
         let mut ctx = make_ctx(
-            &config, &mut memory, &llm, &tools, &workspace,
-            &sink, &summarizer, &registry, &cancellation,
+            &config,
+            &mut memory,
+            &llm,
+            &tools,
+            &workspace,
+            &sink,
+            &summarizer,
+            &registry,
+            &cancellation,
         );
         // steer is None by default in make_ctx
         assert!(ctx.steer.is_none());
@@ -1157,10 +1226,7 @@ mod tests {
         let tools = Arc::new(ToolDispatcher::new());
 
         let config = AgentConfig::default();
-        let mut memory = crate::Memory::new(
-            vec![Message::system("system")],
-            10000, 0.8, 0, 0,
-        );
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
         let dir = tempfile::tempdir().unwrap();
         let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
         let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
@@ -1176,8 +1242,15 @@ mod tests {
             .unwrap();
 
         let mut ctx = make_ctx(
-            &config, &mut memory, &llm, &tools, &workspace,
-            &sink, &summarizer, &registry, &cancellation,
+            &config,
+            &mut memory,
+            &llm,
+            &tools,
+            &workspace,
+            &sink,
+            &summarizer,
+            &registry,
+            &cancellation,
         );
         ctx.steer = Some(receiver);
 
@@ -1193,10 +1266,7 @@ mod tests {
         let tools = Arc::new(ToolDispatcher::new());
 
         let config = AgentConfig::default();
-        let mut memory = crate::Memory::new(
-            vec![Message::system("system")],
-            10000, 0.8, 0, 0,
-        );
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
         let dir = tempfile::tempdir().unwrap();
         let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
         let summarizer: Arc<dyn crate::Summarizer> = Arc::new(StaticSummarizer);
@@ -1205,14 +1275,23 @@ mod tests {
 
         let (sender, receiver) = make_steer_channel();
         sender
-            .inject(SteeringEvent::Control(SteeringControlEvent::ForceComplete {
-                answer: "forced answer".into(),
-            }))
+            .inject(SteeringEvent::Control(
+                SteeringControlEvent::ForceComplete {
+                    answer: "forced answer".into(),
+                },
+            ))
             .unwrap();
 
         let mut ctx = make_ctx(
-            &config, &mut memory, &llm, &tools, &workspace,
-            &sink, &summarizer, &registry, &cancellation,
+            &config,
+            &mut memory,
+            &llm,
+            &tools,
+            &workspace,
+            &sink,
+            &summarizer,
+            &registry,
+            &cancellation,
         );
         ctx.steer = Some(receiver);
 
@@ -1248,10 +1327,7 @@ mod tests {
             .unwrap();
 
         let config = AgentConfig::default();
-        let mut memory = crate::Memory::new(
-            vec![Message::system("system")],
-            10000, 0.8, 0, 0,
-        );
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
         let dir = tempfile::tempdir().unwrap();
         let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
         let sink: Arc<dyn EventSink> = Arc::new(NullSink);
@@ -1268,8 +1344,15 @@ mod tests {
             .unwrap();
 
         let mut ctx = make_ctx(
-            &config, &mut memory, &llm, &tools, &workspace,
-            &sink, &summarizer, &registry, &cancellation,
+            &config,
+            &mut memory,
+            &llm,
+            &tools,
+            &workspace,
+            &sink,
+            &summarizer,
+            &registry,
+            &cancellation,
         );
         ctx.steer = Some(receiver);
 
@@ -1302,10 +1385,7 @@ mod tests {
             .unwrap();
 
         let config = AgentConfig::default();
-        let mut memory = crate::Memory::new(
-            vec![Message::system("system")],
-            10000, 0.8, 0, 0,
-        );
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
         let dir = tempfile::tempdir().unwrap();
         let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
         let sink: Arc<dyn EventSink> = Arc::new(NullSink);
@@ -1322,8 +1402,15 @@ mod tests {
             .unwrap();
 
         let mut ctx = make_ctx(
-            &config, &mut memory, &llm, &tools, &workspace,
-            &sink, &summarizer, &registry, &cancellation,
+            &config,
+            &mut memory,
+            &llm,
+            &tools,
+            &workspace,
+            &sink,
+            &summarizer,
+            &registry,
+            &cancellation,
         );
         ctx.steer = Some(receiver);
 
@@ -1432,7 +1519,10 @@ mod tests {
             steer_limits: None,
         };
 
-        let call = ToolCall::new("delegate", serde_json::json!({"loop": "search", "reason": "test"}));
+        let call = ToolCall::new(
+            "delegate",
+            serde_json::json!({"loop": "search", "reason": "test"}),
+        );
         let result = dispatch_tool_with_events(&ctx, &call).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

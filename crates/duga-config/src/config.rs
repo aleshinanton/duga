@@ -20,7 +20,7 @@ pub enum ProviderKind {
     Custom(String),
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingLevel {
     Off,
@@ -622,7 +622,8 @@ impl Config {
                                 continue;
                             }
                             if !is_executable(path) {
-                                errors.push(format!("binary is not executable: {}", path.display()));
+                                errors
+                                    .push(format!("binary is not executable: {}", path.display()));
                             }
                         }
                         // Bare names (no '/') are resolved via `which` at runtime — skip validation.
@@ -636,7 +637,12 @@ impl Config {
         }
 
         // Warn when allow_all_binaries is used with non-container sandbox modes.
-        if self.sandbox.allow_all_binaries && matches!(self.sandbox.mode, SandboxMode::Host | SandboxMode::Capability) {
+        if self.sandbox.allow_all_binaries
+            && matches!(
+                self.sandbox.mode,
+                SandboxMode::Host | SandboxMode::Capability
+            )
+        {
             tracing::warn!(
                 "sandbox.allow_all_binaries is true but sandbox.mode is {:?}. \
                  This removes defense-in-depth; only use allow_all_binaries with Docker/container isolation.",
@@ -727,21 +733,25 @@ impl Config {
                 errors.push("telegram.attachments.max_file_size_mb must be > 0".into());
             }
             if telegram.attachments.enabled && telegram.attachments.max_file_size_mb > 50 {
-                errors.push("telegram.attachments.max_file_size_mb must not exceed Telegram's 50 MB limit".into());
+                errors.push(
+                    "telegram.attachments.max_file_size_mb must not exceed Telegram's 50 MB limit"
+                        .into(),
+                );
             }
             if telegram.send_file.enabled && telegram.send_file.max_file_size_mb == 0 {
                 errors.push("telegram.send_file.max_file_size_mb must be > 0".into());
             }
             if telegram.send_file.enabled && telegram.send_file.max_file_size_mb > 2000 {
-                errors.push("telegram.send_file.max_file_size_mb must not exceed 2000 MB (Bot API limit)".into());
+                errors.push(
+                    "telegram.send_file.max_file_size_mb must not exceed 2000 MB (Bot API limit)"
+                        .into(),
+                );
             }
         }
 
         // Loop config validation.
         if self.agent.loop_config.max_refinement_iterations == 0 {
-            errors.push(
-                "agent.loop.max_refinement_iterations must be at least 1".into(),
-            );
+            errors.push("agent.loop.max_refinement_iterations must be at least 1".into());
         }
         if self.agent.loop_config.max_delegation_depth > 10 {
             tracing::warn!(
@@ -752,7 +762,12 @@ impl Config {
         }
         // `simple_react` is always the entry point, not a delegation target.
         // Warn if it appears in `enabled_loops` (harmless but confusing).
-        if self.agent.loop_config.enabled_loops.contains(&"simple_react".to_string()) {
+        if self
+            .agent
+            .loop_config
+            .enabled_loops
+            .contains(&"simple_react".to_string())
+        {
             tracing::warn!(
                 "'simple_react' listed in agent.loop.enabled_loops — it is always \
                  the entry point and cannot be delegated to. Removing it from \
@@ -1021,8 +1036,10 @@ plugins:
             ..Default::default()
         });
         let err = c.validate().unwrap_err().to_string();
-        assert!(err.contains("send_file.max_file_size_mb must be > 0"),
-            "Expected max_file_size_mb validation error, got: {err}");
+        assert!(
+            err.contains("send_file.max_file_size_mb must be > 0"),
+            "Expected max_file_size_mb validation error, got: {err}"
+        );
         let _ = dir;
     }
 
@@ -1041,8 +1058,10 @@ plugins:
             ..Default::default()
         });
         let err = c.validate().unwrap_err().to_string();
-        assert!(err.contains("send_file.max_file_size_mb must not exceed 2000 MB"),
-            "Expected max_file_size_mb validation error, got: {err}");
+        assert!(
+            err.contains("send_file.max_file_size_mb must not exceed 2000 MB"),
+            "Expected max_file_size_mb validation error, got: {err}"
+        );
         let _ = dir;
     }
 
@@ -1060,7 +1079,10 @@ plugins:
             allowed_chat_ids: vec![1],
             ..Default::default()
         });
-        assert!(c.validate().is_ok(), "Disabled send_file should not validate size");
+        assert!(
+            c.validate().is_ok(),
+            "Disabled send_file should not validate size"
+        );
         let _ = dir;
     }
 

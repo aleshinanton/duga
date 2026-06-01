@@ -1,6 +1,6 @@
 //! Anthropic Messages API provider.
 
-use crate::{estimate_tokens, message_text, ChatFuture, LlmClient, LlmError};
+use crate::{ChatFuture, LlmClient, LlmError, estimate_tokens, message_text};
 use duga_config::ThinkingLevel;
 use duga_events::{Event, EventSink};
 use duga_types::llm::{LlmCallOptions, LlmResponse, TokenUsage};
@@ -13,6 +13,8 @@ use serde_json::Value;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const DEFAULT_MAX_TOKENS: u32 = 4096;
+const MIN_VISIBLE_OUTPUT_TOKENS: u32 = 1024;
 
 #[derive(Debug)]
 pub struct AnthropicClient {
@@ -43,7 +45,7 @@ impl AnthropicClient {
             model: model.into(),
             api_key: api_key.into(),
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.into()),
-            max_tokens: 4096,
+            max_tokens: DEFAULT_MAX_TOKENS,
             thinking_level,
             http: reqwest::Client::new(),
         }
@@ -74,8 +76,13 @@ impl LlmClient for AnthropicClient {
         event_sink: &'a dyn EventSink,
     ) -> ChatFuture<'a> {
         Box::pin(async move {
-            let mut request =
-                AnthropicRequest::from_duga(&self.model, self.max_tokens, messages, tools, &self.thinking_level);
+            let mut request = AnthropicRequest::from_duga(
+                &self.model,
+                self.max_tokens,
+                messages,
+                tools,
+                &self.thinking_level,
+            );
             if options.streaming {
                 request.stream = Some(true);
             }
@@ -128,7 +135,8 @@ impl AnthropicClient {
         let mut acc_text = Vec::new();
         let mut acc_think = Vec::new();
         let mut acc_tools: Vec<(usize, String, String, String)> = Vec::new();
-        let mut block_types: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+        let mut block_types: std::collections::HashMap<usize, String> =
+            std::collections::HashMap::new();
         let mut input_tokens: u32 = 0;
         let mut output_tokens: u32 = 0;
 
@@ -141,10 +149,14 @@ impl AnthropicClient {
             while let Some(nl) = buffer.find('\n') {
                 let line = buffer[..nl].trim().to_string();
                 buffer = buffer[nl + 1..].to_string();
-                if line.is_empty() { continue; }
+                if line.is_empty() {
+                    continue;
+                }
 
                 if let Some(data) = line.strip_prefix("data: ") {
-                    if data == "[DONE]" { continue; }
+                    if data == "[DONE]" {
+                        continue;
+                    }
                     let ev: serde_json::Value = serde_json::from_str(data)
                         .map_err(|e| LlmError::Provider(format!("SSE parse: {e}")))?;
                     match ev["type"].as_str().unwrap_or("") {
@@ -156,8 +168,11 @@ impl AnthropicClient {
                                 if ct == "tool_use" {
                                     let name = cb["name"].as_str().unwrap_or("unknown").to_string();
                                     let id = cb["id"].as_str().unwrap_or("").to_string();
-                                    if let Some(e) = acc_tools.iter_mut().find(|(i,_,_,_)| *i==idx) {
-                                        e.1 = id; e.2 = name;
+                                    if let Some(e) =
+                                        acc_tools.iter_mut().find(|(i, _, _, _)| *i == idx)
+                                    {
+                                        e.1 = id;
+                                        e.2 = name;
                                     } else {
                                         acc_tools.push((idx, id, name, String::new()));
                                     }
@@ -171,25 +186,40 @@ impl AnthropicClient {
                                     "thinking_delta" => {
                                         if let Some(t) = d["thinking"].as_str() {
                                             acc_think.push(t.to_string());
-                                            event_sink.emit(Event::LlmThinkingDelta {
-                                                model: self.model.clone(), delta: t.to_string(),
-                                            }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
+                                            event_sink
+                                                .emit(Event::LlmThinkingDelta {
+                                                    model: self.model.clone(),
+                                                    delta: t.to_string(),
+                                                })
+                                                .await
+                                                .map_err(|e| LlmError::Provider(e.to_string()))?;
                                         }
                                     }
                                     "text_delta" => {
                                         if let Some(t) = d["text"].as_str() {
                                             acc_text.push(t.to_string());
-                                            event_sink.emit(Event::LlmTokenDelta {
-                                                model: self.model.clone(), delta: t.to_string(),
-                                            }).await.map_err(|e| LlmError::Provider(e.to_string()))?;
+                                            event_sink
+                                                .emit(Event::LlmTokenDelta {
+                                                    model: self.model.clone(),
+                                                    delta: t.to_string(),
+                                                })
+                                                .await
+                                                .map_err(|e| LlmError::Provider(e.to_string()))?;
                                         }
                                     }
                                     "input_json_delta" => {
                                         if let Some(p) = d["partial_json"].as_str() {
-                                            if let Some(pos) = acc_tools.iter().position(|(i,_,_,_)| *i==idx) {
+                                            if let Some(pos) =
+                                                acc_tools.iter().position(|(i, _, _, _)| *i == idx)
+                                            {
                                                 acc_tools[pos].3.push_str(p);
                                             } else {
-                                                acc_tools.push((idx, format!("toolu_{idx:02}"), "unknown".into(), p.to_string()));
+                                                acc_tools.push((
+                                                    idx,
+                                                    format!("toolu_{idx:02}"),
+                                                    "unknown".into(),
+                                                    p.to_string(),
+                                                ));
                                             }
                                         }
                                     }
@@ -211,7 +241,10 @@ impl AnthropicClient {
                         }
                         "error" => {
                             return Err(LlmError::Provider(
-                                ev["error"]["message"].as_str().unwrap_or("SSE error").to_string()
+                                ev["error"]["message"]
+                                    .as_str()
+                                    .unwrap_or("SSE error")
+                                    .to_string(),
                             ));
                         }
                         _ => {}
@@ -220,18 +253,33 @@ impl AnthropicClient {
             }
         }
 
-        let tool_calls: Vec<ToolCall> = acc_tools.iter().map(|(_, _, name, json)| {
-            let args: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
-            ToolCall::new(name, args)
-        }).collect();
+        let tool_calls: Vec<ToolCall> = acc_tools
+            .iter()
+            .map(|(_, _, name, json)| {
+                let args: serde_json::Value =
+                    serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
+                ToolCall::new(name, args)
+            })
+            .collect();
 
         Ok(LlmResponse {
             message: AssistantMessage {
-                text: if acc_text.is_empty() { None } else { Some(acc_text.join("")) },
+                text: if acc_text.is_empty() {
+                    None
+                } else {
+                    Some(acc_text.join(""))
+                },
                 tool_calls,
-                reasoning_content: if acc_think.is_empty() { None } else { Some(acc_think.join("")) },
+                reasoning_content: if acc_think.is_empty() {
+                    None
+                } else {
+                    Some(acc_think.join(""))
+                },
             },
-            usage: TokenUsage { prompt: input_tokens, completion: output_tokens },
+            usage: TokenUsage {
+                prompt: input_tokens,
+                completion: output_tokens,
+            },
         })
     }
 }
@@ -281,11 +329,11 @@ impl AnthropicRequest {
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>()
             .join("\n\n");
-        let thinking = thinking_level.anthropic_budget_tokens().map(|budget| {
-            AnthropicThinkingConfig {
-                kind: "enabled".into(),
-                budget_tokens: budget,
-            }
+        let thinking_budget = thinking_level.anthropic_budget_tokens();
+        let max_tokens = Self::max_tokens_for_thinking(max_tokens, thinking_budget);
+        let thinking = thinking_budget.map(|budget| AnthropicThinkingConfig {
+            kind: "enabled".into(),
+            budget_tokens: budget,
         });
         Self {
             model: model.into(),
@@ -303,6 +351,15 @@ impl AnthropicRequest {
             tools: tools.iter().map(AnthropicToolSpec::from_schema).collect(),
             thinking,
             stream: None,
+        }
+    }
+
+    fn max_tokens_for_thinking(max_tokens: u32, thinking_budget: Option<u32>) -> u32 {
+        match thinking_budget {
+            Some(budget) if budget >= max_tokens => {
+                budget.saturating_add(MIN_VISIBLE_OUTPUT_TOKENS)
+            }
+            _ => max_tokens,
         }
     }
 }
@@ -469,6 +526,24 @@ mod tests {
         assert_eq!(json["system"], "sys");
         assert_eq!(json["messages"][0]["role"], "user");
         assert_eq!(json["tools"][0]["name"], "read");
+    }
+
+    #[test]
+    fn request_keeps_thinking_budget_below_max_tokens() {
+        let request = AnthropicRequest::from_duga(
+            "claude-sonnet-4-5",
+            4096,
+            &[Message::user("hello")],
+            &[],
+            &ThinkingLevel::High,
+        );
+        let json = serde_json::to_value(request).unwrap();
+
+        assert_eq!(json["thinking"]["budget_tokens"], 16_384);
+        assert!(
+            json["max_tokens"].as_u64().unwrap()
+                > json["thinking"]["budget_tokens"].as_u64().unwrap()
+        );
     }
 
     #[test]

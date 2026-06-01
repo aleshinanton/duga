@@ -1,8 +1,8 @@
 //! WriteTool — atomic write via tempfile + rename with per-path mutex serialization.
 
+use duga_tools::Tool;
 use duga_tools::context::ToolContext;
 use duga_tools::result::ToolCallResult;
-use duga_tools::Tool;
 use duga_types::error::ToolError;
 use duga_types::tool_call::CallId;
 use duga_types::tool_result::ToolResult;
@@ -52,150 +52,94 @@ impl WriteTool {
         self
     }
 
-    /// Try to resolve a path for writing: workspace first, then aux_roots.
-    /// Supports absolute paths by stripping known sandbox mount prefixes.
-    fn resolve_write_path(&self, ctx: &ToolContext<'_>, path_str: &str) -> Result<(PathBuf, bool), ToolError> {
+    /// Resolve a path for writing.
+    ///
+    /// Relative paths are always workspace-relative so normal file creation does
+    /// not silently spill into auxiliary roots. Auxiliary writes must use an
+    /// explicit absolute path under an auxiliary root.
+    fn resolve_write_path(
+        &self,
+        ctx: &ToolContext<'_>,
+        path_str: &str,
+    ) -> Result<(PathBuf, bool), ToolError> {
         let raw = PathBuf::from(path_str);
 
-        // Helper: try workspace — accept if file or parent dir exists.
-        let try_workspace = |p: &PathBuf| -> Option<PathBuf> {
-            ctx.workspace.resolve(p).ok().and_then(|resolved| {
-                let exists_in_ws = ctx.workspace.root_dir().metadata(&resolved).is_ok();
-                let is_root_level = resolved.parent().map_or(true, |parent| {
-                    parent == Path::new("") || parent == Path::new(".")
-                });
-                let parent_exists_in_ws = !is_root_level && resolved.parent().map_or(false, |parent| {
-                    ctx.workspace.root_dir().metadata(parent).is_ok()
-                });
-                if exists_in_ws || is_root_level || parent_exists_in_ws {
-                    Some(resolved)
-                } else {
-                    None
-                }
-            })
-        };
-
-        // Helper: try aux_roots for a relative path (no parent traversal).
-        let try_aux = |rel: &Path| -> Option<PathBuf> {
-            if rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-                return None;
-            }
-            if self.aux_roots.is_empty() {
-                return None;
-            }
-            for aux in &self.aux_roots {
-                let aux_full = aux.join(rel);
-                let exists = aux_full.exists();
-                let parent_exists = aux_full.parent().map_or(false, |p| p.exists());
-                if exists || parent_exists {
-                    return Some(rel.to_path_buf());
-                }
-            }
-            None
-        };
-
-        /// Resolve a tie between workspace and aux for the same relative path.
-        /// When both are valid targets (e.g. root-level paths where the workspace
-        /// root and aux root both exist), prefer workspace if the file already
-        /// exists in aux (to avoid overwriting aux content), otherwise prefer aux.
-        fn resolve_tie(
-            raw: &Path,
-            ws_resolved: PathBuf,
-            aux_rel: PathBuf,
-            aux_roots: &[PathBuf],
-        ) -> (PathBuf, bool) {
-            // Check if the file actually exists in any aux root.
-            let exists_in_aux = aux_roots.iter().any(|aux| aux.join(raw).exists());
-            if exists_in_aux {
-                // File exists in aux — don't overwrite it; write to workspace instead.
-                (ws_resolved, false)
-            } else {
-                // File does not exist in aux — prefer aux for new files.
-                (aux_rel, true)
-            }
-        }
-
-        // Relative path: workspace first, then aux_roots.
+        // Relative path: workspace only. `execute` creates parent dirs.
         if !raw.is_absolute() {
-            let ws_match = try_workspace(&raw);
-            let aux_match = try_aux(&raw);
-            match (ws_match, aux_match) {
-                (Some(ws), Some(aux)) => {
-                    let (path, is_aux) = resolve_tie(&raw, ws, aux, &self.aux_roots);
-                    return Ok((path, is_aux));
-                }
-                (Some(resolved), None) => return Ok((resolved, false)),
-                (None, Some(rel)) => return Ok((rel, true)),
-                (None, None) => {
-                    return Err(ToolError::Denied(format!(
-                        "path not in workspace or auxiliary roots: {}",
-                        path_str
-                    )));
-                }
-            }
+            return ctx
+                .workspace
+                .resolve(&raw)
+                .map(|resolved| (resolved, false))
+                .map_err(|_| ToolError::Denied(format!("path escapes workspace: {}", path_str)));
         }
 
-        // Absolute path: try multiple strategies.
-        // 1. Strip workspace root prefix.
+        // Absolute path under the workspace root.
         if let Ok(relative) = raw.strip_prefix(ctx.workspace.root_path()) {
-            let rel = PathBuf::from(relative);
-            let ws_match = try_workspace(&rel);
-            let aux_match = try_aux(Path::new(relative));
-            match (ws_match, aux_match) {
-                (Some(ws), Some(aux)) => {
-                    let (path, is_aux) = resolve_tie(Path::new(relative), ws, aux, &self.aux_roots);
-                    return Ok((path, is_aux));
-                }
-                (Some(resolved), None) => return Ok((resolved, false)),
-                (None, Some(found)) => return Ok((found, true)),
-                (None, None) => {}
-            }
+            return ctx
+                .workspace
+                .resolve(relative)
+                .map(|resolved| (resolved, false))
+                .map_err(|_| ToolError::Denied(format!("path escapes workspace: {}", path_str)));
         }
 
-        // 2. Strip known sandbox mount prefixes.
+        // Absolute path as seen from Docker/podman sandbox.
         const KNOWN_MOUNT_PREFIXES: &[&str] = &["/workspace/", "/workspace"];
         for prefix in KNOWN_MOUNT_PREFIXES {
             if let Ok(relative) = raw.strip_prefix(prefix) {
-                let rel = PathBuf::from(relative);
-                let ws_match = try_workspace(&rel);
-                let aux_match = try_aux(Path::new(relative));
-                match (ws_match, aux_match) {
-                    (Some(ws), Some(aux)) => {
-                        let (path, is_aux) = resolve_tie(Path::new(relative), ws, aux, &self.aux_roots);
-                        return Ok((path, is_aux));
-                    }
-                    (Some(resolved), None) => return Ok((resolved, false)),
-                    (None, Some(found)) => return Ok((found, true)),
-                    (None, None) => {}
-                }
+                return ctx
+                    .workspace
+                    .resolve(relative)
+                    .map(|resolved| (resolved, false))
+                    .map_err(|_| {
+                        ToolError::Denied(format!("path escapes workspace: {}", path_str))
+                    });
             }
         }
 
-        // 3. Try aux_roots with absolute path stripped.
+        // Explicit absolute path under an auxiliary root.
         for aux in &self.aux_roots {
             let aux_canonical = aux.canonicalize().unwrap_or_else(|_| aux.clone());
-            if let Ok(relative) = raw.strip_prefix(&aux_canonical) {
-                let aux_full = aux.join(Path::new(relative));
-                if aux_full.exists() || aux_full.parent().map_or(false, |p| p.exists()) {
-                    return Ok((PathBuf::from(relative), true));
+            let relative = raw
+                .strip_prefix(aux)
+                .or_else(|_| raw.strip_prefix(&aux_canonical));
+            if let Ok(relative) = relative {
+                if relative.components().any(|component| {
+                    matches!(
+                        component,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                }) {
+                    return Err(ToolError::Denied(format!(
+                        "path escapes auxiliary root: {}",
+                        path_str
+                    )));
                 }
+                return Ok((PathBuf::from(relative), true));
             }
         }
 
-        Err(ToolError::Denied(format!("path not in workspace or auxiliary roots: {}", path_str)))
+        Err(ToolError::Denied(format!(
+            "path not in workspace or auxiliary roots: {}",
+            path_str
+        )))
     }
 
     /// Find which aux_root contains the parent directory for a relative path.
     /// Returns the full target path and rejects symlink components.
     fn resolve_aux_path(&self, resolved: &Path) -> Result<PathBuf, ToolError> {
-        // Pick the first aux_root — write should create under it.
-        let aux = self.aux_roots.first().ok_or_else(|| {
-            ToolError::Denied("no auxiliary roots configured".into())
-        })?;
-        let aux_full = aux.join(resolved);
-        // Symlink check: walk each component from aux_root to the target
-        Self::reject_aux_symlinks(aux, resolved)?;
-        Ok(aux_full)
+        for aux in &self.aux_roots {
+            let aux_full = aux.join(resolved);
+            if aux_full.exists() || aux_full.parent().is_some_and(|p| p.exists()) {
+                Self::reject_aux_symlinks(aux, resolved)?;
+                return Ok(aux_full);
+            }
+        }
+        Err(ToolError::Denied(format!(
+            "path not found in auxiliary roots: {}",
+            resolved.display()
+        )))
     }
 
     /// Reject paths that contain symlink components under an aux_root.
@@ -281,14 +225,10 @@ impl Tool for WriteTool {
             // Write to aux_roots using std::fs with atomic tempfile+rename
             let aux_full = self.resolve_aux_path(&resolved)?;
             if let Some(parent) = aux_full.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    ToolError::Io(format!("cannot create parent dirs: {}", e))
-                })?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| ToolError::Io(format!("cannot create parent dirs: {}", e)))?;
             }
-            let temp_aux = aux_full.with_extension(format!(
-                "duga-write-{}.tmp",
-                CallId::new()
-            ));
+            let temp_aux = aux_full.with_extension(format!("duga-write-{}.tmp", CallId::new()));
             std::fs::write(&temp_aux, &args.content).map_err(|e| {
                 ToolError::Io(format!("write to {} failed: {}", temp_aux.display(), e))
             })?;
@@ -363,8 +303,8 @@ impl Tool for WriteTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duga_sandbox::exec::CancellationToken;
     use duga_sandbox::Workspace;
+    use duga_sandbox::exec::CancellationToken;
     use duga_tools::event_sink::NullSink;
     use tempfile::tempdir;
 
@@ -464,27 +404,45 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_write_relative_in_aux() {
+    fn test_resolve_write_relative_prefers_workspace_with_aux_root() {
         let dir = tempdir().unwrap();
         let aux = tempdir().unwrap();
+        std::fs::create_dir_all(aux.path().join("logs")).unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let ctx = make_ctx(&ws);
         let tool = WriteTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
-        let (resolved, is_aux) = tool.resolve_write_path(&ctx, "output.log").unwrap();
-        assert!(is_aux);
-        assert_eq!(resolved, PathBuf::from("output.log"));
+        let (resolved, is_aux) = tool.resolve_write_path(&ctx, "logs/output.log").unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("logs/output.log"));
     }
 
     #[test]
-    fn test_resolve_write_absolute_workspace_prefix_to_aux() {
+    fn test_resolve_write_absolute_aux_path_to_aux() {
+        let dir = tempdir().unwrap();
+        let aux = tempdir().unwrap();
+        std::fs::create_dir_all(aux.path().join("logs")).unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let ctx = make_ctx(&ws);
+        let tool = WriteTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
+        let path = aux.path().join("logs/output.log");
+        let (resolved, is_aux) = tool
+            .resolve_write_path(&ctx, path.to_str().unwrap())
+            .unwrap();
+        assert!(is_aux);
+        assert_eq!(resolved, PathBuf::from("logs/output.log"));
+    }
+
+    #[test]
+    fn test_resolve_write_absolute_aux_path_rejects_parent_traversal() {
         let dir = tempdir().unwrap();
         let aux = tempdir().unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let ctx = make_ctx(&ws);
         let tool = WriteTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
-        let (resolved, is_aux) = tool.resolve_write_path(&ctx, "/workspace/config.toml").unwrap();
-        assert!(is_aux);
-        assert_eq!(resolved, PathBuf::from("config.toml"));
+        let path = aux.path().join("../outside.txt");
+        let result = tool.resolve_write_path(&ctx, path.to_str().unwrap());
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -493,7 +451,9 @@ mod tests {
         let ws = Workspace::open(dir.path()).unwrap();
         let ctx = make_ctx(&ws);
         let tool = WriteTool::new();
-        let (resolved, is_aux) = tool.resolve_write_path(&ctx, "/workspace/README.md").unwrap();
+        let (resolved, is_aux) = tool
+            .resolve_write_path(&ctx, "/workspace/README.md")
+            .unwrap();
         assert!(!is_aux);
         assert_eq!(resolved, PathBuf::from("README.md"));
     }
@@ -504,8 +464,11 @@ mod tests {
         let ws = Workspace::open(dir.path()).unwrap();
         let ctx = make_ctx(&ws);
         let tool = WriteTool::new();
-        let err = tool.resolve_write_path(&ctx, "/workspace/deep/nested/new.txt").unwrap_err();
-        assert!(err.to_string().contains("not in workspace"));
+        let (resolved, is_aux) = tool
+            .resolve_write_path(&ctx, "/workspace/deep/nested/new.txt")
+            .unwrap();
+        assert!(!is_aux);
+        assert_eq!(resolved, PathBuf::from("deep/nested/new.txt"));
     }
 
     #[test]
