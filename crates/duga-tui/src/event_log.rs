@@ -98,11 +98,16 @@ impl EventLog {
     }
 
     /// Render the event log into the given area.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme, scroll_offset: usize) {
+    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme, scroll_offset: usize, focused: bool) {
+        let border_color = if focused {
+            theme.colors.primary
+        } else {
+            theme.colors.border
+        };
         let block = Block::default()
             .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
             .title(format!("📋 Event Log ({}) ", self.entries.len()))
-            .border_style(Style::default().fg(theme.colors.border));
+            .border_style(Style::default().fg(border_color));
 
         let inner = block.inner(area);
         block.render(area, buf);

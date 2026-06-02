@@ -1,7 +1,8 @@
 //! Focus model — keyboard navigation router.
 //!
-//! `Focus::Chat | Sidebar | Input | Overlay` enum.
-//! Tab cycles through Chat → Sidebar → Input → Chat (skipping Overlay).
+//! `Focus::Chat | Reasoning | EventLog | Input | Overlay` enum.
+//! Tab cycles through visible panels: Chat → [Reasoning] → [EventLog] → Input → Chat.
+//! Sidebar panels are only in the cycle when they are expanded and the sidebar is rendered.
 //! Shift+Tab cycles reasoning effort (Off → Low → Medium → High → Off).
 //! Overlay is modal: entered when a dialog opens, exited via Esc/action.
 //! Ctrl+R toggles reasoning, Ctrl+E toggles events. Esc returns to Chat.
@@ -13,9 +14,23 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Focus {
     Chat,
-    Sidebar,
+    Reasoning,
+    EventLog,
     Input,
     Overlay,
+}
+
+/// Describes which sidebar panels are visible for focus cycling.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SidebarPanels {
+    pub reasoning: bool,
+    pub event_log: bool,
+}
+
+impl SidebarPanels {
+    pub fn any(&self) -> bool {
+        self.reasoning || self.event_log
+    }
 }
 
 impl Focus {
@@ -24,25 +39,37 @@ impl Focus {
         Self::Input
     }
 
-    /// Tab order: Chat → Sidebar → Input → Chat.
+    /// Returns true if this focus is on a sidebar panel.
+    pub fn is_sidebar(&self) -> bool {
+        matches!(self, Focus::Reasoning | Focus::EventLog)
+    }
+
+    /// Tab order: Chat → [Reasoning] → [EventLog] → Input → Chat.
+    /// Only includes sidebar panels that are actually visible.
     /// Overlay is modal and NOT in the cycle.
-    pub fn next(&self, sidebar_visible: bool) -> Self {
+    pub fn next(&self, panels: SidebarPanels) -> Self {
         match self {
-            Focus::Chat if sidebar_visible => Focus::Sidebar,
+            Focus::Chat if panels.reasoning => Focus::Reasoning,
+            Focus::Chat if panels.event_log => Focus::EventLog,
             Focus::Chat => Focus::Input,
-            Focus::Sidebar => Focus::Input,
+            Focus::Reasoning if panels.event_log => Focus::EventLog,
+            Focus::Reasoning => Focus::Input,
+            Focus::EventLog => Focus::Input,
             Focus::Input => Focus::Chat,
-            Focus::Overlay => Focus::Overlay, // Tab does NOT change out of overlay
+            Focus::Overlay => Focus::Overlay,
         }
     }
 
-    /// Shift+Tab order: Chat → Input → Sidebar → Chat.
-    pub fn prev(&self, sidebar_visible: bool) -> Self {
+    /// Reverse Tab order: Input → [EventLog] → [Reasoning] → Chat.
+    pub fn prev(&self, panels: SidebarPanels) -> Self {
         match self {
             Focus::Chat => Focus::Input,
-            Focus::Input if sidebar_visible => Focus::Sidebar,
+            Focus::Input if panels.event_log => Focus::EventLog,
+            Focus::Input if panels.reasoning => Focus::Reasoning,
             Focus::Input => Focus::Chat,
-            Focus::Sidebar => Focus::Chat,
+            Focus::EventLog if panels.reasoning => Focus::Reasoning,
+            Focus::EventLog => Focus::Chat,
+            Focus::Reasoning => Focus::Chat,
             Focus::Overlay => Focus::Overlay,
         }
     }
@@ -67,7 +94,7 @@ impl FocusRouter {
     pub fn route(
         key: &KeyEvent,
         focus: &mut Focus,
-        sidebar_visible: bool,
+        panels: SidebarPanels,
         has_overlay: bool,
         is_running: bool,
     ) -> FocusAction {
@@ -88,7 +115,7 @@ impl FocusRouter {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                *focus = focus.next(sidebar_visible);
+                *focus = focus.next(panels);
                 FocusAction::Consumed
             }
 
@@ -114,7 +141,7 @@ impl FocusRouter {
                 modifiers: KeyModifiers::CONTROL,
                 ..
             } if !is_running => {
-                *focus = Focus::Sidebar;
+                *focus = Focus::Reasoning;
                 FocusAction::ToggleReasoning
             }
 
@@ -124,7 +151,7 @@ impl FocusRouter {
                 modifiers: KeyModifiers::CONTROL,
                 ..
             } if !is_running => {
-                *focus = Focus::Sidebar;
+                *focus = Focus::EventLog;
                 FocusAction::ToggleEvents
             }
 
@@ -164,36 +191,68 @@ pub enum FocusAction {
 mod tests {
     use super::*;
 
-    #[test]
-    fn focus_next_with_sidebar() {
-        assert_eq!(Focus::Chat.next(true), Focus::Sidebar);
-        assert_eq!(Focus::Sidebar.next(true), Focus::Input);
-        assert_eq!(Focus::Input.next(true), Focus::Chat);
+    fn no_panels() -> SidebarPanels {
+        SidebarPanels { reasoning: false, event_log: false }
+    }
+
+    fn both_panels() -> SidebarPanels {
+        SidebarPanels { reasoning: true, event_log: true }
+    }
+
+    fn reasoning_only() -> SidebarPanels {
+        SidebarPanels { reasoning: true, event_log: false }
+    }
+
+    fn events_only() -> SidebarPanels {
+        SidebarPanels { reasoning: false, event_log: true }
     }
 
     #[test]
-    fn focus_next_without_sidebar() {
-        assert_eq!(Focus::Chat.next(false), Focus::Input);
-        assert_eq!(Focus::Input.next(false), Focus::Chat);
+    fn focus_next_with_both_panels() {
+        assert_eq!(Focus::Chat.next(both_panels()), Focus::Reasoning);
+        assert_eq!(Focus::Reasoning.next(both_panels()), Focus::EventLog);
+        assert_eq!(Focus::EventLog.next(both_panels()), Focus::Input);
+        assert_eq!(Focus::Input.next(both_panels()), Focus::Chat);
     }
 
     #[test]
-    fn focus_prev_with_sidebar() {
-        assert_eq!(Focus::Chat.prev(true), Focus::Input);
-        assert_eq!(Focus::Input.prev(true), Focus::Sidebar);
-        assert_eq!(Focus::Sidebar.prev(true), Focus::Chat);
+    fn focus_next_reasoning_only() {
+        assert_eq!(Focus::Chat.next(reasoning_only()), Focus::Reasoning);
+        assert_eq!(Focus::Reasoning.next(reasoning_only()), Focus::Input);
+        assert_eq!(Focus::Input.next(reasoning_only()), Focus::Chat);
     }
 
     #[test]
-    fn focus_prev_without_sidebar() {
-        assert_eq!(Focus::Chat.prev(false), Focus::Input);
-        assert_eq!(Focus::Input.prev(false), Focus::Chat);
+    fn focus_next_events_only() {
+        assert_eq!(Focus::Chat.next(events_only()), Focus::EventLog);
+        assert_eq!(Focus::EventLog.next(events_only()), Focus::Input);
+        assert_eq!(Focus::Input.next(events_only()), Focus::Chat);
+    }
+
+    #[test]
+    fn focus_next_no_panels() {
+        assert_eq!(Focus::Chat.next(no_panels()), Focus::Input);
+        assert_eq!(Focus::Input.next(no_panels()), Focus::Chat);
+    }
+
+    #[test]
+    fn focus_prev_with_both_panels() {
+        assert_eq!(Focus::Chat.prev(both_panels()), Focus::Input);
+        assert_eq!(Focus::Input.prev(both_panels()), Focus::EventLog);
+        assert_eq!(Focus::EventLog.prev(both_panels()), Focus::Reasoning);
+        assert_eq!(Focus::Reasoning.prev(both_panels()), Focus::Chat);
+    }
+
+    #[test]
+    fn focus_prev_no_panels() {
+        assert_eq!(Focus::Chat.prev(no_panels()), Focus::Input);
+        assert_eq!(Focus::Input.prev(no_panels()), Focus::Chat);
     }
 
     #[test]
     fn overlay_not_in_tab_cycle() {
-        assert_eq!(Focus::Overlay.next(true), Focus::Overlay);
-        assert_eq!(Focus::Overlay.prev(true), Focus::Overlay);
+        assert_eq!(Focus::Overlay.next(both_panels()), Focus::Overlay);
+        assert_eq!(Focus::Overlay.prev(both_panels()), Focus::Overlay);
     }
 
     #[test]
@@ -208,16 +267,16 @@ mod tests {
     fn tab_key_cycles() {
         let mut focus = Focus::Chat;
         let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        let action = FocusRouter::route(&key, &mut focus, both_panels(), false, false);
         assert_eq!(action, FocusAction::Consumed);
-        assert_eq!(focus, Focus::Sidebar);
+        assert_eq!(focus, Focus::Reasoning);
     }
 
     #[test]
     fn tab_blocked_during_overlay() {
         let mut focus = Focus::Overlay;
         let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        let action = FocusRouter::route(&key, &mut focus, both_panels(), false, false);
         assert_eq!(action, FocusAction::PassToOverlay);
         assert_eq!(focus, Focus::Overlay);
     }
@@ -226,16 +285,16 @@ mod tests {
     fn ctrl_r_toggles_reasoning() {
         let mut focus = Focus::Chat;
         let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
-        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        let action = FocusRouter::route(&key, &mut focus, both_panels(), false, false);
         assert_eq!(action, FocusAction::ToggleReasoning);
-        assert_eq!(focus, Focus::Sidebar);
+        assert_eq!(focus, Focus::Reasoning);
     }
 
     #[test]
     fn ctrl_r_noop_when_sidebar_hidden() {
         let mut focus = Focus::Chat;
         let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
-        let action = FocusRouter::route(&key, &mut focus, false, false, false);
+        let action = FocusRouter::route(&key, &mut focus, no_panels(), false, false);
         // Ctrl+R always toggles reasoning (sidebar visibility is a UI concern, not a router concern)
         assert_eq!(action, FocusAction::ToggleReasoning);
     }
@@ -244,7 +303,7 @@ mod tests {
     fn ctrl_r_noop_when_running() {
         let mut focus = Focus::Chat;
         let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
-        let action = FocusRouter::route(&key, &mut focus, true, false, true);
+        let action = FocusRouter::route(&key, &mut focus, both_panels(), false, true);
         assert_eq!(action, FocusAction::PassThrough);
     }
 
@@ -252,26 +311,25 @@ mod tests {
     fn ctrl_e_toggles_events() {
         let mut focus = Focus::Chat;
         let key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
-        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        let action = FocusRouter::route(&key, &mut focus, both_panels(), false, false);
         assert_eq!(action, FocusAction::ToggleEvents);
-        assert_eq!(focus, Focus::Sidebar);
+        assert_eq!(focus, Focus::EventLog);
     }
 
     #[test]
     fn esc_returns_to_chat() {
         let mut focus = Focus::Input;
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        let action = FocusRouter::route(&key, &mut focus, both_panels(), false, false);
         assert_eq!(action, FocusAction::Consumed);
         assert_eq!(focus, Focus::Chat);
     }
 
     #[test]
     fn bare_r_passes_through() {
-        // Bare 'r' (without Ctrl) should pass through to editor, not be a shortcut
         let mut focus = Focus::Chat;
         let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
-        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        let action = FocusRouter::route(&key, &mut focus, both_panels(), false, false);
         assert_eq!(action, FocusAction::PassThrough);
     }
 
@@ -279,9 +337,8 @@ mod tests {
     fn shift_tab_cycles_thinking_effort() {
         let mut focus = Focus::Chat;
         let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
-        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        let action = FocusRouter::route(&key, &mut focus, both_panels(), false, false);
         assert_eq!(action, FocusAction::CycleThinkingEffort);
-        // Focus should NOT change on Shift+Tab
         assert_eq!(focus, Focus::Chat);
     }
 
@@ -289,7 +346,7 @@ mod tests {
     fn shift_tab_with_shift_modifier_also_cycles_thinking_effort() {
         let mut focus = Focus::Input;
         let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
-        let action = FocusRouter::route(&key, &mut focus, true, false, false);
+        let action = FocusRouter::route(&key, &mut focus, both_panels(), false, false);
         assert_eq!(action, FocusAction::CycleThinkingEffort);
         assert_eq!(focus, Focus::Input);
     }

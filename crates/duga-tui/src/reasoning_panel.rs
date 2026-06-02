@@ -124,6 +124,7 @@ impl ReasoningPanel {
         &self,
         area: Rect,
         buf: &mut Buffer,
+        focused: bool,
         theme: &Theme,
     ) {
         let streaming = self.is_streaming();
@@ -133,10 +134,15 @@ impl ReasoningPanel {
             "🧠 Reasoning "
         };
 
+        let border_color = if focused {
+            theme.colors.primary
+        } else {
+            theme.colors.border
+        };
         let block = Block::default()
             .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
             .title(title)
-            .border_style(Style::default().fg(theme.colors.border));
+            .border_style(Style::default().fg(border_color));
 
         let inner = block.inner(area);
         block.render(area, buf);

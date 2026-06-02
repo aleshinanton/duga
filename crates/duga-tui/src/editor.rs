@@ -408,6 +408,13 @@ impl Editor {
         wrap_position(before, text_width).0
     }
 
+    /// Compute the cursor's (wrapped_line, column) position for the given
+    /// display width.  Both values are 0-based.
+    pub fn cursor_position(&self, text_width: u16) -> (usize, usize) {
+        let before = &self.buffer[..self.cursor];
+        wrap_position(before, text_width)
+    }
+
     /// Total number of wrapped lines for the full buffer at `text_width`.
     pub fn wrapped_line_count(&self, text_width: u16) -> usize {
         line_count(&self.buffer, text_width)

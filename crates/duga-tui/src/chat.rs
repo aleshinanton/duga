@@ -99,7 +99,6 @@ fn push_item(out: &mut Vec<Line<'static>>, item: &TranscriptItem, w: usize, them
             push_card(out, "Memory", &format!("{before_tokens} -> {after_tokens} tokens"), w, theme, false, false);
         }
     }
-    out.push(Line::from(""));
 }
 
 fn push_card(out: &mut Vec<Line<'static>>, title: &str, body: &str, w: usize, theme: &Theme, streaming: bool, markdown: bool) {
@@ -180,7 +179,7 @@ fn push_thinking(out: &mut Vec<Line<'static>>, text: &str, streaming: bool, expa
         }
         v
     } else if !streaming {
-        vec![Line::from(Span::styled(format!("({wc} words — Ctrl+R to expand)"), theme.text_dim_style()))]
+        vec![Line::from(Span::styled(format!("({wc} words — Ctrl+O to expand)"), theme.text_dim_style()))]
     } else {
         vec![]
     };

@@ -59,6 +59,8 @@ impl SidebarView {
         reasoning: &ReasoningPanel,
         event_log: &EventLog,
         scroll_offset: usize,
+        reasoning_focused: bool,
+        event_log_focused: bool,
         theme: &Theme,
     ) {
         if area.width == 0 {
@@ -77,13 +79,14 @@ impl SidebarView {
             reasoning.render(
                 reasoning_rect,
                 buf,
+                reasoning_focused,
                 theme,
             );
         }
 
         // Render event log panel
         if show_events {
-            event_log.render(events_rect, buf, theme, scroll_offset);
+            event_log.render(events_rect, buf, theme, scroll_offset, event_log_focused);
         }
 
         // If both collapsed, show empty state

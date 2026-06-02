@@ -142,6 +142,8 @@ pub struct App {
     /// Last known terminal dimensions.
     term_width: u16,
     term_height: u16,
+    /// Whether the sidebar was actually rendered in the last frame.
+    sidebar_rendered: bool,
 
     // ── Session management ──────────────────────────────────────────────
     pub sessions_dir: PathBuf,
@@ -212,8 +214,9 @@ impl App {
             confirmation_rx: None,
             active_confirm_dialog: None,
             pending_confirm_tx: None,
-            term_width: 80,
-            term_height: 24,
+            term_width: crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80),
+            term_height: crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24),
+            sidebar_rendered: false,
             sessions_dir,
             current_session_id: None,
             pending_history: None,
@@ -248,7 +251,7 @@ impl App {
         // is still rendered in the main layout when overlay mode is active.
         // For now, we use a placeholder overlay.
         // Full implementation would create a dedicated SidebarOverlay.
-        self.focus = Focus::Sidebar;
+        self.focus = Focus::Reasoning;
         self.sidebar_state.toggle_reasoning();
     }
 
@@ -385,14 +388,21 @@ impl App {
         }
 
         // 1.5. Focus routing (Tab, dedicated shortcuts, Esc)
-        let sidebar_visible = self.layout_manager.is_sidebar_visible(self.term_width);
+        let panels = if self.sidebar_rendered {
+            crate::focus::SidebarPanels {
+                reasoning: self.sidebar_state.reasoning_expanded,
+                event_log: self.sidebar_state.events_expanded,
+            }
+        } else {
+            crate::focus::SidebarPanels::default()
+        };
         let has_overlay = self.overlays.has_overlay();
         let is_running = matches!(self.state, AppState::Running { .. });
 
         match FocusRouter::route(
             key,
             &mut self.focus,
-            sidebar_visible,
+            panels,
             has_overlay,
             is_running,
         ) {
@@ -404,10 +414,18 @@ impl App {
             }
             FocusAction::ToggleReasoning => {
                 self.sidebar_state.toggle_reasoning();
+                // If reasoning was just closed, move focus away
+                if !self.sidebar_state.reasoning_expanded && self.focus == Focus::Reasoning {
+                    self.focus = Focus::Input;
+                }
                 return;
             }
             FocusAction::ToggleEvents => {
                 self.sidebar_state.toggle_events();
+                // If events was just closed, move focus away
+                if !self.sidebar_state.events_expanded && self.focus == Focus::EventLog {
+                    self.focus = Focus::Input;
+                }
                 return;
             }
             FocusAction::CycleThinkingEffort => {
@@ -489,51 +507,37 @@ impl App {
                 return;
             }
             GlobalAction::ToggleThink => {
-                // Toggle thinking blocks (Ctrl+O)
-                let think_ids: Vec<usize> = self
-                    .transcript
-                    .items()
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, item)| {
-                        if matches!(item, TranscriptItem::ThinkingBlock { .. }) {
-                            Some(idx)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                for idx in think_ids {
-                    self.transcript.advance_thinking_scroll(idx, 8);
-                }
-
-                // Also toggle tool call blocks (Ctrl+O expands/collapses both)
-                let any_expanded = self.transcript.items().iter().any(|item| {
-                    matches!(
-                        item,
-                        TranscriptItem::ToolCallBlock {
-                            is_expanded: true,
-                            ..
-                        }
-                    )
+                // Ctrl+O: expand all collapsed blocks / collapse all expanded blocks.
+                // Checks if ANY collapsible block (thinking or tool) is currently
+                // collapsed and expands all if so; otherwise collapses all.
+                let any_collapsed = self.transcript.items().iter().any(|item| match item {
+                    TranscriptItem::ThinkingBlock { is_expanded: false, .. } => true,
+                    TranscriptItem::ToolCallBlock { is_expanded: false, .. } => true,
+                    _ => false,
                 });
-                let target = !any_expanded;
+                let target_expanded = any_collapsed; // expand if any collapsed, collapse otherwise
                 let to_toggle: Vec<usize> = self
                     .transcript
                     .items()
                     .iter()
                     .enumerate()
-                    .filter_map(|(idx, item)| {
-                        if let TranscriptItem::ToolCallBlock { is_expanded, .. } = item {
-                            if *is_expanded != target {
-                                return Some(idx);
-                            }
-                        }
-                        None
+                    .filter_map(|(idx, item)| match item {
+                        TranscriptItem::ThinkingBlock { is_expanded, .. }
+                        | TranscriptItem::ToolCallBlock { is_expanded, .. }
+                            if *is_expanded != target_expanded => Some(idx),
+                        _ => None,
                     })
                     .collect();
                 for idx in to_toggle {
-                    self.transcript.toggle_tool_expand(idx);
+                    match &self.transcript.items()[idx] {
+                        TranscriptItem::ThinkingBlock { .. } => {
+                            self.transcript.toggle_thinking_expand(idx);
+                        }
+                        TranscriptItem::ToolCallBlock { .. } => {
+                            self.transcript.toggle_tool_expand(idx);
+                        }
+                        _ => {}
+                    }
                 }
                 return;
             }
@@ -659,8 +663,8 @@ impl App {
                         EditorAction::Consumed => {}
                     }
                 }
-                Focus::Sidebar => {
-                    // j/k scroll event log, g/G top/bottom
+                Focus::Reasoning | Focus::EventLog => {
+                    // j/k scroll sidebar panels, g/G top/bottom
                     match key.code {
                         KeyCode::Char('j') if key.modifiers == KeyModifiers::NONE => {
                             self.sidebar_scroll = self.sidebar_scroll.saturating_add(1);
@@ -1287,10 +1291,15 @@ impl App {
     pub fn render(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.area();
 
+        // Keep term dimensions in sync with the actual frame so that
+        // focus routing (which runs between renders) uses the real size.
+        self.term_width = area.width;
+        self.term_height = area.height;
+
         // Compute pane rects from the layout manager
         let mut pane_rects =
             self.layout_manager
-                .compute(area.width, area.height, self.banner.is_active());
+                .compute(area.width, area.height, self.banner.is_active(), self.sidebar_state.has_content());
 
         // Collapse sidebar when both panels are hidden — let chat expand into that space
         if !self.sidebar_state.has_content() && pane_rects.sidebar.width > 0 {
@@ -1307,7 +1316,10 @@ impl App {
         self.render_transcript(frame, pane_rects.chat);
 
         // ── Sidebar ───────────────────────────────────────────────────
-        if pane_rects.sidebar.width > 0 {
+        self.sidebar_rendered = pane_rects.sidebar.width > 0;
+        if self.sidebar_rendered {
+            let reasoning_focused = self.focus == crate::focus::Focus::Reasoning;
+            let event_log_focused = self.focus == crate::focus::Focus::EventLog;
             crate::sidebar::SidebarView::render(
                 pane_rects.sidebar,
                 frame.buffer_mut(),
@@ -1315,6 +1327,8 @@ impl App {
                 &self.reasoning_panel,
                 &self.event_log,
                 self.sidebar_scroll,
+                reasoning_focused,
+                event_log_focused,
                 &self.theme,
             );
         }
@@ -1430,6 +1444,10 @@ impl App {
         let display_text = if self.editor.text().is_empty() {
             if is_running {
                 "> Steering… (Enter to send guidance)".to_string()
+            } else if is_focused {
+                // Hide placeholder when focused so the cursor is visible
+                // on a clean background.
+                "> ".to_string()
             } else {
                 format!("> {}", self.editor.placeholder())
             }
@@ -1443,6 +1461,25 @@ impl App {
         };
 
         frame.render_widget(Paragraph::new(display_text).style(style), inner);
+
+        // Show the terminal cursor when the input panel is focused.
+        if is_focused && !self.editor.text().is_empty() {
+            let (cursor_line, cursor_col) = self.editor.cursor_position(text_width);
+            let scroll = self.editor.scroll_offset();
+            let visual_line = cursor_line.saturating_sub(scroll);
+            if visual_line < visible_rows {
+                // +2 accounts for the "> " prompt prefix.
+                let x = inner.x + 2 + cursor_col as u16;
+                let y = inner.y + visual_line as u16;
+                frame.set_cursor_position(ratatui::layout::Position { x, y });
+            }
+        } else if is_focused {
+            // Empty buffer: place cursor right after "> ".
+            frame.set_cursor_position(ratatui::layout::Position {
+                x: inner.x + 2,
+                y: inner.y,
+            });
+        }
     }
 }
 

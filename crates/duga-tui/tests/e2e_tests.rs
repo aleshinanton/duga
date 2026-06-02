@@ -1027,7 +1027,7 @@ fn test_epic33_theme_defaults_to_dark() {
 #[test]
 fn test_epic33_layout_computes_panes() {
     let (app, _rx) = make_test_app();
-    let rects = app.layout_manager.compute(200, 60, false);
+    let rects = app.layout_manager.compute(200, 60, false, false);
     // Verify header, chat, sidebar, input, footer all have dimensions
     assert_eq!(rects.header.height, 1);
     assert_eq!(rects.input.height, 4);
@@ -1039,7 +1039,7 @@ fn test_epic33_layout_computes_panes() {
 #[test]
 fn test_epic33_sidebar_hidden_on_narrow() {
     let (app, _rx) = make_test_app();
-    let rects = app.layout_manager.compute(80, 24, false);
+    let rects = app.layout_manager.compute(80, 24, false, false);
     assert_eq!(rects.sidebar.width, 0);
     assert_eq!(rects.chat.width, 80);
 }
@@ -1052,51 +1052,38 @@ fn test_epic33_focus_default_is_input() {
 
 #[test]
 fn test_epic33_focus_tab_cycle() {
-    // Test focus cycling directly through the Focus enum (unit-test style)
-    // When sidebar is not visible, Chat→Input→Chat (skipping Sidebar)
-    assert_eq!(
-        duga_tui::focus::Focus::Chat.next(false),
-        duga_tui::focus::Focus::Input
-    );
-    assert_eq!(
-        duga_tui::focus::Focus::Input.next(false),
-        duga_tui::focus::Focus::Chat
-    );
+    use duga_tui::focus::{Focus, SidebarPanels};
 
-    // When sidebar is visible, Chat→Sidebar→Input→Chat
-    assert_eq!(
-        duga_tui::focus::Focus::Chat.next(true),
-        duga_tui::focus::Focus::Sidebar
-    );
-    assert_eq!(
-        duga_tui::focus::Focus::Sidebar.next(true),
-        duga_tui::focus::Focus::Input
-    );
-    assert_eq!(
-        duga_tui::focus::Focus::Input.next(true),
-        duga_tui::focus::Focus::Chat
-    );
+    let none = SidebarPanels { reasoning: false, event_log: false };
+    let both = SidebarPanels { reasoning: true, event_log: true };
+
+    // No panels: Chat→Input→Chat
+    assert_eq!(Focus::Chat.next(none), Focus::Input);
+    assert_eq!(Focus::Input.next(none), Focus::Chat);
+
+    // Both panels: Chat→Reasoning→EventLog→Input→Chat
+    assert_eq!(Focus::Chat.next(both), Focus::Reasoning);
+    assert_eq!(Focus::Reasoning.next(both), Focus::EventLog);
+    assert_eq!(Focus::EventLog.next(both), Focus::Input);
+    assert_eq!(Focus::Input.next(both), Focus::Chat);
 }
 
 #[test]
 fn test_epic33_focus_shift_tab_cycle() {
-    // Test focus reverse cycling directly
-    assert_eq!(
-        duga_tui::focus::Focus::Chat.prev(false),
-        duga_tui::focus::Focus::Input
-    );
-    assert_eq!(
-        duga_tui::focus::Focus::Chat.prev(true),
-        duga_tui::focus::Focus::Input
-    );
-    assert_eq!(
-        duga_tui::focus::Focus::Input.prev(true),
-        duga_tui::focus::Focus::Sidebar
-    );
-    assert_eq!(
-        duga_tui::focus::Focus::Sidebar.prev(true),
-        duga_tui::focus::Focus::Chat
-    );
+    use duga_tui::focus::{Focus, SidebarPanels};
+
+    let none = SidebarPanels { reasoning: false, event_log: false };
+    let both = SidebarPanels { reasoning: true, event_log: true };
+
+    // No panels: Input→Chat→Input
+    assert_eq!(Focus::Chat.prev(none), Focus::Input);
+    assert_eq!(Focus::Input.prev(none), Focus::Chat);
+
+    // Both panels: Input→EventLog→Reasoning→Chat
+    assert_eq!(Focus::Input.prev(both), Focus::EventLog);
+    assert_eq!(Focus::EventLog.prev(both), Focus::Reasoning);
+    assert_eq!(Focus::Reasoning.prev(both), Focus::Chat);
+    assert_eq!(Focus::Chat.prev(both), Focus::Input);
 }
 
 #[test]

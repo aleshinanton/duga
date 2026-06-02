@@ -123,8 +123,22 @@ pub fn build_agent(
         let strategies = registry.build_strategies_prompt(
             &config.agent.loop_config.enabled_loops,
         );
+        let today = {
+            use std::time::SystemTime;
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            // Convert to date: days since epoch → year-month-day
+            let days = (now / 86400) as i64;
+            let (y, m, d) = days_to_ymd(days);
+            format!("{y:04}-{m:02}-{d:02}")
+        };
+        let workspace_dir = config.workspace.root.display();
         format!(
             "You are duga, a safe coding agent.\n\n\
+             Current date: {today}\n\
+             Working directory: {workspace_dir}\n\n\
              {env}\n\n\
              {tools}\n\n\
              {strategies}\n\n\
@@ -163,6 +177,22 @@ pub fn build_agent(
         event_sink,
         config: config.clone(),
     })
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_ymd(days: i64) -> (i64, u32, u32) {
+    // Civil calendar algorithm from Howard Hinnant
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 /// A simple summarizer that compresses context by retaining recent role labels.
@@ -286,6 +316,16 @@ plugins:
         let b = tool_guidance();
         assert_eq!(a, b);
         assert!(!a.is_empty());
+    }
+
+    #[test]
+    fn days_to_ymd_known_dates() {
+        // 2025-01-01 = day 20089
+        assert_eq!(super::days_to_ymd(20089), (2025, 1, 1));
+        // 1970-01-01 = day 0
+        assert_eq!(super::days_to_ymd(0), (1970, 1, 1));
+        // 2000-02-29 = day 11016 (leap day)
+        assert_eq!(super::days_to_ymd(11016), (2000, 2, 29));
     }
 
     #[tokio::test]

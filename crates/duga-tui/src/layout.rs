@@ -62,8 +62,17 @@ impl LayoutManager {
     /// - `term_width`: terminal column count
     /// - `term_height`: terminal row count
     /// - `show_banner`: whether the error banner area should be allocated
-    pub fn compute(&self, term_width: u16, term_height: u16, show_banner: bool) -> PaneRects {
-        let sidebar_visible = self.show_sidebar && term_width >= self.responsive_breakpoint;
+    pub fn compute(
+        &self,
+        term_width: u16,
+        term_height: u16,
+        show_banner: bool,
+        sidebar_has_content: bool,
+    ) -> PaneRects {
+        // Show sidebar when it has content OR when the terminal is wide
+        // enough for the default layout.
+        let sidebar_visible =
+            self.show_sidebar && (sidebar_has_content || term_width >= self.responsive_breakpoint);
         let header_rows: u16 = if self.show_header { 1 } else { 0 };
         let footer_rows: u16 = if self.show_footer { 1 } else { 0 };
         let banner_rows: u16 = if show_banner { 1 } else { 0 };
@@ -135,7 +144,7 @@ mod tests {
     #[test]
     fn compute_200x60_no_banner() {
         let mgr = LayoutManager::new(25, true, true, true, 120);
-        let rects = mgr.compute(200, 60, false);
+        let rects = mgr.compute(200, 60, false, false);
 
         // Header: 1 row
         assert_eq!(rects.header.height, 1);
@@ -161,17 +170,27 @@ mod tests {
     #[test]
     fn compute_80x24_sidebar_hidden() {
         let mgr = LayoutManager::new(25, true, true, true, 120);
-        let rects = mgr.compute(80, 24, false);
+        let rects = mgr.compute(80, 24, false, false);
 
-        // Below breakpoint (120): sidebar should be hidden
+        // Below breakpoint (120): sidebar should be hidden when no content
         assert_eq!(rects.sidebar.width, 0);
         assert_eq!(rects.chat.width, 80);
     }
 
     #[test]
+    fn compute_80x24_sidebar_forced_by_content() {
+        let mgr = LayoutManager::new(25, true, true, true, 120);
+        let rects = mgr.compute(80, 24, false, true);
+
+        // Below breakpoint but has content: sidebar should appear
+        assert!(rects.sidebar.width > 0);
+        assert_eq!(rects.chat.width + rects.sidebar.width, 80);
+    }
+
+    #[test]
     fn compute_120x40_sidebar_visible() {
         let mgr = LayoutManager::new(25, true, true, true, 120);
-        let rects = mgr.compute(120, 40, false);
+        let rects = mgr.compute(120, 40, false, false);
 
         // At breakpoint: sidebar is 25% of 120 = 30
         assert_eq!(rects.sidebar.width, 30);
@@ -181,7 +200,7 @@ mod tests {
     #[test]
     fn compute_with_banner() {
         let mgr = LayoutManager::new(25, true, true, true, 120);
-        let rects = mgr.compute(200, 60, true);
+        let rects = mgr.compute(200, 60, true, false);
 
         // Banner is 1 row
         assert_eq!(rects.banner.height, 1);
@@ -194,7 +213,7 @@ mod tests {
     #[test]
     fn no_header_no_footer() {
         let mgr = LayoutManager::new(25, false, true, false, 120);
-        let rects = mgr.compute(200, 60, false);
+        let rects = mgr.compute(200, 60, false, false);
 
         assert_eq!(rects.header.height, 0);
         assert_eq!(rects.footer.height, 0);
@@ -206,18 +225,18 @@ mod tests {
     fn sidebar_width_clamped() {
         // Test that sidebar width is clamped to valid range
         let mgr_clamp_low = LayoutManager::new(5, true, true, true, 120);
-        let rects = mgr_clamp_low.compute(200, 60, false);
+        let rects = mgr_clamp_low.compute(200, 60, false, false);
         assert_eq!(rects.sidebar.width, 30); // 15% of 200
 
         let mgr_clamp_high = LayoutManager::new(50, true, true, true, 120);
-        let rects = mgr_clamp_high.compute(200, 60, false);
+        let rects = mgr_clamp_high.compute(200, 60, false, false);
         assert_eq!(rects.sidebar.width, 80); // 40% of 200
     }
 
     #[test]
     fn sidebar_not_shown_when_disabled() {
         let mgr = LayoutManager::new(25, true, false, true, 0);
-        let rects = mgr.compute(200, 60, false);
+        let rects = mgr.compute(200, 60, false, true);
 
         // Sidebar disabled even at wide terminal
         assert_eq!(rects.sidebar.width, 0);
