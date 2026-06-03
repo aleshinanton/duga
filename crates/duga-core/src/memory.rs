@@ -344,7 +344,7 @@ impl Memory {
         }
         content.push_str("Summary:\n");
         content.push_str(&summary.content);
-        Message::assistant(Some(content), vec![], None)
+        Message::system(content)
     }
 }
 
@@ -513,6 +513,7 @@ mod tests {
         let messages = memory.messages();
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0].role.to_string(), "system");
+        assert_eq!(messages[1].role, Role::System);
         assert!(message_text(&messages[1]).contains("Key facts:\n- fact\n\nSummary:\nold"));
         assert_eq!(messages[2].role.to_string(), "user");
     }

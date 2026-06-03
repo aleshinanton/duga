@@ -1,6 +1,7 @@
 //! OpenAI chat-completions provider.
 
 use crate::{estimate_tokens, message_text, ChatFuture, LlmClient, LlmError};
+use duga_config::ThinkingLevel;
 use duga_events::{Event, EventSink};
 use duga_types::llm::{LlmCallOptions, LlmResponse, TokenUsage};
 use duga_types::message::{AssistantMessage, ContentBlock, Message, Role};
@@ -17,6 +18,7 @@ pub struct OpenAiClient {
     model: String,
     api_key: String,
     base_url: String,
+    thinking_level: ThinkingLevel,
     http: reqwest::Client,
 }
 
@@ -26,10 +28,20 @@ impl OpenAiClient {
         api_key: impl Into<String>,
         base_url: Option<String>,
     ) -> Self {
+        Self::with_thinking(model, api_key, base_url, ThinkingLevel::Off)
+    }
+
+    pub fn with_thinking(
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+        base_url: Option<String>,
+        thinking_level: ThinkingLevel,
+    ) -> Self {
         Self {
             model: model.into(),
             api_key: api_key.into(),
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.into()),
+            thinking_level,
             http: reqwest::Client::new(),
         }
     }
@@ -67,7 +79,8 @@ impl LlmClient for OpenAiClient {
         event_sink: &'a dyn EventSink,
     ) -> ChatFuture<'a> {
         Box::pin(async move {
-            let mut request = OpenAiRequest::from_duga(&self.model, messages, tools)?;
+            let mut request =
+                OpenAiRequest::from_duga(&self.model, messages, tools, self.thinking_level)?;
             if options.streaming {
                 request.stream = Some(true);
                 request.stream_options = Some(OpenAiStreamOptions { include_usage: true });
@@ -232,6 +245,8 @@ struct OpenAiRequest {
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<OpenAiStreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -244,7 +259,9 @@ impl OpenAiRequest {
         model: &str,
         messages: &[Message],
         tools: &[ToolSchema],
+        thinking_level: ThinkingLevel,
     ) -> Result<Self, LlmError> {
+        let messages = repair_reasoning_history_for_request(model, thinking_level, messages);
         Ok(Self {
             model: model.into(),
             messages: messages
@@ -254,8 +271,90 @@ impl OpenAiRequest {
             tools: tools.iter().map(OpenAiToolSpec::from_schema).collect(),
             stream: None,
             stream_options: None,
+            reasoning_effort: thinking_level.to_api_param().map(ToOwned::to_owned),
         })
     }
+}
+
+fn repair_reasoning_history_for_request(
+    model: &str,
+    thinking_level: ThinkingLevel,
+    messages: &[Message],
+) -> Vec<Message> {
+    let needs_reasoning_history = thinking_level != ThinkingLevel::Off
+        || model_uses_reasoning_history(model)
+        || has_assistant_reasoning(messages);
+    if !needs_reasoning_history {
+        return messages.to_vec();
+    }
+
+    repair_reasoning_history(messages)
+}
+
+fn repair_reasoning_history(messages: &[Message]) -> Vec<Message> {
+    let mut repaired = Vec::with_capacity(messages.len());
+    let mut skip_tool_results = false;
+
+    for message in messages {
+        if skip_tool_results {
+            if message.role == Role::Tool {
+                continue;
+            }
+            skip_tool_results = false;
+        }
+
+        if message.role != Role::Assistant || assistant_has_reasoning(message) {
+            repaired.push(message.clone());
+            continue;
+        }
+
+        if assistant_has_tool_calls(message) {
+            skip_tool_results = true;
+            continue;
+        }
+
+        let text = message_text(message);
+        if text.is_empty() {
+            continue;
+        }
+
+        let mut context = Message::system(format!("Historical assistant response:\n{text}"));
+        context.pinned = message.pinned;
+        repaired.push(context);
+    }
+
+    repaired
+}
+
+fn model_uses_reasoning_history(model: &str) -> bool {
+    let normalized = model.to_ascii_lowercase();
+    normalized.contains("reasoner")
+        || normalized.contains("reasoning")
+        || normalized.contains("deepseek-r1")
+        || normalized.contains("deepseek_r1")
+        || normalized.ends_with("-r1")
+        || normalized.contains("-r1-")
+        || normalized.contains("/r1")
+}
+
+fn has_assistant_reasoning(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .any(|message| message.role == Role::Assistant && assistant_has_reasoning(message))
+}
+
+fn assistant_has_reasoning(message: &Message) -> bool {
+    message
+        .reasoning_content
+        .as_deref()
+        .is_some_and(|reasoning| !reasoning.is_empty())
+}
+
+fn assistant_has_tool_calls(message: &Message) -> bool {
+    message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolCall(_)))
 }
 
 #[derive(Debug, Serialize)]
@@ -663,6 +762,7 @@ mod tests {
                 "read a file",
                 serde_json::json!({"type": "object"}),
             )],
+            ThinkingLevel::Off,
         )
         .unwrap();
         let json = serde_json::to_value(request).unwrap();
@@ -670,6 +770,91 @@ mod tests {
         assert_eq!(json["model"], "gpt-4.1");
         assert_eq!(json["messages"][0]["role"], "system");
         assert_eq!(json["tools"][0]["function"]["name"], "read");
+    }
+
+    #[test]
+    fn request_preserves_normal_non_reasoning_history() {
+        let tc = make_tool_call("read", serde_json::json!({"path": "file.txt"}));
+        let tool_id = tc.id.clone();
+        let messages = vec![
+            Message::user("read file.txt"),
+            Message::assistant(None, vec![tc], None),
+            Message::tool(tool_id.as_uuid(), "contents".into()),
+            Message::assistant(Some("done".into()), vec![], None),
+        ];
+
+        let request =
+            OpenAiRequest::from_duga("gpt-4.1", &messages, &[], ThinkingLevel::Off).unwrap();
+        let json = serde_json::to_value(request).unwrap();
+
+        assert_eq!(json["messages"][1]["role"], "assistant");
+        assert!(json["messages"][1].get("tool_calls").is_some());
+        assert_eq!(json["messages"][2]["role"], "tool");
+        assert_eq!(json["messages"][3]["role"], "assistant");
+        assert!(json["reasoning_effort"].is_null());
+    }
+
+    #[test]
+    fn request_repairs_mixed_reasoning_history() {
+        let stale_tool_call = make_tool_call("read", serde_json::json!({"path": "old.txt"}));
+        let stale_tool_id = stale_tool_call.id.clone();
+        let messages = vec![
+            Message::user("old task"),
+            Message::assistant(
+                Some("real reasoning turn".into()),
+                vec![],
+                Some("hidden reasoning".into()),
+            ),
+            Message::user("synthetic summary happened"),
+            Message::assistant(Some("summary without reasoning".into()), vec![], None),
+            Message::assistant(Some("stale tool text".into()), vec![stale_tool_call], None),
+            Message::tool(stale_tool_id.as_uuid(), "old output".into()),
+            Message::user("next task"),
+        ];
+
+        let request =
+            OpenAiRequest::from_duga("gpt-4.1", &messages, &[], ThinkingLevel::Off).unwrap();
+        let json = serde_json::to_value(request).unwrap();
+        let roles = json["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(roles, vec!["user", "assistant", "user", "system", "user"]);
+        assert_eq!(json["messages"][1]["reasoning_content"], "hidden reasoning");
+        assert!(json["messages"][3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("summary without reasoning"));
+        assert!(json["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|message| message["role"] != "tool"));
+    }
+
+    #[test]
+    fn request_repairs_when_thinking_level_enabled() {
+        let request = OpenAiRequest::from_duga(
+            "gpt-4.1",
+            &[
+                Message::user("task"),
+                Message::assistant(Some("assistant text".into()), vec![], None),
+            ],
+            &[],
+            ThinkingLevel::Medium,
+        )
+        .unwrap();
+        let json = serde_json::to_value(request).unwrap();
+
+        assert_eq!(json["reasoning_effort"], "medium");
+        assert_eq!(json["messages"][1]["role"], "system");
+        assert!(json["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("assistant text"));
     }
 
     #[test]

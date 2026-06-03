@@ -43,10 +43,11 @@ pub fn load_conversation_history(
         return None;
     }
 
-    // Strip system messages — fresh system prompt is always provided.
+    // Strip system messages — fresh system prompt is always provided.  Keep
+    // compressed summaries because they are generated conversation context.
     let mut history: Vec<Message> = messages
         .into_iter()
-        .filter(|m| !matches!(m.role, Role::System))
+        .filter(|m| !matches!(m.role, Role::System) || is_compressed_summary_message(m))
         .collect();
 
     let total_in_history = history.len();
@@ -57,13 +58,12 @@ pub fn load_conversation_history(
     }
 
     if max_context_tokens > 0 {
-        while crate::memory::estimate_tokens(&history) > max_context_tokens
-            && history.len() > 1
-        {
+        while crate::memory::estimate_tokens(&history) > max_context_tokens && history.len() > 1 {
             history.remove(0);
         }
     }
 
+    let history = repair_reasoning_history(history);
     let history = normalize_tool_message_sequence(history);
     let history = strip_stale_reminders(history);
 
@@ -108,6 +108,80 @@ pub fn normalize_tool_message_sequence(messages: Vec<Message>) -> Vec<Message> {
     out
 }
 
+fn repair_reasoning_history(messages: Vec<Message>) -> Vec<Message> {
+    if !messages
+        .iter()
+        .any(|message| message.role == Role::Assistant && assistant_has_reasoning(message))
+    {
+        return messages;
+    }
+
+    let mut out = Vec::with_capacity(messages.len());
+    let mut skip_tool_results = false;
+    for msg in messages {
+        if skip_tool_results {
+            if msg.role == Role::Tool {
+                continue;
+            }
+            skip_tool_results = false;
+        }
+
+        if msg.role != Role::Assistant || assistant_has_reasoning(&msg) {
+            out.push(msg);
+            continue;
+        }
+
+        if assistant_has_tool_calls(&msg) {
+            skip_tool_results = true;
+            continue;
+        }
+
+        let text = message_text(&msg);
+        if !text.is_empty() {
+            let mut context = Message::system(format!("Historical assistant response:\n{text}"));
+            context.pinned = msg.pinned;
+            out.push(context);
+        }
+    }
+
+    out
+}
+
+fn assistant_has_reasoning(message: &Message) -> bool {
+    message
+        .reasoning_content
+        .as_deref()
+        .is_some_and(|reasoning| !reasoning.is_empty())
+}
+
+fn assistant_has_tool_calls(message: &Message) -> bool {
+    message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+}
+
+fn message_text(message: &Message) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::ToolCall(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_compressed_summary_message(message: &Message) -> bool {
+    if message.role != Role::System {
+        return false;
+    }
+
+    let text = message_text(message);
+    text.starts_with("Summary:\n") || text.contains("\n\nSummary:\n")
+}
+
 /// Strip stale "Reminder: Focus exclusively on the current task: …" suffixes
 /// from historical user messages.  These were injected by a prior run and
 /// conflict with the new run's task anchor.
@@ -141,5 +215,151 @@ fn strip_reminder_suffix(text: &str) -> String {
         text[..pos].to_string()
     } else {
         text.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use duga_events::{Event, StoredEvent};
+    use duga_types::tool_call::ToolCall;
+    use duga_types::tool_schema::ToolSchema;
+
+    fn write_llm_request(messages: Vec<Message>) -> tempfile::NamedTempFile {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let stored = StoredEvent::new(
+            1,
+            Event::LlmRequest {
+                model: "deepseek-reasoner".into(),
+                messages,
+                tools: Vec::<ToolSchema>::new(),
+            },
+        );
+        std::fs::write(
+            file.path(),
+            format!("{}\n", serde_json::to_string(&stored).unwrap()),
+        )
+        .unwrap();
+        file
+    }
+
+    #[test]
+    fn normalizes_orphan_tool_messages() {
+        let tool_call = ToolCall::new("read", serde_json::json!({"path": "file.txt"}));
+        let tool_id = tool_call.id.clone();
+        let messages = vec![
+            Message::tool(tool_id.as_uuid(), "orphan".into()),
+            Message::assistant(None, vec![tool_call], None),
+            Message::tool(tool_id.as_uuid(), "kept".into()),
+        ];
+
+        let normalized = normalize_tool_message_sequence(messages);
+
+        assert_eq!(normalized.len(), 2);
+        assert_eq!(normalized[0].role, Role::Assistant);
+        assert_eq!(normalized[1].role, Role::Tool);
+    }
+
+    #[test]
+    fn preserves_non_reasoning_assistant_history() {
+        let tool_call = ToolCall::new("read", serde_json::json!({"path": "file.txt"}));
+        let tool_id = tool_call.id.clone();
+        let messages = vec![
+            Message::user("read file.txt"),
+            Message::assistant(None, vec![tool_call], None),
+            Message::tool(tool_id.as_uuid(), "contents".into()),
+            Message::assistant(Some("done".into()), vec![], None),
+        ];
+
+        let repaired = repair_reasoning_history(messages);
+
+        assert_eq!(repaired.len(), 4);
+        assert_eq!(repaired[1].role, Role::Assistant);
+        assert_eq!(repaired[2].role, Role::Tool);
+        assert_eq!(repaired[3].role, Role::Assistant);
+    }
+
+    #[test]
+    fn repairs_mixed_reasoning_history_without_orphan_tools() {
+        let stale_tool_call = ToolCall::new("read", serde_json::json!({"path": "old.txt"}));
+        let stale_tool_id = stale_tool_call.id.clone();
+        let messages = vec![
+            Message::user("old task"),
+            Message::assistant(
+                Some("kept response".into()),
+                vec![],
+                Some("kept reasoning".into()),
+            ),
+            Message::assistant(Some("synthetic assistant".into()), vec![], None),
+            Message::assistant(Some("stale tool text".into()), vec![stale_tool_call], None),
+            Message::tool(stale_tool_id.as_uuid(), "stale output".into()),
+            Message::user("next task"),
+        ];
+
+        let repaired = normalize_tool_message_sequence(repair_reasoning_history(messages));
+
+        assert_eq!(
+            repaired
+                .iter()
+                .map(|message| message.role.clone())
+                .collect::<Vec<_>>(),
+            vec![Role::User, Role::Assistant, Role::System, Role::User,]
+        );
+        assert_eq!(
+            repaired[1].reasoning_content.as_deref(),
+            Some("kept reasoning")
+        );
+        assert!(message_text(&repaired[2]).contains("synthetic assistant"));
+        assert!(repaired.iter().all(|message| message.role != Role::Tool));
+    }
+
+    #[test]
+    fn load_history_keeps_compressed_summary_but_strips_system_prompt() {
+        let file = write_llm_request(vec![
+            Message::system("fresh system prompt from old run"),
+            Message::system("Key facts:\n- pinned\n\nSummary:\nold context"),
+            Message::user("next task"),
+        ]);
+
+        let history = load_conversation_history(file.path(), 0, 0).unwrap();
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].role, Role::System);
+        assert!(message_text(&history[0]).contains("Summary:\nold context"));
+        assert_eq!(history[1].role, Role::User);
+    }
+
+    #[test]
+    fn load_history_repairs_legacy_reasoning_snapshot() {
+        let stale_tool_call = ToolCall::new("read", serde_json::json!({"path": "old.txt"}));
+        let stale_tool_id = stale_tool_call.id.clone();
+        let file = write_llm_request(vec![
+            Message::system("old prompt"),
+            Message::user("old task"),
+            Message::assistant(
+                Some("real response".into()),
+                vec![],
+                Some("real reasoning".into()),
+            ),
+            Message::assistant(Some("summary as assistant".into()), vec![], None),
+            Message::assistant(None, vec![stale_tool_call], None),
+            Message::tool(stale_tool_id.as_uuid(), "stale output".into()),
+            Message::user("new task"),
+        ]);
+
+        let history = load_conversation_history(file.path(), 0, 0).unwrap();
+
+        assert_eq!(
+            history
+                .iter()
+                .map(|message| message.role.clone())
+                .collect::<Vec<_>>(),
+            vec![Role::User, Role::Assistant, Role::System, Role::User,]
+        );
+        assert_eq!(
+            history[1].reasoning_content.as_deref(),
+            Some("real reasoning")
+        );
+        assert!(message_text(&history[2]).contains("summary as assistant"));
     }
 }
