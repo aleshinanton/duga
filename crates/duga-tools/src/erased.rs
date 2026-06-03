@@ -60,8 +60,24 @@ impl<T: crate::tool::Tool + 'static> ErasedExecute for ErasedExecutor<T> {
                 }
             };
 
-            let ctx = ToolContext::new(workspace, cancellation, event_sink);
-            let mut result = tool.execute(ctx, args).await?;
+            let ctx = ToolContext::new(workspace, cancellation.clone(), event_sink);
+
+            // If already cancelled before the tool started, bail immediately.
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
+
+            // Race the tool against cancellation so that /stop (or any
+            // CancellationToken trigger) aborts even tools that don't
+            // check ctx.is_cancelled() internally.
+            let mut cancel_rx = cancellation.subscribe();
+            let mut result = tokio::select! {
+                biased;  // check cancellation first if both are ready
+                _ = cancel_rx.changed() => {
+                    return Err(ToolError::Cancelled);
+                }
+                r = tool.execute(ctx, args) => r?,
+            };
             result.tool_call_id = call_id;
             Ok(result)
         })
