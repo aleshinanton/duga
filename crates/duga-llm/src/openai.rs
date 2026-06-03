@@ -306,28 +306,33 @@ fn openai_message(message: &Message) -> Result<OpenAiMessage, LlmError> {
         }),
         Role::Assistant => {
             let has_tool_calls = !tool_calls.is_empty();
-            // DeepSeek models in thinking mode require:
-            // - reasoning_content echoed back in subsequent assistant messages
-            // - content explicitly set to null when the message carries
-            //   reasoning_content but no visible text (absent ≠ null)
+            let has_reasoning = message.reasoning_content.is_some();
+            // DeepSeek models in thinking mode require reasoning_content to
+            // be echoed back.  The content field format depends on whether
+            // the message also carries tool_calls and/or reasoning_content:
             //
-            // However, when a message has BOTH tool_calls AND reasoning_content
-            // but no visible text, the combination of "content": null +
-            // "reasoning_content" + "tool_calls" triggers DeepSeek HTTP 400:
-            //   "The `reasoning_content` in the thinking mode must be
-            //    passed back to the API."
+            // | text | tools | reasoning | content field |
+            // |------|-------|-----------|---------------|
+            // | yes  | any   | any       | string        |
+            // | no   | no    | yes       | null          |
+            // | no   | no    | no        | null          |
+            // | no   | yes   | yes       | absent        |
+            // | no   | yes   | no        | null          |
             //
-            // Fix: when there are tool calls and no text, omit the content
-            // field entirely instead of setting it to null.  The API accepts
-            // this format and still sees the tool_calls and reasoning_content.
-            let content = if text.is_empty() && !has_tool_calls {
-                // Pure thinking-only message (no text, no tools): need explicit null
-                Some(serde_json::Value::Null)
-            } else if text.is_empty() {
-                // Tool-call-only message with reasoning: omit content entirely
+            // The key constraint: when content is absent, reasoning_content
+            // MUST be present so the message isn't completely empty.
+            let content = if !text.is_empty() {
+                // Has visible text
+                Some(serde_json::Value::String(text))
+            } else if has_tool_calls && has_reasoning {
+                // Tool-call-only WITH reasoning: omit content entirely.
+                // reasoning_content satisfies the API and avoids the
+                // "content:null + tool_calls + reasoning" reject pattern.
                 None
             } else {
-                Some(serde_json::Value::String(text))
+                // Pure thinking / tool-call-only without reasoning / empty:
+                // need explicit null so the message has at least one field.
+                Some(serde_json::Value::Null)
             };
             Ok(OpenAiMessage {
                 role: "assistant".into(),
@@ -931,7 +936,8 @@ mod tests {
     #[test]
     fn serialize_assistant_tool_call_without_reasoning() {
         // Message has tool_calls but NO reasoning_content and NO text.
-        // content should be absent (no visible text, no reasoning).
+        // content should be null (not absent) because the message needs
+        // at least one of content or reasoning_content for the API.
         let tc = make_tool_call("read", serde_json::json!({"path": "file.txt", "label": "read"}));
         let msg = Message::assistant(
             None,
@@ -941,8 +947,8 @@ mod tests {
         let openai = openai_message(&msg).unwrap();
         let json = serde_json::to_value(&openai).unwrap();
         assert_eq!(json["role"], "assistant");
-        assert!(json.get("content").is_none(),
-            "content should be absent for tool-call-only messages without reasoning");
+        assert_eq!(json["content"], serde_json::Value::Null,
+            "content should be null for tool-call-only messages without reasoning");
         assert!(json.get("reasoning_content").is_none());
         assert!(json.get("tool_calls").is_some());
     }
@@ -983,7 +989,7 @@ mod tests {
         // Simulate a tool call with Value::Null raw_args (the bug pattern from
         // the streaming parser).  When serialized to OpenAI format, the
         // arguments string should be "null" (JSON literal null), and the
-        // content field should be ABSENT for tool-call-only messages.
+        // content field should be ABSENT because reasoning_content is present.
         let tc = make_tool_call("shell", serde_json::Value::Null);
         let msg = Message::assistant(
             None,
@@ -993,9 +999,9 @@ mod tests {
         let openai = openai_message(&msg).unwrap();
         let json = serde_json::to_value(&openai).unwrap();
         assert_eq!(json["role"], "assistant");
-        // content must be absent for tool-call-only messages
+        // content must be absent for tool-call-only messages WITH reasoning
         assert!(json.get("content").is_none(),
-            "content should be absent, got: {:?}", json.get("content"));
+            "content should be absent when reasoning is present, got: {:?}", json.get("content"));
         assert_eq!(json["reasoning_content"], "I need to run a command");
         assert!(json.get("tool_calls").is_some());
         // The arguments string should be "null" (the JSON literal null)
