@@ -27,6 +27,8 @@ pub enum ThinkingLevel {
     Low,
     Medium,
     High,
+    Xhigh,
+    Max,
 }
 
 impl ThinkingLevel {
@@ -38,6 +40,8 @@ impl ThinkingLevel {
             ThinkingLevel::Low => Some("low"),
             ThinkingLevel::Medium => Some("medium"),
             ThinkingLevel::High => Some("high"),
+            ThinkingLevel::Xhigh => Some("xhigh"),
+            ThinkingLevel::Max => Some("max"),
         }
     }
 
@@ -49,6 +53,8 @@ impl ThinkingLevel {
             ThinkingLevel::Low => Some(1024),
             ThinkingLevel::Medium => Some(4096),
             ThinkingLevel::High => Some(16384),
+            ThinkingLevel::Xhigh => Some(32768),
+            ThinkingLevel::Max => Some(65536),
         }
     }
 }

@@ -255,14 +255,16 @@ impl App {
         self.sidebar_state.toggle_reasoning();
     }
 
-    /// Cycle the thinking/reasoning effort level through Off → Low → Medium → High → Off.
+    /// Cycle the thinking/reasoning effort level through Off → Low → Medium → High → Xhigh → Max → Off.
     pub fn cycle_thinking_level(&mut self) {
         use duga_config::ThinkingLevel;
         self.config.thinking_level = match self.config.thinking_level {
             ThinkingLevel::Off => ThinkingLevel::Low,
             ThinkingLevel::Low => ThinkingLevel::Medium,
             ThinkingLevel::Medium => ThinkingLevel::High,
-            ThinkingLevel::High => ThinkingLevel::Off,
+            ThinkingLevel::High => ThinkingLevel::Xhigh,
+            ThinkingLevel::Xhigh => ThinkingLevel::Max,
+            ThinkingLevel::Max => ThinkingLevel::Off,
         };
         self.event_log.push(LogEntry::new(
             LogLevel::Info,
@@ -1664,7 +1666,7 @@ plugins:
     }
 
     #[test]
-    fn cycle_thinking_level_cycles_off_low_medium_high() {
+    fn cycle_thinking_level_cycles_off_low_medium_high_xhigh_max() {
         let mut app = make_app();
         use duga_config::ThinkingLevel;
         app.config.thinking_level = ThinkingLevel::Off;
@@ -1674,6 +1676,10 @@ plugins:
         assert_eq!(app.config.thinking_level, ThinkingLevel::Medium);
         app.cycle_thinking_level();
         assert_eq!(app.config.thinking_level, ThinkingLevel::High);
+        app.cycle_thinking_level();
+        assert_eq!(app.config.thinking_level, ThinkingLevel::Xhigh);
+        app.cycle_thinking_level();
+        assert_eq!(app.config.thinking_level, ThinkingLevel::Max);
         app.cycle_thinking_level();
         assert_eq!(app.config.thinking_level, ThinkingLevel::Off);
     }
@@ -1691,7 +1697,9 @@ plugins:
                 ThinkingLevel::Off => ThinkingLevel::Low,
                 ThinkingLevel::Low => ThinkingLevel::Medium,
                 ThinkingLevel::Medium => ThinkingLevel::High,
-                ThinkingLevel::High => ThinkingLevel::Off,
+                ThinkingLevel::High => ThinkingLevel::Xhigh,
+                ThinkingLevel::Xhigh => ThinkingLevel::Max,
+                ThinkingLevel::Max => ThinkingLevel::Off,
             }
         );
     }
