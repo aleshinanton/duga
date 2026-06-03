@@ -1299,7 +1299,7 @@ impl App {
         // Compute pane rects from the layout manager
         let mut pane_rects =
             self.layout_manager
-                .compute(area.width, area.height, self.banner.is_active(), self.sidebar_state.has_content());
+                .compute(area.width, area.height, self.banner.is_active());
 
         // Collapse sidebar when both panels are hidden — let chat expand into that space
         if !self.sidebar_state.has_content() && pane_rects.sidebar.width > 0 {
@@ -1555,6 +1555,18 @@ plugins:
         let app = make_app();
         assert!(matches!(app.state, AppState::Idle));
         assert!(!app.should_quit());
+    }
+
+    #[test]
+    fn render_hides_sidebar_below_breakpoint_even_when_events_are_expanded() {
+        let mut app = make_app();
+        assert!(app.sidebar_state.has_content());
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        assert!(!app.sidebar_rendered);
     }
 
     #[test]

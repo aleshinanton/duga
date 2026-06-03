@@ -1027,7 +1027,7 @@ fn test_epic33_theme_defaults_to_dark() {
 #[test]
 fn test_epic33_layout_computes_panes() {
     let (app, _rx) = make_test_app();
-    let rects = app.layout_manager.compute(200, 60, false, false);
+    let rects = app.layout_manager.compute(200, 60, false);
     // Verify header, chat, sidebar, input, footer all have dimensions
     assert_eq!(rects.header.height, 1);
     assert_eq!(rects.input.height, 4);
@@ -1039,7 +1039,7 @@ fn test_epic33_layout_computes_panes() {
 #[test]
 fn test_epic33_sidebar_hidden_on_narrow() {
     let (app, _rx) = make_test_app();
-    let rects = app.layout_manager.compute(80, 24, false, false);
+    let rects = app.layout_manager.compute(80, 24, false);
     assert_eq!(rects.sidebar.width, 0);
     assert_eq!(rects.chat.width, 80);
 }
@@ -1054,8 +1054,14 @@ fn test_epic33_focus_default_is_input() {
 fn test_epic33_focus_tab_cycle() {
     use duga_tui::focus::{Focus, SidebarPanels};
 
-    let none = SidebarPanels { reasoning: false, event_log: false };
-    let both = SidebarPanels { reasoning: true, event_log: true };
+    let none = SidebarPanels {
+        reasoning: false,
+        event_log: false,
+    };
+    let both = SidebarPanels {
+        reasoning: true,
+        event_log: true,
+    };
 
     // No panels: Chat→Input→Chat
     assert_eq!(Focus::Chat.next(none), Focus::Input);
@@ -1072,8 +1078,14 @@ fn test_epic33_focus_tab_cycle() {
 fn test_epic33_focus_shift_tab_cycle() {
     use duga_tui::focus::{Focus, SidebarPanels};
 
-    let none = SidebarPanels { reasoning: false, event_log: false };
-    let both = SidebarPanels { reasoning: true, event_log: true };
+    let none = SidebarPanels {
+        reasoning: false,
+        event_log: false,
+    };
+    let both = SidebarPanels {
+        reasoning: true,
+        event_log: true,
+    };
 
     // No panels: Input→Chat→Input
     assert_eq!(Focus::Chat.prev(none), Focus::Input);

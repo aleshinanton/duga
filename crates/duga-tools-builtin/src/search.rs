@@ -1,8 +1,9 @@
 //! SearchTool — walkdir + regex in spawn_blocking.
 
+use duga_sandbox::CancellationToken;
+use duga_tools::Tool;
 use duga_tools::context::ToolContext;
 use duga_tools::result::ToolCallResult;
-use duga_tools::Tool;
 use duga_types::error::ToolError;
 use duga_types::tool_call::CallId;
 use duga_types::tool_result::ToolResult;
@@ -59,10 +60,17 @@ impl Tool for SearchTool {
         }
         .map_err(|e| ToolError::InvalidArgs(format!("Invalid regex: {}", e)))?;
 
+        if ctx.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+
         let max = args.max_results.unwrap_or(200);
-        let output = tokio::task::spawn_blocking(move || search_files(&full_root, &pattern, max))
-            .await
-            .map_err(|_| ToolError::Plugin("search panicked".into()))?;
+        let cancellation = ctx.cancellation.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            search_files(&full_root, &pattern, max, &cancellation)
+        })
+        .await
+        .map_err(|_| ToolError::Plugin("search panicked".into()))??;
 
         // Count matches for steering hint
         let match_count = output.lines().count();
@@ -88,13 +96,21 @@ impl Tool for SearchTool {
     }
 }
 
-fn search_files(root: &PathBuf, pattern: &Regex, max_results: usize) -> String {
+fn search_files(
+    root: &PathBuf,
+    pattern: &Regex,
+    max_results: usize,
+    cancellation: &CancellationToken,
+) -> Result<String, ToolError> {
     let mut results: Vec<String> = Vec::new();
     for entry in walkdir::WalkDir::new(root)
         .min_depth(1)
         .max_depth(50)
         .follow_links(false)
     {
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
         if results.len() >= max_results {
             break;
         }
@@ -114,6 +130,9 @@ fn search_files(root: &PathBuf, pattern: &Regex, max_results: usize) -> String {
             Err(_) => continue,
         };
         for (i, line) in content.lines().enumerate() {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
             if results.len() >= max_results {
                 break;
             }
@@ -132,22 +151,29 @@ fn search_files(root: &PathBuf, pattern: &Regex, max_results: usize) -> String {
             max_results
         ));
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duga_sandbox::exec::CancellationToken;
     use duga_sandbox::Workspace;
+    use duga_sandbox::exec::CancellationToken;
     use duga_tools::event_sink::NullSink;
     use tempfile::tempdir;
 
     fn make_ctx(ws: &Workspace) -> ToolContext<'static> {
+        make_ctx_with_cancellation(ws, CancellationToken::new())
+    }
+
+    fn make_ctx_with_cancellation(
+        ws: &Workspace,
+        cancellation: CancellationToken,
+    ) -> ToolContext<'static> {
         let ws: &'static Workspace = unsafe { std::mem::transmute(ws) };
         ToolContext {
             workspace: ws,
-            cancellation: CancellationToken::new(),
+            cancellation,
             event_sink: &NullSink,
             aux_root: None,
         }
@@ -190,6 +216,40 @@ mod tests {
             },
         ));
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_search_cancelled_before_start() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("t.txt"), "hello world").unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let r = rt.block_on(SearchTool::new().execute(
+            make_ctx_with_cancellation(&ws, cancellation),
+            SearchArgs {
+                label: "Searching for hello".into(),
+                query: "hello".into(),
+                path: None,
+                literal: None,
+                max_results: None,
+            },
+        ));
+
+        assert!(matches!(r, Err(ToolError::Cancelled)));
+    }
+
+    #[test]
+    fn test_search_files_stops_when_cancelled() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("t.txt"), "hello world").unwrap();
+        let pattern = Regex::new("hello").unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let result = search_files(&dir.path().to_path_buf(), &pattern, 200, &cancellation);
+
+        assert!(matches!(result, Err(ToolError::Cancelled)));
     }
 
     #[cfg(unix)]
