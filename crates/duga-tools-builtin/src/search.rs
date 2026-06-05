@@ -339,7 +339,12 @@ fn search_files(
         };
 
         // ripgrep handles: reading, binary detection, memory-mapped I/O, context
-        let _ = searcher.search_path(matcher, path, &mut sink);
+        if let Err(e) = searcher.search_path(matcher, path, &mut sink) {
+            if cancellation.is_cancelled() {
+                return Err(ToolError::Cancelled);
+            }
+            tracing::warn!(?path, %e, "search_path failed");
+        }
     }
 
     let all_results = results.lock().unwrap();
@@ -359,12 +364,7 @@ fn search_files(
 
 /// Strip the workspace root prefix from a path for cleaner output.
 fn pathdisplay(path: &std::path::Path, root: &PathBuf) -> String {
-    let full = if root == &PathBuf::from(".") {
-        path.to_path_buf()
-    } else {
-        path.strip_prefix(root).unwrap_or(path).to_path_buf()
-    };
-    full.display().to_string()
+    path.strip_prefix(root).unwrap_or(path).display().to_string()
 }
 
 #[cfg(test)]
