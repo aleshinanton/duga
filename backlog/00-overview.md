@@ -2,7 +2,7 @@
 
 **Repository:** `aleshinanton/duga`  
 **Generated:** 2026-05-10  
-**Updated:** 2026-05-30 (added EPIC-33 TUI redesign)  
+**Updated:** 2026-06-05 (added EPIC-34 MCP Proxy Adapter)  
 **Spec version:** 1.2  
 **Plan version:** Implementation-Grade Execution Plan  
 
@@ -45,7 +45,8 @@
 | EPIC-31 | Steering — Dynamic Mid-Loop Guidance | 12 | §5 (new) | 53 |
 | EPIC-32 | Thinking Streaming — LLM Reasoning in TUI | 10 | §5, §24, §32 | 41.5 |
 | EPIC-33 | TUI Redesign — Modern Professional Terminal UI | 14 | §5, §24, §32 | 53 |
-| **Total** | | **245** | | **961** |
+| EPIC-34 | MCP Proxy Adapter | 15 | §7–8, §32 (new) | 61 |
+| **Total** | | **260** | | **1022** |
 
 ---
 
@@ -498,3 +499,4 @@ status/ready (unblocked, can be picked up)
 | `epic-31-steering.md` | EPIC-31: Steering — Dynamic Mid-Loop Guidance Injection (12 tasks) |
 | `epic-32-thinking-streaming.md` | EPIC-32: Thinking Streaming — LLM Reasoning Display in TUI (10 tasks) |
 | `epic-33-tui-redesign.md` | EPIC-33: TUI Redesign — Modern, Dense, Professional Terminal UI (14 tasks) |
+| `epic-34-mcp-adapter.md` | EPIC-34: MCP Proxy Adapter (15 tasks) |
