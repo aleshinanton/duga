@@ -55,26 +55,24 @@ impl ServerManager {
         name: &str,
         def: &McpServerDefinition,
     ) -> Result<(), String> {
-        let notify = {
+        {
             let mut servers = self.servers.lock().await;
             if let Some(state) = servers.get(name) {
                 if state.connection.is_some() {
                     return Ok(());
                 }
                 if state.connecting {
-                    return {
-                        let n = Arc::clone(&state.notify);
-                        drop(servers);
-                        n.notified().await;
-                        // Re-check
-                        let servers = self.servers.lock().await;
-                        if servers.get(name).map(|s| s.connection.is_some()).unwrap_or(false) {
-                            return Ok(());
-                        }
-                        // Retry connect if other failed
-                        drop(servers);
-                        Box::pin(self.connect(name, def)).await
-                    };
+                    let n = Arc::clone(&state.notify);
+                    drop(servers);
+                    n.notified().await;
+                    // Re-check
+                    let servers = self.servers.lock().await;
+                    if servers.get(name).map(|s| s.connection.is_some()).unwrap_or(false) {
+                        return Ok(());
+                    }
+                    // Retry connect if other failed
+                    drop(servers);
+                    return Box::pin(self.connect(name, def)).await;
                 }
                 let state = servers.get_mut(name).unwrap();
                 state.connecting = true;
@@ -83,8 +81,7 @@ impl ServerManager {
             let mut state = ServerState::new();
             state.connecting = true;
             servers.insert(name.to_string(), state);
-            // Immediately connect below.
-        };
+        }
         self.do_connect_inner(name, def).await
     }
 
