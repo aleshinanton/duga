@@ -136,7 +136,7 @@ async fn run_lifecycle_loop(
         match def.lifecycle {
             McpLifecycleMode::Eager | McpLifecycleMode::KeepAlive => {
                 if let Err(e) = manager.connect(name, def).await {
-                    tracing::warn!(server = %name, error = %e, "Failed to connect eager/keep-alive server");
+                    tracing::warn!("Failed to connect eager/keep-alive server '{}': {}", name, e);
                 }
             }
             McpLifecycleMode::Lazy => {
@@ -176,7 +176,7 @@ async fn run_lifecycle_loop(
                         if *mode == McpLifecycleMode::Lazy {
                             let timeout = idle_timeouts.get(&name).copied().unwrap_or(Duration::from_secs(600));
                             if manager.is_idle(&name, timeout).await {
-                                tracing::debug!(server = %name, "Closing idle lazy server");
+                                tracing::debug!("Closing idle lazy server '{}'", name);
                                 let _ = manager.close(&name).await;
                             }
                         }
@@ -194,7 +194,7 @@ async fn run_lifecycle_loop(
 
     // Graceful shutdown: flush cache and close all connections.
     if let Err(e) = cache.flush() {
-        tracing::warn!(error = %e, "Failed to flush MCP cache during shutdown");
+        tracing::warn!("Failed to flush MCP cache during shutdown: {}", e);
     }
     manager.close_all().await;
 }

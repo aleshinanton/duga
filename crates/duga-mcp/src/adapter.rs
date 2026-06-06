@@ -152,8 +152,8 @@ impl McpAdapter {
             match def.lifecycle {
                 duga_config::McpLifecycleMode::Eager | duga_config::McpLifecycleMode::KeepAlive => {
                     let result = self.manager.connect(name, def).await;
-                    if let Err(e) = &result {
-                        tracing::warn!(server = %name, error = %e, "Failed to connect server at session start");
+                    if let Err(ref e) = result {
+                        tracing::warn!("Failed to connect server '{}' at session start: {}", name, e);
                     }
                 }
                 duga_config::McpLifecycleMode::Lazy => {
@@ -163,16 +163,16 @@ impl McpAdapter {
         }
 
         // Populate metadata from connected servers.
-        for name in self.manager.connected_names().await {
-            if let Some(def) = self.definitions.get(&name) {
-                let _ = self.populate_metadata(&name, def).await;
+        let connected = self.manager.connected_names().await;
+        for name in &connected {
+            if let Some(def) = self.definitions.get(name) {
+                let _ = self.populate_metadata(name, def).await;
             }
         }
 
         tracing::info!(
-            generation = generation_val,
-            servers = ?self.manager.connected_names().await,
-            "MCP session started"
+            "MCP session started (generation={}), connected servers: {:?}",
+            generation_val, connected
         );
     }
 
@@ -188,7 +188,7 @@ impl McpAdapter {
 
         // Flush cache to disk.
         if let Err(e) = self.cache.flush() {
-            tracing::warn!(error = %e, "Failed to flush MCP cache during shutdown");
+            tracing::warn!("Failed to flush MCP cache during shutdown: {}", e);
         }
 
         self.generation.fetch_add(1, Ordering::SeqCst);

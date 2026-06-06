@@ -101,7 +101,7 @@ pub async fn execute_connect(
     match manager.populate_tool_cache(server_name, cache, def).await {
         Ok(()) => {}
         Err(e) => {
-            tracing::warn!(server = %server_name, error = %e, "Failed to populate tool cache");
+            tracing::warn!("Failed to populate tool cache for '{}': {}", server_name, e);
         }
     }
 

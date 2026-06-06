@@ -83,8 +83,8 @@ impl ServerManager {
             let mut state = ServerState::new();
             state.connecting = true;
             servers.insert(name.to_string(), state);
+            // Immediately connect below.
         };
-        drop(notify);
         self.do_connect_inner(name, def).await
     }
 
@@ -218,10 +218,8 @@ impl ServerManager {
                 // If the SDK error is a protocol error, the server may be dead.
                 // We log and disconnect.
                 tracing::warn!(
-                    server = %server_name,
-                    tool = %tool_name,
-                    error = %e,
-                    "MCP tool call failed"
+                    "MCP tool call '{}::{}' failed: {}",
+                    server_name, tool_name, e
                 );
                 Err(format!(
                     "MCP tool call '{}::{}' failed: {}",
@@ -261,11 +259,8 @@ impl ServerManager {
 
         cache.put(server_name, &hash, cached);
 
-        tracing::info!(
-            server = %server_name,
-            tool_count = cache.get(server_name, &hash).map(|e| e.tools.len()).unwrap_or(0),
-            "MCP tool cache populated"
-        );
+        let count = cache.get(server_name, &hash).map(|e| e.tools.len()).unwrap_or(0);
+        tracing::info!("MCP tool cache populated for '{}': {} tool(s)", server_name, count);
 
         Ok(())
     }
