@@ -217,8 +217,9 @@ mod tests {
                 summarizer: SummarizerKind::Simple,
             },
             plugins: PluginConfig {
-                dir: "./plugins".into(),
-                modules: vec![],
+                wasm_dir: "./plugins".into(),
+                wasm_modules: vec![],
+                mcp: None,
             },
             frontend: FrontendConfig::default(),
             tui: None,

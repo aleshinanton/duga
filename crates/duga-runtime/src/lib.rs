@@ -26,4 +26,4 @@ pub use skills::{
     gate_skill, load_skill_body, load_skills, Skill, SkillGate, SkillIndex,
     SkillRequires, SkillSource,
 };
-pub use tools::build_dispatcher;
+pub use tools::{build_dispatcher, BuiltTools};

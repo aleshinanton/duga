@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use duga_config::{Config, SandboxMode as ConfigSandboxMode};
+use duga_mcp::McpAdapter;
 use duga_plugin_host::load_plugins;
 use duga_sandbox::binary_registry::{BinaryPattern, BinaryRegistry};
 use duga_sandbox::executor::SandboxMode;
@@ -14,12 +15,18 @@ use duga_tools_builtin::delegate::DelegateTool;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Build a fully-populated `ToolDispatcher` with built-in tools and plugins.
+/// Result of building the tool dispatcher, including optional MCP adapter.
+pub struct BuiltTools {
+    pub dispatcher: Arc<ToolDispatcher>,
+    pub mcp_adapter: Option<Arc<McpAdapter>>,
+}
+
+/// Build a fully-populated `ToolDispatcher` with built-in tools, plugins, and MCP.
 pub fn build_dispatcher(
     config: &Config,
     workspace: Arc<Workspace>,
     aux_roots: Vec<PathBuf>,
-) -> Result<Arc<ToolDispatcher>> {
+) -> Result<BuiltTools> {
     let registry = if config.sandbox.allow_all_binaries {
         Arc::new(BinaryRegistry::allow_all())
     } else {
@@ -67,8 +74,8 @@ pub fn build_dispatcher(
         .context("registering delegate tool")?;
 
     let plugin_registry = load_plugins(
-        &config.plugins.dir,
-        &config.plugins.modules,
+        &config.plugins.wasm_dir,
+        &config.plugins.wasm_modules,
         &workspace,
         config.agent.output.clone(),
         config.sandbox.timeout,
@@ -81,7 +88,24 @@ pub fn build_dispatcher(
             .context("registering plugin")?;
     }
 
-    Ok(dispatcher)
+    // Bootstrap MCP adapter if configured.
+    let mcp_adapter = if let Some(ref mcp_config) = config.plugins.mcp {
+        let (adapter, mcp_tools) = McpAdapter::bootstrap(mcp_config)
+            .map_err(|e| anyhow::anyhow!("MCP bootstrap failed: {}", e))?;
+        for tool in mcp_tools {
+            dispatcher
+                .register_erased(tool)
+                .context("registering MCP tool")?;
+        }
+        Some(adapter)
+    } else {
+        None
+    };
+
+    Ok(BuiltTools {
+        dispatcher,
+        mcp_adapter,
+    })
 }
 
 fn sandbox_mode_from_config(mode: &ConfigSandboxMode) -> SandboxMode {
@@ -176,12 +200,13 @@ plugins:
 
         let result = build_dispatcher(&config, workspace, vec![]);
         assert!(result.is_ok(), "build_dispatcher should succeed: {:?}", result.err());
-        let dispatcher = result.unwrap();
-        let names = dispatcher.names();
+        let built = result.unwrap();
+        let names = built.dispatcher.names();
         assert!(names.contains(&"shell".to_string()), "should have shell tool");
         assert!(names.contains(&"read".to_string()), "should have read tool");
         assert!(names.contains(&"write".to_string()), "should have write tool");
         assert!(names.contains(&"think".to_string()), "should have think tool");
         assert!(names.contains(&"search".to_string()), "should have search tool");
+        assert!(built.mcp_adapter.is_none(), "no MCP config means no adapter");
     }
 }

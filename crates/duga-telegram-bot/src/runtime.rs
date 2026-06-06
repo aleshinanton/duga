@@ -64,7 +64,13 @@ impl TelegramRuntime {
             Arc::new(Workspace::open(&self.config.workspace.root).context("opening workspace")?);
 
         let aux_roots = vec![telegram_config.data_dir.clone()];
-        let dispatcher = build_dispatcher(&self.config, workspace.clone(), aux_roots.clone())?;
+        let built = build_dispatcher(&self.config, workspace.clone(), aux_roots.clone())?;
+        let dispatcher = built.dispatcher;
+
+        // Start MCP session (per-chat).
+        if let Some(ref adapter) = built.mcp_adapter {
+            adapter.session_start().await;
+        }
 
         // Register Telegram-specific tool: send_file
         let send_file_tool = SendFileTool::new(
@@ -233,6 +239,7 @@ impl TelegramRuntime {
             workspace,
             vec![frontend_sink, replay_sink],
             Some(system_prompt),
+            built.mcp_adapter.clone(),
         )?;
 
         // Extract the inner receiver from the bridge for the renderer.
@@ -275,6 +282,9 @@ impl TelegramRuntime {
 
             loop_impl.run(task.clone(), &mut ctx).await
         }; // ctx dropped here → borrows released
+
+        // Shut down tool lifecycles for this chat.
+        runtime.shutdown_tools().await;
 
         // Drop runtime (which holds the frontend event sink senders)
         // BEFORE awaiting the renderer.  Otherwise the renderer blocks on

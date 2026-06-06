@@ -1,3 +1,4 @@
+use crate::mcp_config::McpPluginConfig;
 use crate::ConfigError;
 pub use duga_plugin_abi::{PluginModuleConfig, WasiCapabilities};
 use duga_sandbox::binary_registry::BinaryPattern;
@@ -564,9 +565,17 @@ fn default_max_context_tokens() -> usize {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PluginConfig {
-    pub dir: PathBuf,
+    /// Directory containing WASM plugin files.
+    /// Backward compat: `dir` deserializes into this field.
+    #[serde(alias = "dir")]
+    pub wasm_dir: PathBuf,
+    /// List of WASM module configurations.
+    /// Backward compat: `modules` deserializes into this field.
+    #[serde(alias = "modules", default)]
+    pub wasm_modules: Vec<PluginModuleConfig>,
+    /// Optional MCP plugin configuration (MCP servers as plugins).
     #[serde(default)]
-    pub modules: Vec<PluginModuleConfig>,
+    pub mcp: Option<McpPluginConfig>,
 }
 
 impl Config {
@@ -940,7 +949,7 @@ plugins:
         assert_eq!(config.model, "dummy/test");
         assert_eq!(config.provider, None);
         assert_eq!(config.sandbox.timeout, Duration::from_secs(10));
-        assert_eq!(config.plugins.modules[0].name, "format-code.wasm");
+        assert_eq!(config.plugins.wasm_modules[0].name, "format-code.wasm");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod error;
+pub mod mcp_config;
 
 pub use config::{
     Config, EnvironmentConfig, FrontendConfig, KeybindingsConfig, MemoryConfig, PluginConfig,
@@ -10,3 +11,7 @@ pub use config::{
     ToolEventFormat, TuiConfig, WasiCapabilities, WorkspaceConfig,
 };
 pub use error::ConfigError;
+pub use mcp_config::{
+    expand_env_vars, server_identity_hash, McpDirectToolsMode, McpLifecycleMode,
+    McpPluginConfig, McpServerDefinition, McpSettings,
+};

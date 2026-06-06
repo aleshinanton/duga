@@ -43,11 +43,12 @@ pub async fn build_runtime(
     };
 
     let workspace = Arc::new(Workspace::open(&config.workspace.root)?);
-    let dispatcher = duga_runtime::tools::build_dispatcher(
+    let built = duga_runtime::tools::build_dispatcher(
         config,
         workspace.clone(),
         vec![],
     )?;
+    let dispatcher = built.dispatcher;
 
     // Wire up confirmation middleware if tools are configured for it.
     if let Some(confirm_tx) = confirmation_tx {
@@ -72,7 +73,7 @@ pub async fn build_runtime(
             Err(e) => tracing::warn!("Could not open session file for writing: {e}"),
         }
     }
-    let runtime = build_agent(config, llm, dispatcher, workspace, sinks, None)?;
+    let runtime = build_agent(config, llm, dispatcher, workspace, sinks, None, built.mcp_adapter)?;
 
     Ok(runtime)
 }
@@ -95,6 +96,9 @@ pub async fn run_agent(
     if let Some(h) = history {
         runtime.memory_mut().restore_history(h);
     }
+
+    // Initialize tool lifecycles (MCP connections, etc.).
+    runtime.init_tools().await;
 
     let mut ctx = LoopContext {
         config: &runtime.config.agent,
@@ -126,5 +130,10 @@ pub async fn run_agent(
             );
             &SimpleReActLoop
         });
-    loop_impl.run(task, &mut ctx).await
+    let result = loop_impl.run(task, &mut ctx).await;
+
+    // Shut down tool lifecycles.
+    runtime.shutdown_tools().await;
+
+    result
 }

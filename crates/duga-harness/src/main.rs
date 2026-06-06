@@ -43,12 +43,13 @@ async fn main() -> Result<()> {
     );
 
     let workspace = Arc::new(Workspace::open(&config.workspace.root).context("opening workspace")?);
-    let dispatcher = build_dispatcher(&config, workspace.clone(), vec![])?;
+    let built = build_dispatcher(&config, workspace.clone(), vec![])?;
+    let dispatcher = built.dispatcher;
 
     let event_sink = build_sinks(&cli, &config)?;
     let llm = build_llm(&selection.provider, &selection.model, &config)?;
 
-    // Use the shared runtime builder.
+    // Use the shared runtime builder (includes MCP adapter if configured).
     let mut runtime = build_agent(
         &config,
         llm.clone(),
@@ -56,7 +57,11 @@ async fn main() -> Result<()> {
         workspace.clone(),
         vec![event_sink],
         None,
+        built.mcp_adapter,
     )?;
+
+    // Initialize tool lifecycles (MCP connections, etc.).
+    runtime.init_tools().await;
 
     let cancellation = CancellationToken::new();
     let signal_handle = signal::setup_signal_handler(cancellation.clone());
@@ -79,10 +84,14 @@ async fn main() -> Result<()> {
         max_delegation_depth: loop_config.max_delegation_depth,
         delegation_depth: 0,
         steer: None,
-        steer_limits: None,    };
+        steer_limits: None,
+    };
 
     let result = loop_impl.run(task, &mut ctx).await;
     signal_handle.abort();
+
+    // Shut down tool lifecycles (MCP connections, etc.).
+    runtime.shutdown_tools().await;
 
     match result {
         Ok(result) => {

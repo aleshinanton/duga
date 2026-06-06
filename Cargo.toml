@@ -6,6 +6,7 @@ members = [
     "crates/duga-runtime",
     "crates/duga-telegram-bot",
     "crates/duga-tools-builtin",
+    "crates/duga-mcp",
 ]
 
 [workspace.package]

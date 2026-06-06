@@ -11,6 +11,7 @@ duga-config = { path = "../duga-config" }
 duga-core = { path = "../duga-core" }
 duga-events = { path = "../duga-events" }
 duga-llm = { path = "../duga-llm" }
+duga-mcp = { path = "../duga-mcp" }
 duga-plugin-host = { path = "../duga-plugin-host" }
 duga-sandbox = { path = "../duga-sandbox" }
 duga-tools = { path = "../duga-tools" }

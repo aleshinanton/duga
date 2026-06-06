@@ -27,6 +27,8 @@ pub struct BuiltRuntime {
     pub dispatcher: Arc<ToolDispatcher>,
     pub event_sink: Arc<dyn EventSink>,
     pub config: Config,
+    /// Optional MCP adapter (set when `plugins.mcp` is configured).
+    pub mcp_adapter: Option<Arc<duga_mcp::McpAdapter>>,
 }
 
 impl BuiltRuntime {
@@ -38,6 +40,22 @@ impl BuiltRuntime {
     /// Mutable access to conversation memory (for pre-run history restoration).
     pub fn memory_mut(&mut self) -> &mut Memory {
         &mut self.memory
+    }
+
+    /// Initialize all tools that need lifecycle setup (e.g., MCP connections).
+    /// Call once at session start, before running any agent loop.
+    pub async fn init_tools(&self) {
+        if let Some(ref adapter) = self.mcp_adapter {
+            adapter.session_start().await;
+        }
+    }
+
+    /// Shut down all tools that need lifecycle cleanup (e.g., MCP connections).
+    /// Call once at session end.
+    pub async fn shutdown_tools(&self) {
+        if let Some(ref adapter) = self.mcp_adapter {
+            adapter.session_shutdown().await;
+        }
     }
 }
 
@@ -108,6 +126,7 @@ pub fn build_agent(
     workspace: Arc<Workspace>,
     event_sinks: Vec<Arc<dyn EventSink>>,
     system_prompt: Option<String>,
+    mcp_adapter: Option<Arc<duga_mcp::McpAdapter>>,
 ) -> Result<BuiltRuntime> {
     // Build loop registry first — needed for system prompt generation.
     let mut registry = LoopRegistry::new();
@@ -176,6 +195,7 @@ pub fn build_agent(
         dispatcher,
         event_sink,
         config: config.clone(),
+        mcp_adapter,
     })
 }
 

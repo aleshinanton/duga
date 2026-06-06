@@ -12,6 +12,8 @@ duga-sandbox = { path = "../duga-sandbox" }
 duga-types = { path = "../duga-types" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+hex = "0.4"
+sha2 = "0.10"
 thiserror = "2"
 tracing = "0.1"
 

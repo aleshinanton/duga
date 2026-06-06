@@ -54,7 +54,49 @@ This project has not published versioned releases yet. Entries below summarize t
   - 172 → 197 tests (119 lib + 65 e2e + 13 config), 0 warnings.
   - Full epic at `backlog/epic-33-tui-redesign.md`.
 
-- **EPIC-17: Terminal UI Frontend — Interactive ratatui-based TUI.**  A full terminal-based interface for the duga agent, connecting to the shared runtime without duplicating any harness wiring.  Key additions:
+- **EPIC-34: MCP Proxy Adapter — connect to external MCP servers via a single `mcp()` proxy tool.**
+  Complete implementation (~1,000 lines) of a Model Context Protocol adapter that treats
+  MCP servers as plugins alongside WASM `.wasm` files. Key additions:
+  - **`duga-mcp` crate** — new crate with 10 modules: adapter, cache, client, direct,
+    lifecycle, manager, naming, proxy, proxy_modes. Depends on `rust-mcp-sdk` v0.9
+    (client-only: `stdio`, `streamable-http`).
+  - **Unified plugin config** — MCP servers fold under `plugins.mcp` alongside WASM
+    plugins. `PluginConfig` extended with backward-compat `dir`→`wasm_dir` /
+    `modules`→`wasm_modules` aliases. `McpServerDefinition`, `McpSettings`,
+    `McpLifecycleMode` (lazy/eager/keep-alive), `McpDirectToolsMode` (bool | list).
+    Env var interpolation (`${VAR}`, `$env:VAR`) and `~` expansion.
+  - **MCP client wrapper** — `connect_stdio()` via `StdioTransport::create_with_server_launch`,
+    `connect_http()` via `ClientStreamableTransport` with bearer token + custom headers.
+    Cursor-paginated `list_tools()`, `call_tool()` with `ContentBlock` text extraction.
+  - **Metadata cache** — disk-backed JSON at `~/.duga/mcp-cache.json`, atomic
+    `.tmp`→`rename()`, SHA-256 identity hash invalidation, 7-day TTL, version tag.
+  - **Server manager** — connection dedup via `tokio::sync::Notify` in-flight tracking,
+    `call_tool()` delegates to real MCP connection, `populate_tool_cache()` fetches
+    `list_tools()` and caches schemas.
+  - **Lifecycle manager** — background 30s health-check loop, eager/keep-alive startup
+    connection, idle timeout for lazy servers, graceful shutdown with cache flush.
+  - **Tool naming + fuzzy lookup** — `ToolPrefixMode` (server/short/none), normalize
+    (lowercase + `_`↔`-`), `is_excluded()` matches original + prefixed names,
+    fuzzy `lookup_tool()` with exact → raw → fuzzy search order.
+  - **Proxy modes** — `execute_call()` (real `tools/call` via manager), `execute_connect()`
+    (connect + populate cache + list tools), `execute_describe()` (fuzzy + optional
+    schema), `execute_search()` (whitespace OR + regex), `execute_list()`, `execute_status()`.
+  - **`McpProxyTool`** — implements `duga_tools::Tool`, registered as `mcp` in dispatcher.
+    Dynamic `description()` built from configured server list. Dispatch priority:
+    tool → connect → describe → search → server → list.
+  - **Direct tools registrar** — `resolve_direct_tools()` builds `ErasedTool` wrappers
+    per promoted tool from cache, respecting `exclude_tools` and `McpDirectToolsMode`.
+  - **`McpAdapter`** — `bootstrap()` (sync, returns tools for dispatcher),
+    `session_start()` (connect eager/keep-alive, populate metadata, start health checks),
+    `session_shutdown()` (flush cache, graceful close). `AtomicU64` generation counter
+    for stale init discard.
+  - **`BuiltRuntime::init_tools()` / `shutdown_tools()`** — abstract lifecycle hooks.
+    Frontends (harness, Telegram, TUI) call only these two methods — zero MCP imports.
+    Adding `plugins.python` or `plugins.lua` in the future only extends the init/shutdown
+    chain in one place.
+  - **37 unit tests** in `duga-mcp` covering config parsing, naming, cache roundtrip,
+    direct tools resolution, adapter bootstrap, proxy tool, manager, and lifecycle.
+  - Full epic at `backlog/epic-34-mcp-adapter.md`.  A full terminal-based interface for the duga agent, connecting to the shared runtime without duplicating any harness wiring.  Key additions:
   - **`duga-tui` crate** — ratatui + crossterm binary with async event loop, raw mode / alternate screen lifecycle, bracketed paste, and focus tracking.
   - **App state machine** — `Idle → Running → Idle` with cancellation token support.  Event loop merges crossterm input (spawn_blocking thread), frontend bridge events, and 50ms ticks via `tokio::select!`.
   - **Transcript pane** — conversation history with `TranscriptItem` variants (UserMessage, AssistantMessage, ToolCallBlock, DelegationNotice, MemoryNotice, SystemMessage).  Marks streaming text as `is_streaming` until `RunFinished` arrives.  Auto-scrolls to bottom; manual scroll disables auto-follow.
