@@ -261,7 +261,8 @@ impl OpenAiRequest {
         tools: &[ToolSchema],
         thinking_level: ThinkingLevel,
     ) -> Result<Self, LlmError> {
-        let messages = repair_reasoning_history_for_request(model, thinking_level, messages);
+        let messages = repair_reasoning_history_for_request(model, messages);
+        let reasoning_effort = reasoning_effort_for_request(model, thinking_level)?;
         Ok(Self {
             model: model.into(),
             messages: messages
@@ -271,19 +272,17 @@ impl OpenAiRequest {
             tools: tools.iter().map(OpenAiToolSpec::from_schema).collect(),
             stream: None,
             stream_options: None,
-            reasoning_effort: thinking_level.to_api_param().map(ToOwned::to_owned),
+            reasoning_effort,
         })
     }
 }
 
 fn repair_reasoning_history_for_request(
     model: &str,
-    thinking_level: ThinkingLevel,
     messages: &[Message],
 ) -> Vec<Message> {
-    let needs_reasoning_history = thinking_level != ThinkingLevel::Off
-        || model_uses_reasoning_history(model)
-        || has_assistant_reasoning(messages);
+    let needs_reasoning_history =
+        model_uses_reasoning_history(model) || has_assistant_reasoning(messages);
     if !needs_reasoning_history {
         return messages.to_vec();
     }
@@ -355,6 +354,30 @@ fn assistant_has_tool_calls(message: &Message) -> bool {
         .content
         .iter()
         .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+}
+
+fn reasoning_effort_for_request(
+    model: &str,
+    thinking_level: ThinkingLevel,
+) -> Result<Option<String>, LlmError> {
+    match thinking_level {
+        ThinkingLevel::Off => Ok(None),
+        ThinkingLevel::Low | ThinkingLevel::Medium | ThinkingLevel::High => {
+            Ok(thinking_level.to_api_param().map(ToOwned::to_owned))
+        }
+        ThinkingLevel::Xhigh | ThinkingLevel::Max if model_supports_extended_reasoning(model) => {
+            Ok(thinking_level.to_api_param().map(ToOwned::to_owned))
+        }
+        ThinkingLevel::Xhigh | ThinkingLevel::Max => Err(LlmError::InvalidRequest(format!(
+            "OpenAI reasoning_effort supports only low, medium, and high for model '{model}'; \
+             use a DeepSeek-compatible model for {:?}",
+            thinking_level
+        ))),
+    }
+}
+
+fn model_supports_extended_reasoning(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("deepseek")
 }
 
 #[derive(Debug, Serialize)]
@@ -836,12 +859,16 @@ mod tests {
     }
 
     #[test]
-    fn request_repairs_when_thinking_level_enabled() {
+    fn request_preserves_tool_history_when_thinking_level_enabled() {
+        let tc = make_tool_call("read", serde_json::json!({"path": "file.txt"}));
+        let tool_id = tc.id.clone();
         let request = OpenAiRequest::from_duga(
             "gpt-4.1",
             &[
                 Message::user("task"),
-                Message::assistant(Some("assistant text".into()), vec![], None),
+                Message::assistant(None, vec![tc], None),
+                Message::tool(tool_id.as_uuid(), "file contents".into()),
+                Message::assistant(Some("done".into()), vec![], None),
             ],
             &[],
             ThinkingLevel::Medium,
@@ -850,11 +877,39 @@ mod tests {
         let json = serde_json::to_value(request).unwrap();
 
         assert_eq!(json["reasoning_effort"], "medium");
-        assert_eq!(json["messages"][1]["role"], "system");
-        assert!(json["messages"][1]["content"]
-            .as_str()
-            .unwrap()
-            .contains("assistant text"));
+        assert_eq!(json["messages"][1]["role"], "assistant");
+        assert!(json["messages"][1].get("tool_calls").is_some());
+        assert_eq!(json["messages"][2]["role"], "tool");
+        assert_eq!(json["messages"][3]["role"], "assistant");
+    }
+
+    #[test]
+    fn request_rejects_extended_reasoning_for_openai_models() {
+        let error = OpenAiRequest::from_duga(
+            "gpt-4.1",
+            &[Message::user("task")],
+            &[],
+            ThinkingLevel::Xhigh,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(error, LlmError::InvalidRequest(message) if message.contains("gpt-4.1"))
+        );
+    }
+
+    #[test]
+    fn request_allows_extended_reasoning_for_deepseek_models() {
+        let request = OpenAiRequest::from_duga(
+            "deepseek-v4-flash",
+            &[Message::user("task")],
+            &[],
+            ThinkingLevel::Max,
+        )
+        .unwrap();
+        let json = serde_json::to_value(request).unwrap();
+
+        assert_eq!(json["reasoning_effort"], "max");
     }
 
     #[test]
