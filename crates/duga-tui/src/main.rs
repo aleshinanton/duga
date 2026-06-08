@@ -34,7 +34,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_tracing(cli.verbose)?;
+    init_tracing(cli.verbose, &cli.replay_dir)?;
 
     let config = Config::load(&cli.config)
         .with_context(|| format!("loading config {}", cli.config.display()))?;
@@ -49,13 +49,36 @@ async fn main() -> Result<()> {
     duga_tui::terminal::run_tui(config, &cli.replay_dir).await
 }
 
-fn init_tracing(verbose: bool) -> Result<()> {
+/// Initialize tracing. The TUI owns stdout (ratatui draws into it) and
+/// stderr can leak into the alternate-screen viewport on some terminals,
+/// so we route logs to a file under the replay dir instead of either of
+/// those streams. The path can be overridden with DUGA_TUI_LOG.
+fn init_tracing(verbose: bool, replay_dir: &std::path::Path) -> Result<()> {
     let filter = if verbose { "info" } else { "warn" };
+
+    let log_path = match std::env::var("DUGA_TUI_LOG").ok() {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ => replay_dir.join("duga-tui.log"),
+    };
+
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("opening TUI log file {}", log_path.display()))?;
+    let writer = std::sync::Mutex::new(file);
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)),
         )
+        .with_ansi(false)
+        .with_writer(writer)
         .try_init()
         .map_err(|e| anyhow::anyhow!("initializing tracing: {e}"))
 }

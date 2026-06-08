@@ -1029,6 +1029,43 @@ impl App {
 
     /// Submit the current prompt and start an agent run.
     pub fn submit_prompt(&mut self) {
+        // Guard against starting a new run on top of an active one.
+        // The previous behavior overwrote `active_cancel_token` and spawned
+        // a second `run_agent` task, orphaning the first run and
+        // interleaving events in the same session file.
+        if matches!(self.state, AppState::Running { .. }) {
+            let pending = self.editor.take_text();
+            let trimmed = pending.trim();
+
+            // If the user literally typed a cancel intent, treat it as Cancel
+            // instead of as a prompt or as steering. This matches the
+            // intuitive UX even though the documented cancel binding is Esc.
+            if matches!(
+                trimmed.to_ascii_lowercase().as_str(),
+                "cancel" | "stop" | "abort" | "/cancel" | "/stop"
+            ) {
+                self.cancel_run();
+                return;
+            }
+
+            // Otherwise: refuse to start a new run, restore the text so the
+            // user doesn't lose it, and tell them what to do.
+            if !pending.is_empty() {
+                self.editor.insert_text(&pending);
+            }
+            self.transcript.push(TranscriptItem::SystemMessage {
+                text: "A run is in progress. Press Esc (or Ctrl+C) to cancel, or use Shift+Enter to send steering guidance."
+                    .into(),
+                level: SystemLevel::Warn,
+                timestamp: Instant::now(),
+            });
+            self.banner.show(
+                crate::banner::BannerLevel::Warn,
+                "Run in progress \u{2014} Esc cancels, Shift+Enter steers.".into(),
+            );
+            return;
+        }
+
         let task = self.editor.take_text();
         if task.trim().is_empty() {
             return;
@@ -1588,6 +1625,83 @@ plugins:
             }),
         });
         assert!(matches!(app.state, AppState::Idle));
+    }
+
+    #[test]
+    fn submit_prompt_during_run_does_not_start_second_run() {
+        // Regression: typing a prompt while a run is active used to overwrite
+        // `active_cancel_token` and spawn a second `run_agent` task,
+        // orphaning the first run. Submit should now be a no-op (modulo a
+        // warning banner) and the original cancel token must be preserved.
+        let mut app = make_app();
+        let initial_token = CancellationToken::new();
+        app.active_cancel_token = Some(initial_token.clone());
+        app.state = AppState::Running {
+            run_id: 42,
+            cancel_requested: false,
+            loop_name: "simple_react".into(),
+        };
+
+        app.editor.insert_text("another prompt");
+        app.submit_prompt();
+
+        // State must not have advanced to a new run.
+        match &app.state {
+            AppState::Running { run_id, cancel_requested, .. } => {
+                assert_eq!(*run_id, 42, "run_id must not be replaced");
+                assert!(!cancel_requested, "original run must not be flagged cancelled");
+            }
+            other => panic!("expected AppState::Running, got {other:?}"),
+        }
+
+        // The original cancel token must still be the one we installed:
+        // cancelling via our retained handle must be visible on the stored
+        // handle. If submit_prompt had created a fresh token, the stored
+        // handle would still be non-cancelled.
+        initial_token.cancel();
+        let stored = app.active_cancel_token.as_ref().expect("cancel token kept");
+        assert!(
+            stored.is_cancelled(),
+            "submit_prompt must not replace the active cancel token"
+        );
+
+        // Editor text must be preserved so the user does not lose input.
+        assert_eq!(app.editor.text(), "another prompt");
+
+        // A warning was added to the transcript.
+        let warned = app.transcript.items().iter().any(|item| matches!(
+            item,
+            TranscriptItem::SystemMessage { level: SystemLevel::Warn, text, .. }
+                if text.contains("Esc")
+        ));
+        assert!(warned, "warning banner must explain how to cancel");
+    }
+
+    #[test]
+    fn submit_prompt_during_run_cancels_when_text_is_cancel_word() {
+        // If the user literally typed `cancel`, treat it as Cancel intent
+        // rather than as a new prompt or as steering. This matches the
+        // intuitive UX even though Esc is the documented keybinding.
+        for word in ["cancel", "Cancel", "STOP", "abort", "/cancel"] {
+            let mut app = make_app();
+            app.active_cancel_token = Some(CancellationToken::new());
+            app.state = AppState::Running {
+                run_id: 7,
+                cancel_requested: false,
+                loop_name: "simple_react".into(),
+            };
+            app.editor.insert_text(word);
+            app.submit_prompt();
+
+            match &app.state {
+                AppState::Running { run_id, cancel_requested, .. } => {
+                    assert_eq!(*run_id, 7);
+                    assert!(*cancel_requested, "`{word}` should request cancel");
+                }
+                other => panic!("expected AppState::Running, got {other:?}"),
+            }
+            assert!(app.editor.text().is_empty(), "cancel word should be consumed");
+        }
     }
 
     #[test]
