@@ -3,6 +3,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use ratatui::style::Color;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
 
@@ -63,7 +64,7 @@ fn push_item(out: &mut Vec<Line<'static>>, item: &TranscriptItem, w: usize, them
                 SystemLevel::Warn => ("!", "Warn"),
                 SystemLevel::Error => ("X", "Error"),
             };
-            push_card(out, &format!("{icon} {title}"), text, w, theme, false, false);
+            push_card(out, format!("{icon} {title}"), text, w, theme, false, false);
         }
         TranscriptItem::UserMessage { text, .. } => push_card(out, "You", text, w, theme, false, false),
         TranscriptItem::AssistantMessage { text, is_streaming, .. } => {
@@ -90,10 +91,18 @@ fn push_item(out: &mut Vec<Line<'static>>, item: &TranscriptItem, w: usize, them
             } else {
                 description.clone()
             };
-            push_card(out, &format!("{icon} {tool_name}"), &body, w, theme, *is_running, false);
+            let title: Line<'static> = if *is_success == Some(false) {
+                Line::from(Span::styled(
+                    format!("{icon} {tool_name}"),
+                    Style::default().fg(Color::LightRed),
+                ))
+            } else {
+                Line::from(format!("{icon} {tool_name}"))
+            };
+            push_card(out, title, &body, w, theme, *is_running, false);
         }
         TranscriptItem::DelegationNotice { from, to, reason, .. } => {
-            push_card(out, &format!(">> {from} -> {to}"), reason, w, theme, false, false);
+            push_card(out, format!(">> {from} -> {to}"), reason, w, theme, false, false);
         }
         TranscriptItem::MemoryNotice { before_tokens, after_tokens, .. } => {
             push_card(out, "Memory", &format!("{before_tokens} -> {after_tokens} tokens"), w, theme, false, false);
@@ -101,10 +110,9 @@ fn push_item(out: &mut Vec<Line<'static>>, item: &TranscriptItem, w: usize, them
     }
 }
 
-fn push_card(out: &mut Vec<Line<'static>>, title: &str, body: &str, w: usize, theme: &Theme, streaming: bool, markdown: bool) {
+fn push_card(out: &mut Vec<Line<'static>>, title: impl Into<Line<'static>>, body: &str, w: usize, theme: &Theme, streaming: bool, markdown: bool) {
     let style = Style::default().fg(theme.colors.text).bg(theme.colors.bg);
     let border_style = Style::default().fg(theme.colors.border).bg(theme.colors.bg);
-    let _title_style = Style::default().fg(theme.colors.primary).bg(theme.colors.bg);
 
     let inner_w = w.saturating_sub(6);
 
@@ -130,7 +138,7 @@ fn push_card(out: &mut Vec<Line<'static>>, title: &str, body: &str, w: usize, th
     let mut tmp = Buffer::empty(Rect::new(0, 0, card_w, h));
 
     let widget = Paragraph::new(Text::from(card_body))
-        .block(Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).padding(Padding::horizontal(1)).title(title).border_style(border_style))
+        .block(Block::default().borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED).padding(Padding::horizontal(1)).title(title.into()).border_style(border_style))
         .style(style);
     widget.render(Rect::new(0, 0, card_w, h), &mut tmp);
 

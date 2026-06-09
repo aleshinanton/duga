@@ -139,6 +139,9 @@ pub struct Transcript {
     streaming_index: Option<usize>,
     /// Index of the currently-streaming thinking block (if any).
     streaming_thinking_index: Option<usize>,
+    /// Default expand state for new collapsible blocks.
+    /// When true, new thinking/tool blocks start expanded.
+    pub default_expanded: bool,
 }
 
 impl Transcript {
@@ -149,6 +152,7 @@ impl Transcript {
             tool_call_index: std::collections::HashMap::new(),
             streaming_index: None,
             streaming_thinking_index: None,
+            default_expanded: false,
         }
     }
 
@@ -262,7 +266,7 @@ impl Transcript {
         }
     }
 
-    /// Mark streaming thinking as complete (auto-collapse).
+    /// Mark streaming thinking as complete. Respects default_expanded preference.
     pub fn finish_thinking(&mut self) {
         if let Some(idx) = self.streaming_thinking_index.take() {
             if let Some(TranscriptItem::ThinkingBlock {
@@ -273,7 +277,7 @@ impl Transcript {
             }) = self.items.get_mut(idx)
             {
                 *is_streaming = false;
-                *is_expanded = false;
+                *is_expanded = self.default_expanded;
                 *scroll_offset = 0;
             }
         }
@@ -345,11 +349,11 @@ impl Transcript {
                 *is_running = false;
                 *succ = Some(is_success);
                 *output = tool_output;
-                // Expand on failure, collapse on success
+                // Expand on failure, respect default_expanded on success
                 if !is_success {
                     *is_expanded = true;
                 } else {
-                    *is_expanded = false;
+                    *is_expanded = self.default_expanded;
                 }
             }
         }
@@ -426,6 +430,7 @@ impl Transcript {
         self.streaming_index = None;
         self.streaming_thinking_index = None;
         self.scroll = ScrollState::new();
+        self.default_expanded = false;
     }
 }
 

@@ -532,6 +532,8 @@ impl App {
                     _ => false,
                 });
                 let target_expanded = any_collapsed; // expand if any collapsed, collapse otherwise
+                // Persist this as the default for new blocks.
+                self.transcript.default_expanded = target_expanded;
                 let to_toggle: Vec<usize> = self
                     .transcript
                     .items()
@@ -777,10 +779,14 @@ impl App {
                     "●",
                     format!("Tool: {tool_name} started — {description}"),
                 ));
-                let is_expanded = match self.tool_event_format {
-                    duga_config::ToolEventFormat::Full => true,
-                    duga_config::ToolEventFormat::Collapsed => false,
-                    duga_config::ToolEventFormat::FinalOnly => false, // Hide until finished
+                let is_expanded = if self.transcript.default_expanded {
+                    true
+                } else {
+                    match self.tool_event_format {
+                        duga_config::ToolEventFormat::Full => true,
+                        duga_config::ToolEventFormat::Collapsed => false,
+                        duga_config::ToolEventFormat::FinalOnly => false, // Hide until finished
+                    }
                 };
                 self.current_tool_call_id = Some(tool_call_id.clone());
                 if self.tool_event_format != duga_config::ToolEventFormat::FinalOnly {
@@ -835,7 +841,7 @@ impl App {
                             raw_args: None,
                             is_running: false,
                             is_success: Some(success),
-                            is_expanded: !success, // Expand on failure
+                            is_expanded: self.transcript.default_expanded || !success,
                             timestamp: Instant::now(),
                             output,
                         });
