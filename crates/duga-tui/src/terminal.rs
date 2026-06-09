@@ -5,9 +5,8 @@
 //! and periodic ticks.
 
 use anyhow::{Context, Result};
-use crossterm::event::{EnableBracketedPaste, EnableFocusChange, EnableMouseCapture, DisableMouseCapture};
+use crossterm::event::{DisableMouseCapture, EnableBracketedPaste, EnableFocusChange, EnableMouseCapture};
 use crossterm::execute;
-use crossterm::style::Print;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -41,13 +40,6 @@ impl TerminalGuard {
             EnableMouseCapture
         )
         .context("entering alternate screen")?;
-        // any-event tracking — required for Mac trackpad scroll.
-        // Windows Console API handles this via EnableMouseCapture already.
-        #[cfg(unix)]
-        {
-            execute!(out, Print("\x1b[?1003h"))
-                .context("enabling any-event mouse tracking")?;
-        }
         Ok(Self)
     }
 }
@@ -56,10 +48,6 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut out = stdout();
         let _ = execute!(out, LeaveAlternateScreen, DisableMouseCapture);
-        #[cfg(unix)]
-        {
-            let _ = execute!(out, Print("\x1b[?1003l"));
-        }
         let _ = disable_raw_mode();
     }
 }
@@ -158,9 +146,19 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
         app.transcript = transcript;
     }
 
-    // Main event loop.
+    // Main event loop — event-driven with dirty-flag rendering.
+    // Blocks on the event channel when idle (no busy-wait).
     loop {
-        // Drain all pending events before rendering.
+        // Block until the next event arrives.
+        match event_rx.recv().await {
+            Some(event) => {
+                app.update(event);
+            }
+            None => break, // all senders dropped
+        }
+
+        // Drain any additional events that arrived during update()
+        // so we batch-process burst events before rendering.
         while let Ok(event) = event_rx.try_recv() {
             app.update(event);
         }
@@ -169,11 +167,15 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
             break;
         }
 
-        terminal
-            .draw(|frame| {
-                app.render(frame);
-            })
-            .context("rendering frame")?;
+        // Only redraw if state actually changed.
+        if app.needs_redraw() {
+            terminal
+                .draw(|frame| {
+                    app.render(frame);
+                })
+                .context("rendering frame")?;
+            app.mark_rendered();
+        }
     }
 
     // Cleanup.

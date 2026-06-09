@@ -144,6 +144,8 @@ pub struct App {
     term_height: u16,
     /// Whether the sidebar was actually rendered in the last frame.
     sidebar_rendered: bool,
+    /// Whether the UI needs a redraw (set by state mutations, cleared after render).
+    needs_redraw: bool,
 
     // ── Session management ──────────────────────────────────────────────
     pub sessions_dir: PathBuf,
@@ -217,6 +219,7 @@ impl App {
             term_width: crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80),
             term_height: crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24),
             sidebar_rendered: false,
+            needs_redraw: true, // initial render needed
             sessions_dir,
             current_session_id: None,
             pending_history: None,
@@ -276,14 +279,25 @@ impl App {
     /// Handle a single `AppEvent` and update internal state.
     pub fn update(&mut self, event: AppEvent) {
         // Poll for pending confirmation requests before processing events.
-        self.poll_confirmations();
+        let confirm_shown = self.poll_confirmations();
 
         match event {
-            AppEvent::Crossterm(ct_event) => self.handle_crossterm(ct_event),
-            AppEvent::Frontend(fe) => self.handle_frontend_event(fe),
-            AppEvent::Tick => self.handle_tick(),
+            AppEvent::Crossterm(ct_event) => {
+                self.handle_crossterm(ct_event);
+                self.needs_redraw = true;
+            }
+            AppEvent::Frontend(fe) => {
+                self.handle_frontend_event(fe);
+                self.needs_redraw = true;
+            }
+            AppEvent::Tick => {
+                if self.handle_tick() || confirm_shown {
+                    self.needs_redraw = true;
+                }
+            }
             AppEvent::RunFinished { run_id, result } => {
                 self.handle_run_finished(run_id, result);
+                self.needs_redraw = true;
             }
         }
     }
@@ -906,15 +920,21 @@ impl App {
         }
     }
 
-    pub fn handle_tick(&mut self) {
+    /// Process a tick. Returns true if visible state changed (requires redraw).
+    pub fn handle_tick(&mut self) -> bool {
+        let was_active = self.banner.is_active();
         // Auto-dismiss banner
         self.banner.tick();
+        let banner_changed = was_active && !self.banner.is_active();
+
+        let mut changed = banner_changed;
 
         // Poll for a session selection from the picker overlay.
         if let Some(ref mut rx) = self.session_result_rx {
             if let Ok(id) = rx.try_recv() {
                 self.session_result_rx = None;
                 self.switch_session(id);
+                changed = true;
             }
         }
 
@@ -931,7 +951,10 @@ impl App {
             && self.pending_confirm_tx.is_none()
         {
             self.show_delete_confirmation();
+            changed = true;
         }
+
+        changed
     }
 
     fn handle_run_finished(&mut self, run_id: u64, result: Result<LoopResult, AgentError>) {
@@ -1213,10 +1236,11 @@ impl App {
     }
 
     /// Poll for pending confirmation requests and show the dialog.
-    fn poll_confirmations(&mut self) {
+    /// Returns true if a new confirmation dialog was shown.
+    fn poll_confirmations(&mut self) -> bool {
         // Don't show a new confirmation if one is already active.
         if self.active_confirm_dialog.is_some() {
-            return;
+            return false;
         }
 
         if let Some(ref mut rx) = self.confirmation_rx {
@@ -1229,9 +1253,11 @@ impl App {
                 self.active_confirm_dialog = Some(dialog);
                 self.pending_confirm_tx = Some(pending.response_tx);
                 self.confirm_kind = Some(ConfirmKind::ToolExecution);
-                break; // Only handle one at a time
+                return true;
             }
         }
+
+        false
     }
 
     /// Show a confirmation dialog for session deletion.
@@ -1322,6 +1348,16 @@ impl App {
     /// Check if the app should exit.
     pub fn should_quit(&self) -> bool {
         self.should_quit
+    }
+
+    /// Whether the UI needs redrawing.
+    pub fn needs_redraw(&self) -> bool {
+        self.needs_redraw
+    }
+
+    /// Mark the UI as rendered (clear the dirty flag).
+    pub fn mark_rendered(&mut self) {
+        self.needs_redraw = false;
     }
 
     // ── Rendering ───────────────────────────────────────────────────────
