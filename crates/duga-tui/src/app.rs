@@ -1549,8 +1549,9 @@ impl App {
             let scroll = self.editor.scroll_offset();
             let visual_line = cursor_line.saturating_sub(scroll);
             if visual_line < visible_rows {
-                // +2 accounts for the "> " prompt prefix.
-                let x = inner.x + 2 + cursor_col as u16;
+                // +2 for "> " prefix only on the first visual line.
+                let prefix = if visual_line == 0 { 2u16 } else { 0 };
+                let x = inner.x + prefix + cursor_col as u16;
                 let y = inner.y + visual_line as u16;
                 frame.set_cursor_position(ratatui::layout::Position { x, y });
             }
