@@ -8,6 +8,17 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use unicode_width::UnicodeWidthChar;
 
+/// Cached result of wrapping the full buffer for a specific display width.
+#[derive(Clone, Debug)]
+struct WrapCache {
+    /// Display width this cache was computed for.
+    text_width: u16,
+    /// Buffer length at the time the cache was computed (dirtiness check).
+    buffer_len: usize,
+    /// All wrapped lines.
+    lines: Vec<String>,
+}
+
 /// Multi-line input editor with history and cursor tracking.
 #[derive(Clone, Debug)]
 pub struct Editor {
@@ -23,6 +34,8 @@ pub struct Editor {
     history_index: Option<usize>,
     /// Placeholder text shown when buffer is empty.
     placeholder: String,
+    /// Cache of wrapped lines. Invalidated whenever `buffer` changes.
+    wrap_cache: Option<WrapCache>,
 }
 
 impl Editor {
@@ -34,6 +47,7 @@ impl Editor {
             history: Vec::new(),
             history_index: None,
             placeholder: "Type a task or question…".into(),
+            wrap_cache: None,
         }
     }
 
@@ -72,6 +86,7 @@ impl Editor {
         self.cursor = 0;
         self.scroll_offset = 0;
         self.history_index = None;
+        self.invalidate_cache();
         text
     }
 
@@ -80,6 +95,60 @@ impl Editor {
         self.buffer.insert_str(self.cursor, text);
         self.cursor += text.len();
         self.history_index = None;
+        self.invalidate_cache();
+    }
+
+    /// Insert text at cursor position, enforcing a maximum line limit.
+    /// If the insert would cause the total logical lines (separated by \\n)
+    /// to exceed `max_lines`, the text is truncated at the last line boundary
+    /// that keeps the total within the limit.  Returns the number of bytes
+    /// actually inserted.
+    pub fn insert_text_safe_lines(&mut self, text: &str, max_lines: usize) -> usize {
+        let current_lines = if self.buffer.is_empty() { 0 } else { self.buffer.lines().count() };
+        if current_lines >= max_lines {
+            return 0;
+        }
+        let available = max_lines - current_lines;
+
+        // Split the new text into lines and count them
+        let text_lines: Vec<&str> = text.split('\n').collect();
+        if text_lines.len() <= available {
+            // Entire paste fits
+            let len = text.len();
+            if len > 0 {
+                self.insert_text(text);
+            }
+            return len;
+        }
+
+        // Only take the first `available` lines.
+        // Find the byte offset where the `available`-th line ends (the newline before it).
+        let mut byte_pos = 0usize;
+        let mut lines_found = 0usize;
+        for (i, _) in text.char_indices() {
+            if text[i..].starts_with('\n') {
+                lines_found += 1;
+                if lines_found == available {
+                    byte_pos = i;
+                    break;
+                }
+            }
+        }
+        // If we matched exactly `available` newlines, `byte_pos` points to the last
+        // allowed newline.  Take up to that byte (inclusive of newline).
+        // If we never found enough newlines, take all text (but we already handled
+        // the "fits" case above, so this shouldn't happen).
+        if byte_pos > 0 {
+            let to_insert = &text[..=byte_pos]; // include the newline
+            let len = to_insert.len();
+            if len > 0 {
+                self.insert_text(to_insert);
+            }
+            len
+        } else {
+            // No room for even one line? Should not happen because available > 0.
+            0
+        }
     }
 
     /// Insert a character at cursor position.
@@ -87,12 +156,40 @@ impl Editor {
         self.buffer.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
         self.history_index = None;
+        self.invalidate_cache();
     }
 
     /// Insert a newline at cursor position.
     pub fn insert_newline(&mut self) {
         self.insert_char('\n');
     }
+
+    // ── Cache management ──────────────────────────────────────────────
+
+    /// Invalidate the wrap cache so it is recomputed on the next access.
+    fn invalidate_cache(&mut self) {
+        self.wrap_cache = None;
+    }
+
+    /// Ensure the wrap cache is up-to-date for the given `text_width`.
+    /// Returns a reference to the cached wrapped lines.
+    fn ensure_cache(&mut self, text_width: u16) -> &[String] {
+        let fresh = match &self.wrap_cache {
+            Some(c) => c.text_width != text_width || c.buffer_len != self.buffer.len(),
+            None => true,
+        };
+        if fresh {
+            let lines = wrap_lines(&self.buffer, text_width);
+            self.wrap_cache = Some(WrapCache {
+                text_width,
+                buffer_len: self.buffer.len(),
+                lines,
+            });
+        }
+        &self.wrap_cache.as_ref().unwrap().lines
+    }
+
+    // ── Key handling ──────────────────────────────────────────────────
 
     /// Handle a key event. Returns true if the key was consumed.
     pub fn handle_key(&mut self, key: &KeyEvent) -> EditorAction {
@@ -306,6 +403,7 @@ impl Editor {
             let prev = self.prev_char_boundary(self.cursor);
             self.buffer.replace_range(prev..self.cursor, "");
             self.cursor = prev;
+            self.invalidate_cache();
         }
     }
 
@@ -313,6 +411,7 @@ impl Editor {
         if self.cursor < self.buffer.len() {
             let next = self.next_char_boundary(self.cursor);
             self.buffer.replace_range(self.cursor..next, "");
+            self.invalidate_cache();
         }
     }
 
@@ -335,6 +434,7 @@ impl Editor {
         if let Some(idx) = self.history_index {
             self.buffer = self.history[idx].clone();
             self.cursor = self.buffer.len();
+            self.invalidate_cache();
         }
     }
 
@@ -347,12 +447,14 @@ impl Editor {
                 self.history_index = Some(idx + 1);
                 self.buffer = self.history[idx + 1].clone();
                 self.cursor = self.buffer.len();
+                self.invalidate_cache();
             }
             Some(_) => {
                 // Reached the end of history; restore fresh buffer
                 self.history_index = None;
                 self.buffer.clear();
                 self.cursor = 0;
+                self.invalidate_cache();
             }
         }
     }
@@ -416,8 +518,9 @@ impl Editor {
     }
 
     /// Total number of wrapped lines for the full buffer at `text_width`.
-    pub fn wrapped_line_count(&self, text_width: u16) -> usize {
-        line_count(&self.buffer, text_width)
+    /// Uses the wrap cache for O(1) after the first call in a frame.
+    pub fn wrapped_line_count(&mut self, text_width: u16) -> usize {
+        self.ensure_cache(text_width).len()
     }
 
     /// Adjust `scroll_offset` so the cursor line is visible within
@@ -444,8 +547,14 @@ impl Editor {
     /// Return the text that should be visible given the current scroll
     /// offset.  The returned string is pre-wrapped at `text_width` so
     /// each embedded newline corresponds to one display row.
-    pub fn visible_text(&self, text_width: u16, visible_rows: usize) -> String {
-        extract_lines(&self.buffer, text_width, self.scroll_offset, visible_rows)
+    pub fn visible_text(&mut self, text_width: u16, visible_rows: usize) -> String {
+        let skip = self.scroll_offset;
+        let lines = self.ensure_cache(text_width);
+        if skip >= lines.len() {
+            return String::new();
+        }
+        let end = (skip + visible_rows).min(lines.len());
+        lines[skip..end].join("\n")
     }
 }
 
@@ -467,30 +576,6 @@ pub enum EditorAction {
 }
 
 // ── Wrapping helpers (free functions) ──────────────────────────────────────
-
-/// Count the number of wrapped lines for `text` at the given display width.
-fn line_count(text: &str, width: u16) -> usize {
-    if width == 0 || text.is_empty() {
-        return 1; // one (possibly empty) line
-    }
-    let mut lines = 1usize;
-    let mut col = 0usize;
-    for ch in text.chars() {
-        if ch == '\n' {
-            lines += 1;
-            col = 0;
-        } else {
-            let w = ch.width().unwrap_or(0).max(1);
-            if col + w > width as usize {
-                lines += 1;
-                col = w;
-            } else {
-                col += w;
-            }
-        }
-    }
-    lines
-}
 
 /// Walk `text` and return the (line_index, column) after the last character.
 fn wrap_position(text: &str, width: u16) -> (usize, usize) {
@@ -520,36 +605,26 @@ fn wrap_position(text: &str, width: u16) -> (usize, usize) {
     (line, col)
 }
 
-/// Wrap `text` into lines according to display width, then return only
-/// `count` lines starting at `skip`.
-fn extract_lines(text: &str, width: u16, skip: usize, count: usize) -> String {
-    let all = wrap_lines(text, width);
-    if skip >= all.len() {
-        return String::new();
-    }
-    let end = (skip + count).min(all.len());
-    all[skip..end].join("\n")
-}
-
-/// Wrap `text` at `width` columns, returning a vector of display lines.
+/// Wrap `text` at `width` columns using incremental width tracking – O(n) per call.
 fn wrap_lines(text: &str, width: u16) -> Vec<String> {
     let w = width as usize;
     if w == 0 || text.is_empty() {
         return text.lines().map(|s| s.to_string()).collect();
     }
     let mut lines: Vec<String> = vec![String::new()];
+    let mut cur_w: usize = 0;
     for ch in text.chars() {
         if ch == '\n' {
             lines.push(String::new());
+            cur_w = 0;
         } else {
             let cw = ch.width().unwrap_or(0).max(1);
-            let current = lines.last_mut().unwrap();
-            // Measure current line display width.
-            let cur_w: usize = current.chars().map(|c| c.width().unwrap_or(0).max(1)).sum();
             if cur_w + cw > w {
                 lines.push(String::new());
+                cur_w = 0;
             }
             lines.last_mut().unwrap().push(ch);
+            cur_w += cw;
         }
     }
     lines
@@ -643,6 +718,176 @@ mod tests {
         assert_eq!(text, "   "); // Still returned, but not added to history
     }
 
+    // ── insert_text_safe_lines tests ──────────────────────────────────
+
+    #[test]
+    fn insert_text_safe_lines_within_limit() {
+        let mut editor = Editor::new();
+        let n = editor.insert_text_safe_lines("hello\nworld", 10);
+        assert_eq!(n, 11); // "hello\nworld" = 11 bytes
+        assert_eq!(editor.text(), "hello\nworld");
+    }
+
+    #[test]
+    fn insert_text_safe_lines_exceeds_limit() {
+        let mut editor = Editor::new();
+        editor.insert_text("line1\nline2"); // 2 lines
+        // Paste 5 lines when only 3 fit (limit = 5, current = 2, available = 3)
+        let n = editor.insert_text_safe_lines("a\nb\nc\nd\ne", 5);
+        // Only "a\nb\nc\n" should be inserted (3 lines: a, b, c with trailing newline)
+        assert_eq!(editor.text(), "line1\nline2a\nb\nc\n");
+        assert_eq!(n, 6); // "a\nb\nc\n" = 6 bytes
+    }
+
+    #[test]
+    fn insert_text_safe_lines_no_space() {
+        let mut editor = Editor::new();
+        editor.insert_text("a\nb\nc\nd\ne"); // 5 lines
+        let n = editor.insert_text_safe_lines("extra", 5); // no room
+        assert_eq!(n, 0);
+        assert_eq!(editor.text(), "a\nb\nc\nd\ne");
+    }
+
+    #[test]
+    fn insert_text_safe_lines_exact_fit() {
+        let mut editor = Editor::new();
+        editor.insert_text("line1\nline2"); // 2 lines
+        let n = editor.insert_text_safe_lines("c\nd\ne", 5); // exactly 3 fit
+        assert_eq!(n, 5); // "c\nd\ne" = 5 bytes
+        assert_eq!(editor.text(), "line1\nline2c\nd\ne");
+    }
+
+    #[test]
+    fn insert_text_safe_lines_single_line_no_newline() {
+        let mut editor = Editor::new();
+        editor.insert_text("line1\nline2\nline3"); // 3 lines
+        // Paste single line without trailing newline when only 2 slots left (limit=5)
+        let n = editor.insert_text_safe_lines("extra", 5);
+        assert_eq!(n, 5);
+        assert_eq!(editor.text(), "line1\nline2\nline3extra");
+    }
+
+    #[test]
+    fn insert_text_safe_lines_empty_buffer() {
+        let mut editor = Editor::new();
+        // Empty buffer counts as 0 lines
+        let n = editor.insert_text_safe_lines("a\nb\nc", 2);
+        // Only "a\nb\n" fits (2 lines)
+        assert_eq!(n, 4); // "a\nb\n" = 4 bytes
+        assert_eq!(editor.text(), "a\nb\n");
+    }
+
+    // ── Cache tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn cache_invalidated_on_insert() {
+        let mut editor = Editor::new();
+        editor.insert_text("hello");
+        {
+            let lines1 = editor.ensure_cache(80);
+            assert_eq!(lines1, &["hello".to_string()]);
+        }
+
+        // Buffer changed — cache should be recomputed
+        editor.insert_text(" world");
+        {
+            let lines2 = editor.ensure_cache(80);
+            assert_eq!(lines2, &["hello world".to_string()]);
+        }
+    }
+
+    #[test]
+    fn cache_invalidated_on_delete() {
+        let mut editor = Editor::new();
+        editor.insert_text("hello");
+        editor.ensure_cache(80);
+
+        editor.handle_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        let lines = editor.ensure_cache(80);
+        assert_eq!(lines, &["hell".to_string()]);
+    }
+
+    #[test]
+    fn cache_invalidated_on_take_text() {
+        let mut editor = Editor::new();
+        editor.insert_text("hello world");
+        editor.ensure_cache(80);
+
+        editor.take_text();
+        let lines = editor.ensure_cache(80);
+        // Empty buffer wraps to no lines (empty vec).
+        assert_eq!(lines, &[] as &[String]);
+    }
+
+    #[test]
+    fn cache_reused_when_buffer_unchanged() {
+        let mut editor = Editor::new();
+        editor.insert_text("hello");
+        // First access populates cache; second immediately reuses it
+        let n1 = editor.wrapped_line_count(80);
+        let n2 = editor.wrapped_line_count(80);
+        assert_eq!(n1, n2);
+        assert_eq!(n1, 1);
+    }
+
+    #[test]
+    fn cache_invalidated_on_width_change() {
+        let mut editor = Editor::new();
+        editor.insert_text("hello world");
+        editor.ensure_cache(80);
+        // Different width → recompute. At width 5, "hello world" wraps to 3 lines:
+        // "hello", " worl", "d"
+        let lines2 = editor.ensure_cache(5);
+        assert_eq!(lines2.len(), 3);
+        assert_eq!(lines2[0], "hello");
+        assert_eq!(lines2[1], " worl");
+        assert_eq!(lines2[2], "d");
+    }
+
+    #[test]
+    fn visible_text_uses_cache() {
+        let mut editor = Editor::new();
+        editor.insert_text("line1\nline2\nline3\nline4");
+        let visible = editor.visible_text(80, 2);
+        assert_eq!(visible, "line1\nline2");
+        // Second call should use cache (same buffer, same width)
+        let visible2 = editor.visible_text(80, 1);
+        assert_eq!(visible2, "line1");
+    }
+
+    #[test]
+    fn wrapped_line_count_uses_cache() {
+        let mut editor = Editor::new();
+        editor.insert_text("line1\nline2\nline3");
+        let n1 = editor.wrapped_line_count(80);
+        assert_eq!(n1, 3);
+        // No change — cache hit
+        let n2 = editor.wrapped_line_count(80);
+        assert_eq!(n2, 3);
+    }
+
+    // ── O(n) wrap_lines tests ─────────────────────────────────────────
+
+    #[test]
+    fn wrap_lines_linear_perf() {
+        // With the O(n²) bug fixed, wrapping a long line should be fast.
+        let text = "x".repeat(5000);
+        let lines = wrap_lines(&text, 80);
+        // 5000 / 80 = 62.5 → 63 lines
+        assert_eq!(lines.len(), 63);
+    }
+
+    #[test]
+    fn wrap_lines_matches_wrap_position() {
+        // These two functions should agree on wrapping boundaries.
+        let text = "abcdefghijklmnop";
+        // width 4: abc\d, efgh, ijkl, mnop
+        let lines = wrap_lines(text, 4);
+        let (cursor_line, _) = wrap_position(text, 4);
+        // cursor at end → last line index = total_lines - 1
+        assert_eq!(cursor_line, lines.len() - 1);
+    }
+
     // ── Scroll / wrapping tests ───────────────────────────────────────
 
     #[test]
@@ -716,4 +961,3 @@ mod tests {
         assert_eq!(visible, "def\nghi");
     }
 }
-

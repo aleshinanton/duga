@@ -1165,8 +1165,8 @@ fn test_epic33_banner_shows_on_error() {
 #[test]
 fn test_epic33_banner_input_enhancement() {
     let (app, _rx) = make_test_app();
-    // Input max chars should be 500 (default)
-    assert_eq!(app.tui_config.input_max_chars, 500);
+    // Input max lines should be 10000 (default)
+    assert_eq!(app.tui_config.input_max_lines, 10000);
 }
 
 #[test]
@@ -1199,7 +1199,7 @@ fn test_epic33_new_config_fields_default() {
     assert_eq!(config.show_footer, true);
     assert_eq!(config.show_header, true);
     assert_eq!(config.responsive_breakpoint, 120);
-    assert_eq!(config.input_max_chars, 500);
+    assert_eq!(config.input_max_lines, 10000);
     assert_eq!(config.banner_auto_dismiss_secs, 5);
     assert_eq!(config.event_log_max_entries, 200);
 }
@@ -1212,7 +1212,7 @@ fn test_epic33_config_backward_compat() {
     assert_eq!(tui.show_sidebar, true);
     assert_eq!(tui.sidebar_width_pct, 25);
     assert_eq!(tui.responsive_breakpoint, 120);
-    assert_eq!(tui.input_max_chars, 500);
+    assert_eq!(tui.input_max_lines, 10000);
     assert_eq!(tui.banner_auto_dismiss_secs, 5);
     assert_eq!(tui.event_log_max_entries, 200);
 }

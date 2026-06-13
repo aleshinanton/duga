@@ -310,7 +310,11 @@ impl App {
                 self.term_height = h;
             }
             crossterm::event::Event::Paste(text) => {
-                self.editor.insert_text(&text);
+                let max = self.tui_config.input_max_lines;
+                let inserted = self.editor.insert_text_safe_lines(&text, max);
+                if inserted > 0 {
+                    self.focus = crate::focus::Focus::Input;
+                }
             }
             crossterm::event::Event::Mouse(mouse) => self.handle_mouse(&mouse),
             crossterm::event::Event::FocusGained => {
@@ -1473,17 +1477,17 @@ impl App {
         let is_running = matches!(self.state, AppState::Running { .. });
         let is_focused = self.focus == crate::focus::Focus::Input;
 
-        // Character counter
-        let max_chars = self.tui_config.input_max_chars;
-        let current_len = self.editor.text().len();
+        // Line counter
+        let max_lines = self.tui_config.input_max_lines;
+        let current_lines = self.editor.text().lines().count().max(1);
         let title = if is_running {
-            format!(" Input (steer) [{current_len}/{max_chars}] ")
+            format!(" Input (steer) [{current_lines}/{max_lines} lines] ")
         } else {
-            format!(" Input [{current_len}/{max_chars}] ")
+            format!(" Input [{current_lines}/{max_lines} lines] ")
         };
 
-        // Color for character counter based on fill level
-        let fill_ratio = current_len as f64 / max_chars as f64;
+        // Color for line counter based on fill level
+        let fill_ratio = current_lines as f64 / max_lines as f64;
         let border_color = if is_focused {
             self.theme.colors.primary
         } else if is_running {
@@ -1859,5 +1863,51 @@ plugins:
                 ThinkingLevel::Max => ThinkingLevel::Off,
             }
         );
+    }
+
+    #[test]
+    fn paste_respects_max_lines() {
+        let mut app = make_app();
+        app.tui_config.input_max_lines = 3;
+
+        // Paste short text — should all fit
+        app.update(AppEvent::Crossterm(crossterm::event::Event::Paste(
+            "hello".into(),
+        )));
+        assert_eq!(app.editor.text(), "hello");
+        // Focus should switch to Input
+        assert_eq!(app.focus, crate::focus::Focus::Input);
+
+        // Paste multi-line text that exceeds the line limit
+        app.update(AppEvent::Crossterm(crossterm::event::Event::Paste(
+            "world\nfoo\nbar".into(),
+        )));
+        // Current: 1 line ("hello"), limit=3, available=2.
+        // Paste has 3 lines. Only first 2 lines ("world\nfoo\n") should be inserted.
+        assert_eq!(app.editor.text(), "helloworld\nfoo\n");
+    }
+
+    #[test]
+    fn paste_when_full_inserts_nothing() {
+        let mut app = make_app();
+        app.tui_config.input_max_lines = 2;
+        app.editor.insert_text("line1\nline2");
+
+        app.update(AppEvent::Crossterm(crossterm::event::Event::Paste(
+            "extra".into(),
+        )));
+        // No space — nothing inserted
+        assert_eq!(app.editor.text(), "line1\nline2");
+    }
+
+    #[test]
+    fn paste_switches_focus_to_input() {
+        let mut app = make_app();
+        app.focus = crate::focus::Focus::Chat;
+
+        app.update(AppEvent::Crossterm(crossterm::event::Event::Paste(
+            "hello".into(),
+        )));
+        assert_eq!(app.focus, crate::focus::Focus::Input);
     }
 }
