@@ -5,6 +5,7 @@
 //! and periodic ticks.
 
 use anyhow::{Context, Result};
+use crossterm::Command;
 use crossterm::event::{EnableBracketedPaste, EnableFocusChange};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -14,6 +15,7 @@ use duga_config::Config;
 use duga_runtime::{FrontendEventBridge, FrontendEventSink};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal as RatatuiTerminal;
+use std::fmt;
 use std::io::stdout;
 use std::path::Path;
 use std::sync::Arc;
@@ -21,11 +23,26 @@ use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent};
 
-// Mouse capture is intentionally NOT enabled.
-// Even minimal modes (?1000h + ?1006h) block native text selection
-// in many terminal emulators (GNOME Terminal, Windows Terminal, etc.).
-// duga-tui has full keyboard navigation: j/k scroll, PgUp/PgDn page,
-// g/G top/bottom, Ctrl+R toggle reasoning, Ctrl+E toggle events.
+// ── Alternate scroll mode (?1007h) ──────────────────────────────────────
+// Converts scroll wheel events to Up/Down arrow keys in the alternate
+// screen, WITHOUT enabling mouse tracking.  This preserves native text
+// selection while still letting us handle scroll wheel via key events.
+
+struct EnableAlternateScroll;
+
+impl Command for EnableAlternateScroll {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        f.write_str("\x1b[?1007h")
+    }
+}
+
+struct DisableAlternateScroll;
+
+impl Command for DisableAlternateScroll {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        f.write_str("\x1b[?1007l")
+    }
+}
 
 // ── Terminal guard ─────────────────────────────────────────────────────────
 
@@ -43,6 +60,7 @@ impl TerminalGuard {
             EnterAlternateScreen,
             EnableFocusChange,
             EnableBracketedPaste,
+            EnableAlternateScroll,
         )
         .context("entering alternate screen")?;
         Ok(Self)
@@ -52,7 +70,7 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut out = stdout();
-        let _ = execute!(out, LeaveAlternateScreen);
+        let _ = execute!(out, LeaveAlternateScreen, DisableAlternateScroll);
         let _ = disable_raw_mode();
     }
 }

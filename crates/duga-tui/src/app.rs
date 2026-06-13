@@ -697,13 +697,21 @@ impl App {
         if !self.overlays.has_overlay() {
             match self.focus {
                 Focus::Chat => {
-                    // j/k scroll in Chat mode
+                    // j/k scroll in Chat mode (also Up/Down from mouse wheel via ?1007h)
                     match key.code {
                         KeyCode::Char('j') if key.modifiers == KeyModifiers::NONE => {
                             self.transcript.scroll_mut().scroll_down(3);
                             return;
                         }
                         KeyCode::Char('k') if key.modifiers == KeyModifiers::NONE => {
+                            self.transcript.scroll_mut().scroll_up(3);
+                            return;
+                        }
+                        KeyCode::Down if key.modifiers == KeyModifiers::NONE => {
+                            self.transcript.scroll_mut().scroll_down(3);
+                            return;
+                        }
+                        KeyCode::Up if key.modifiers == KeyModifiers::NONE => {
                             self.transcript.scroll_mut().scroll_up(3);
                             return;
                         }
@@ -736,12 +744,21 @@ impl App {
                 }
                 Focus::Reasoning | Focus::EventLog => {
                     // j/k scroll sidebar panels, g/G top/bottom
+                    // (also Up/Down from mouse wheel via ?1007h)
                     match key.code {
                         KeyCode::Char('j') if key.modifiers == KeyModifiers::NONE => {
                             self.sidebar_scroll = self.sidebar_scroll.saturating_add(1);
                             return;
                         }
                         KeyCode::Char('k') if key.modifiers == KeyModifiers::NONE => {
+                            self.sidebar_scroll = self.sidebar_scroll.saturating_sub(1);
+                            return;
+                        }
+                        KeyCode::Down if key.modifiers == KeyModifiers::NONE => {
+                            self.sidebar_scroll = self.sidebar_scroll.saturating_add(1);
+                            return;
+                        }
+                        KeyCode::Up if key.modifiers == KeyModifiers::NONE => {
                             self.sidebar_scroll = self.sidebar_scroll.saturating_sub(1);
                             return;
                         }
