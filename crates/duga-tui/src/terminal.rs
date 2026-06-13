@@ -23,27 +23,25 @@ use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent};
 
-// ── Minimal mouse capture (button events only, no drag/motion) ──────────
-// Only ?1000h (button press/release + scroll wheel) + ?1006h (SGR coords).
-// No ?1002h (drag tracking) or ?1003h (any-event motion) — those block
-// text selection entirely.  With ?1000h only, hold Shift while selecting
-// text for native terminal selection (same convention as tmux / vim).
+// ── Alternate scroll mode (?1007h) ──────────────────────────────────────
+// Converts scroll wheel to Up/Down arrow keys in the alternate screen
+// WITHOUT mouse capture.  Must be sent BEFORE EnterAlternateScreen on
+// some terminals.  If unsupported, falls back to nothing (keyboard-only
+// scrolling).  Native text selection always works.
 
-pub struct EnableMinimalMouseCapture;
+struct EnableAlternateScroll;
 
-impl Command for EnableMinimalMouseCapture {
+impl Command for EnableAlternateScroll {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        f.write_str("\x1b[?1000h")?;
-        f.write_str("\x1b[?1006h")
+        f.write_str("\x1b[?1007h")
     }
 }
 
-pub struct DisableMinimalMouseCapture;
+struct DisableAlternateScroll;
 
-impl Command for DisableMinimalMouseCapture {
+impl Command for DisableAlternateScroll {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        f.write_str("\x1b[?1006l")?;
-        f.write_str("\x1b[?1000l")
+        f.write_str("\x1b[?1007l")
     }
 }
 
@@ -60,6 +58,7 @@ impl TerminalGuard {
         let mut out = stdout();
         execute!(
             out,
+            EnableAlternateScroll,
             EnterAlternateScreen,
             EnableFocusChange,
             EnableBracketedPaste,
@@ -72,7 +71,7 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut out = stdout();
-        let _ = execute!(out, LeaveAlternateScreen, DisableMinimalMouseCapture);
+        let _ = execute!(out, LeaveAlternateScreen, DisableAlternateScroll);
         let _ = disable_raw_mode();
     }
 }
@@ -163,7 +162,7 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
             timestamp: std::time::Instant::now(),
         });
         transcript.push(crate::transcript::TranscriptItem::SystemMessage {
-            text: "Type a task or question and press Enter. F1 for help, F2 to toggle mouse, Ctrl+C to cancel, q to quit."
+            text: "Type a task or question and press Enter. F1 for help, Ctrl+C to cancel, q to quit."
                 .into(),
             level: crate::transcript::SystemLevel::Info,
             timestamp: std::time::Instant::now(),
