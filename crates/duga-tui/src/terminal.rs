@@ -29,7 +29,7 @@ use crate::app::{App, AppEvent};
 // text selection entirely.  With ?1000h only, hold Shift while selecting
 // text for native terminal selection (same convention as tmux / vim).
 
-struct EnableMinimalMouseCapture;
+pub struct EnableMinimalMouseCapture;
 
 impl Command for EnableMinimalMouseCapture {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
@@ -38,7 +38,7 @@ impl Command for EnableMinimalMouseCapture {
     }
 }
 
-struct DisableMinimalMouseCapture;
+pub struct DisableMinimalMouseCapture;
 
 impl Command for DisableMinimalMouseCapture {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
@@ -63,7 +63,6 @@ impl TerminalGuard {
             EnterAlternateScreen,
             EnableFocusChange,
             EnableBracketedPaste,
-            EnableMinimalMouseCapture,
         )
         .context("entering alternate screen")?;
         Ok(Self)
@@ -164,7 +163,7 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
             timestamp: std::time::Instant::now(),
         });
         transcript.push(crate::transcript::TranscriptItem::SystemMessage {
-            text: "Type a task or question and press Enter. F1 for help, Ctrl+C to cancel, q to quit."
+            text: "Type a task or question and press Enter. F1 for help, F2 to toggle mouse, Ctrl+C to cancel, q to quit."
                 .into(),
             level: crate::transcript::SystemLevel::Info,
             timestamp: std::time::Instant::now(),

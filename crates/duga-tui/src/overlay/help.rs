@@ -55,7 +55,10 @@ impl HelpOverlay {
                 title: "Navigation",
                 items: vec![
                     HelpItem { key: "Tab / Shift+Tab".into(), description: "Cycle focus (Chat / Sidebar / Input)" },
-                    HelpItem { key: "j / k".into(), description: "Scroll (Chat focus)" },
+                    HelpItem { key: "j / k / ↑ / ↓".into(), description: "Scroll (Chat & Sidebar focus)" },
+                    HelpItem { key: "PgUp / PgDn".into(), description: "Scroll page (Chat focus)" },
+                    HelpItem { key: "g / G".into(), description: "Jump bottom / top (Chat focus)" },
+                    HelpItem { key: "Mouse wheel".into(), description: "Scroll (F2 to enable mouse capture)" },
                     HelpItem { key: "Esc".into(), description: "Return focus to Chat" },
                 ],
             },
@@ -81,6 +84,7 @@ impl HelpOverlay {
                 items: vec![
                     HelpItem { key: submit_str, description: "Submit prompt (from editor)" },
                     HelpItem { key: "Tab".into(), description: "Toggle tool / thinking expand" },
+                    HelpItem { key: "F2".into(), description: "Toggle mouse capture (scroll/click ↔ text selection)" },
                     HelpItem { key: "Ctrl+C".into(), description: "Cancel run" },
                 ],
             },

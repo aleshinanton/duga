@@ -153,6 +153,8 @@ pub struct App {
     /// Clickable regions registered during the last render, for mouse
     /// hit-testing close buttons and other mouse interactions.
     click_regions: Vec<ClickRegion>,
+    /// Whether mouse capture is currently enabled (toggled via F2).
+    mouse_enabled: bool,
 
     // ── Session management ──────────────────────────────────────────────
     pub sessions_dir: PathBuf,
@@ -228,6 +230,7 @@ impl App {
             sidebar_rendered: false,
             needs_redraw: true, // initial render needed
             click_regions: Vec::new(),
+            mouse_enabled: false,
             sessions_dir,
             current_session_id: None,
             pending_history: None,
@@ -282,6 +285,33 @@ impl App {
             "⚙",
             format!("Thinking: {:?}", self.config.thinking_level),
         ));
+    }
+
+    /// Toggle mouse capture on/off.  When on, scroll wheel and close-button
+    /// clicks work but native text selection is blocked.  When off, text
+    /// selection works but mouse interactions are ignored.
+    pub fn toggle_mouse_capture(&mut self) {
+        use crossterm::ExecutableCommand;
+        use crate::terminal::{EnableMinimalMouseCapture, DisableMinimalMouseCapture};
+
+        let mut out = std::io::stdout();
+        if self.mouse_enabled {
+            let _ = out.execute(DisableMinimalMouseCapture);
+            self.mouse_enabled = false;
+            self.transcript.push(crate::transcript::TranscriptItem::SystemMessage {
+                text: "Mouse capture off — text selection enabled.".into(),
+                level: crate::transcript::SystemLevel::Info,
+                timestamp: std::time::Instant::now(),
+            });
+        } else {
+            let _ = out.execute(EnableMinimalMouseCapture);
+            self.mouse_enabled = true;
+            self.transcript.push(crate::transcript::TranscriptItem::SystemMessage {
+                text: "Mouse capture on — scroll wheel + close buttons enabled. Hold Shift to select text.".into(),
+                level: crate::transcript::SystemLevel::Info,
+                timestamp: std::time::Instant::now(),
+            });
+        }
     }
 
     /// Handle a single `AppEvent` and update internal state.
@@ -677,6 +707,15 @@ impl App {
                 ..
             } => {
                 self.should_quit = true;
+                return;
+            }
+            // F2: toggle mouse capture (scroll/click ↔ text selection)
+            KeyEvent {
+                code: KeyCode::F(2),
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
+                self.toggle_mouse_capture();
                 return;
             }
             // Escape: close overlays / cancel when running
