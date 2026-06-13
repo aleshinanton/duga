@@ -23,24 +23,27 @@ use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent};
 
-// ── Alternate scroll mode (?1007h) ──────────────────────────────────────
-// Converts scroll wheel events to Up/Down arrow keys in the alternate
-// screen, WITHOUT enabling mouse tracking.  This preserves native text
-// selection while still letting us handle scroll wheel via key events.
+// ── Minimal mouse capture (button events only, no drag/motion) ──────────
+// Only ?1000h (button press/release + scroll wheel) + ?1006h (SGR coords).
+// No ?1002h (drag tracking) or ?1003h (any-event motion) — those block
+// text selection entirely.  With ?1000h only, hold Shift while selecting
+// text for native terminal selection (same convention as tmux / vim).
 
-struct EnableAlternateScroll;
+struct EnableMinimalMouseCapture;
 
-impl Command for EnableAlternateScroll {
+impl Command for EnableMinimalMouseCapture {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        f.write_str("\x1b[?1007h")
+        f.write_str("\x1b[?1000h")?;
+        f.write_str("\x1b[?1006h")
     }
 }
 
-struct DisableAlternateScroll;
+struct DisableMinimalMouseCapture;
 
-impl Command for DisableAlternateScroll {
+impl Command for DisableMinimalMouseCapture {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        f.write_str("\x1b[?1007l")
+        f.write_str("\x1b[?1006l")?;
+        f.write_str("\x1b[?1000l")
     }
 }
 
@@ -60,7 +63,7 @@ impl TerminalGuard {
             EnterAlternateScreen,
             EnableFocusChange,
             EnableBracketedPaste,
-            EnableAlternateScroll,
+            EnableMinimalMouseCapture,
         )
         .context("entering alternate screen")?;
         Ok(Self)
@@ -70,7 +73,7 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut out = stdout();
-        let _ = execute!(out, LeaveAlternateScreen, DisableAlternateScroll);
+        let _ = execute!(out, LeaveAlternateScreen, DisableMinimalMouseCapture);
         let _ = disable_raw_mode();
     }
 }
