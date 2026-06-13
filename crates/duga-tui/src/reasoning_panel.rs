@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use std::time::Instant;
 
+use crate::mouse::{ClickRegion, ClickTarget, with_close_title};
 use crate::theme::Theme;
 
 /// A single reasoning/thinking block.
@@ -126,6 +127,7 @@ impl ReasoningPanel {
         buf: &mut Buffer,
         focused: bool,
         theme: &Theme,
+        click_regions: &mut Vec<ClickRegion>,
     ) {
         let streaming = self.is_streaming();
         let title = if streaming {
@@ -143,6 +145,7 @@ impl ReasoningPanel {
             .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
             .title(title)
             .border_style(Style::default().fg(border_color));
+        let block = with_close_title(block, click_regions, area, ClickTarget::CloseReasoning);
 
         let inner = block.inner(area);
         block.render(area, buf);

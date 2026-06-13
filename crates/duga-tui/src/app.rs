@@ -73,6 +73,10 @@ pub enum AppEvent {
     },
 }
 
+// ── Mouse click regions ─────────────────────────────────────────────────
+
+use crate::mouse::{ClickRegion, ClickTarget};
+
 // ── Application ────────────────────────────────────────────────────────────
 
 pub struct App {
@@ -146,6 +150,9 @@ pub struct App {
     sidebar_rendered: bool,
     /// Whether the UI needs a redraw (set by state mutations, cleared after render).
     needs_redraw: bool,
+    /// Clickable regions registered during the last render, for mouse
+    /// hit-testing close buttons and other mouse interactions.
+    click_regions: Vec<ClickRegion>,
 
     // ── Session management ──────────────────────────────────────────────
     pub sessions_dir: PathBuf,
@@ -220,6 +227,7 @@ impl App {
             term_height: crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24),
             sidebar_rendered: false,
             needs_redraw: true, // initial render needed
+            click_regions: Vec::new(),
             sessions_dir,
             current_session_id: None,
             pending_history: None,
@@ -327,6 +335,7 @@ impl App {
     }
 
     fn handle_mouse(&mut self, event: &crossterm::event::MouseEvent) {
+        use crossterm::event::MouseButton;
         use crossterm::event::MouseEventKind;
         // Small fixed step: trackpads fire many events per second (30+),
         // so 3 lines per tick yields smooth, fast scrolling naturally.
@@ -339,7 +348,47 @@ impl App {
             MouseEventKind::ScrollDown => {
                 self.transcript.scroll_mut().scroll_down(MOUSE_SCROLL_LINES);
             }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.handle_mouse_click(event.column, event.row);
+            }
             _ => {}
+        }
+    }
+
+    /// Handle a left mouse click at the given terminal coordinates.
+    fn handle_mouse_click(&mut self, col: u16, row: u16) {
+        // When an overlay or confirmation dialog is active, suppress
+        // background click dispatch — only the overlay should handle it.
+        if self.overlays.has_overlay() || self.active_confirm_dialog.is_some() {
+            return;
+        }
+
+        // Iterate registered click regions (registered in render order).
+        // Later regions (banners, etc.) overlay earlier ones (sidebar).
+        for region in self.click_regions.iter().rev() {
+            if row == region.row
+                && col >= region.col_start
+                && col < region.col_end
+            {
+                match region.target {
+                    ClickTarget::CloseReasoning => {
+                        self.sidebar_state.toggle_reasoning();
+                        if self.focus == crate::focus::Focus::Reasoning {
+                            self.focus = crate::focus::Focus::Input;
+                        }
+                    }
+                    ClickTarget::CloseEvents => {
+                        self.sidebar_state.toggle_events();
+                        if self.focus == crate::focus::Focus::EventLog {
+                            self.focus = crate::focus::Focus::Input;
+                        }
+                    }
+                    ClickTarget::DismissBanner => {
+                        self.banner.dismiss();
+                    }
+                }
+                return;
+            }
         }
     }
 
@@ -1376,6 +1425,9 @@ impl App {
     pub fn render(&mut self, frame: &mut ratatui::Frame) {
         let area = frame.area();
 
+        // Clear click regions — each render pass rebuilds them.
+        self.click_regions.clear();
+
         // Keep term dimensions in sync with the actual frame so that
         // focus routing (which runs between renders) uses the real size.
         self.term_width = area.width;
@@ -1415,11 +1467,19 @@ impl App {
                 reasoning_focused,
                 event_log_focused,
                 &self.theme,
+                &mut self.click_regions,
             );
         }
 
         // ── Banner ────────────────────────────────────────────────────
         if pane_rects.banner.height > 0 {
+            // Register the banner as click-to-dismiss.
+            self.click_regions.push(ClickRegion {
+                row: pane_rects.banner.y,
+                col_start: pane_rects.banner.x,
+                col_end: pane_rects.banner.x + pane_rects.banner.width,
+                target: ClickTarget::DismissBanner,
+            });
             self.banner
                 .render(pane_rects.banner, frame.buffer_mut(), &self.theme);
         }

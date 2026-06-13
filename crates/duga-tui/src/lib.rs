@@ -14,6 +14,7 @@ pub mod header;
 pub mod keybindings;
 pub mod layout;
 pub mod markdown;
+pub mod mouse;
 pub mod overlay;
 pub mod reasoning_panel;
 pub mod runtime;

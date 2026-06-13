@@ -8,6 +8,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::widgets::{Paragraph, Widget};
 
 use crate::event_log::EventLog;
+use crate::mouse::ClickRegion;
 use crate::reasoning_panel::ReasoningPanel;
 use crate::theme::Theme;
 
@@ -62,6 +63,7 @@ impl SidebarView {
         reasoning_focused: bool,
         event_log_focused: bool,
         theme: &Theme,
+        click_regions: &mut Vec<ClickRegion>,
     ) {
         if area.width == 0 {
             return;
@@ -81,12 +83,13 @@ impl SidebarView {
                 buf,
                 reasoning_focused,
                 theme,
+                click_regions,
             );
         }
 
         // Render event log panel
         if show_events {
-            event_log.render(events_rect, buf, theme, scroll_offset, event_log_focused);
+            event_log.render(events_rect, buf, theme, scroll_offset, event_log_focused, click_regions);
         }
 
         // If both collapsed, show empty state

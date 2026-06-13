@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use std::collections::VecDeque;
 
+use crate::mouse::{ClickRegion, ClickTarget, with_close_title};
 use crate::theme::Theme;
 
 /// Severity level for log entries.
@@ -98,7 +99,15 @@ impl EventLog {
     }
 
     /// Render the event log into the given area.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme, scroll_offset: usize, focused: bool) {
+    pub fn render(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &Theme,
+        scroll_offset: usize,
+        focused: bool,
+        click_regions: &mut Vec<ClickRegion>,
+    ) {
         let border_color = if focused {
             theme.colors.primary
         } else {
@@ -108,6 +117,7 @@ impl EventLog {
             .borders(Borders::ALL).border_set(ratatui::symbols::border::ROUNDED)
             .title(format!("📋 Event Log ({}) ", self.entries.len()))
             .border_style(Style::default().fg(border_color));
+        let block = with_close_title(block, click_regions, area, ClickTarget::CloseEvents);
 
         let inner = block.inner(area);
         block.render(area, buf);
