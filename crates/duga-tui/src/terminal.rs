@@ -23,21 +23,11 @@ use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent};
 
-// ── Scroll modes ──────────────────────────────────────────────────────────
-//
-// Two complementary approaches for scroll-wheel support without blocking
-// mouse text selection:
-//
-//   ?1007h  Alternate scroll mode — converts wheel to Up/Down arrow keys.
-//           No mouse capture needed → native text selection always works.
-//           Supported by: iTerm2, Kitty, Alacritty, WezTerm, xterm,
-//           gnome-terminal, Windows Terminal.  NOT supported by Apple
-//           Terminal.app.
-//
-//   ?1000h  Basic mouse tracking — reports button press/release including
-//   ?1006h  scroll wheel.  Blocks native text selection on Apple Terminal,
-//           but that's the only option there.  We send ?1006l/?1000l on
-//           cleanup.
+// ── Alternate scroll mode (?1007h) ──────────────────────────────────────
+// Converts scroll wheel to Up/Down arrow keys in the alternate screen
+// WITHOUT mouse capture.  Must be sent BEFORE EnterAlternateScreen on
+// some terminals.  If unsupported, falls back to nothing (keyboard-only
+// scrolling).  Native text selection always works.
 
 struct EnableAlternateScroll;
 
@@ -55,73 +45,32 @@ impl Command for DisableAlternateScroll {
     }
 }
 
-struct EnableMouseCapture;
-
-impl Command for EnableMouseCapture {
-    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        f.write_str("\x1b[?1000h")?;
-        f.write_str("\x1b[?1006h")
-    }
-}
-
-struct DisableMouseCapture;
-
-impl Command for DisableMouseCapture {
-    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        f.write_str("\x1b[?1006l")?;
-        f.write_str("\x1b[?1000l")
-    }
-}
-
-/// Check whether we're running inside Apple Terminal.app (which lacks ?1007h).
-fn is_apple_terminal() -> bool {
-    std::env::var("TERM_PROGRAM")
-        .map(|v| v == "Apple_Terminal")
-        .unwrap_or(false)
-}
-
 // ── Terminal guard ─────────────────────────────────────────────────────────
 
 /// Restores terminal state on drop — ensures raw mode and alternate
 /// screen are always cleaned up even if the app panics.
-pub struct TerminalGuard {
-    needs_mouse_cleanup: bool,
-}
+pub struct TerminalGuard;
 
 impl TerminalGuard {
     /// Enter raw mode and alternate screen.
     pub fn enter() -> Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
         let mut out = stdout();
-
-        let needs_mouse = is_apple_terminal();
-
-        // ?1007h must come before EnterAlternateScreen on some terminals.
-        execute!(out, EnableAlternateScroll).ok();
         execute!(
             out,
+            EnableAlternateScroll,
             EnterAlternateScreen,
             EnableFocusChange,
             EnableBracketedPaste,
         )
         .context("entering alternate screen")?;
-
-        if needs_mouse {
-            execute!(out, EnableMouseCapture).ok();
-        }
-
-        Ok(Self {
-            needs_mouse_cleanup: needs_mouse,
-        })
+        Ok(Self)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut out = stdout();
-        if self.needs_mouse_cleanup {
-            let _ = execute!(out, DisableMouseCapture);
-        }
         let _ = execute!(out, LeaveAlternateScreen, DisableAlternateScroll);
         let _ = disable_raw_mode();
     }
