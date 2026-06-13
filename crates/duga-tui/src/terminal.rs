@@ -5,7 +5,6 @@
 //! and periodic ticks.
 
 use anyhow::{Context, Result};
-use crossterm::Command;
 use crossterm::event::{EnableBracketedPaste, EnableFocusChange};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -15,7 +14,6 @@ use duga_config::Config;
 use duga_runtime::{FrontendEventBridge, FrontendEventSink};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal as RatatuiTerminal;
-use std::fmt;
 use std::io::stdout;
 use std::path::Path;
 use std::sync::Arc;
@@ -23,32 +21,11 @@ use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent};
 
-// ── Minimal mouse capture (only button events, not drag/motion tracking) ─
-// crossterm's EnableMouseCapture enables modes ?1002h (drag tracking)
-// and ?1003h (any-event motion tracking) which steal all mouse events
-// from the terminal emulator, preventing native text selection.
-// This custom command only enables ?1000h (button press/release) +
-// ?1006h (SGR coordinates), which is sufficient for scroll wheel events.
-
-struct EnableMinimalMouseCapture;
-
-impl Command for EnableMinimalMouseCapture {
-    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        // Button press/release tracking (no drag/motion).
-        f.write_str("\x1b[?1000h")?;
-        // SGR extended coordinates (>223).
-        f.write_str("\x1b[?1006h")
-    }
-}
-
-struct DisableMinimalMouseCapture;
-
-impl Command for DisableMinimalMouseCapture {
-    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
-        f.write_str("\x1b[?1006l")?;
-        f.write_str("\x1b[?1000l")
-    }
-}
+// Mouse capture is intentionally NOT enabled.
+// Even minimal modes (?1000h + ?1006h) block native text selection
+// in many terminal emulators (GNOME Terminal, Windows Terminal, etc.).
+// duga-tui has full keyboard navigation: j/k scroll, PgUp/PgDn page,
+// g/G top/bottom, Ctrl+R toggle reasoning, Ctrl+E toggle events.
 
 // ── Terminal guard ─────────────────────────────────────────────────────────
 
@@ -66,7 +43,6 @@ impl TerminalGuard {
             EnterAlternateScreen,
             EnableFocusChange,
             EnableBracketedPaste,
-            EnableMinimalMouseCapture
         )
         .context("entering alternate screen")?;
         Ok(Self)
@@ -76,7 +52,7 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut out = stdout();
-        let _ = execute!(out, LeaveAlternateScreen, DisableMinimalMouseCapture);
+        let _ = execute!(out, LeaveAlternateScreen);
         let _ = disable_raw_mode();
     }
 }
