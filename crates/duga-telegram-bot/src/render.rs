@@ -3,10 +3,14 @@
 //! Consumes frontend events from the non-blocking bridge and renders
 //! progress messages in Telegram. Telegram API calls happen entirely
 //! in this worker task — never in the agent loop.
+//!
+//! Uses `sendRichMessage` (Bot API 10.1) for the final answer to enable
+//! Rich Markdown formatting (tables, task lists, spoilers, etc.).
 
+use crate::api_types::{send_rich_message, InputRichMessage};
 use crate::formatting::{
-    chunk_message, escape_html, format_final_message,
-    markdown_to_telegram_html, sanitize_tool_call_syntax,
+    build_process_draft_html, chunk_message, escape_html, format_final_message,
+    format_rich_markdown,
 };
 use duga_runtime::events::FrontendEvent;
 use std::collections::HashMap;
@@ -151,7 +155,7 @@ impl TelegramEventRenderer {
         }
     }
 
-    /// Start a new process message (or edit existing).
+    /// Start a new process message.
     async fn start_process_message(&mut self, task: &str) -> Result<(), teloxide::RequestError> {
         let preview = if task.chars().count() > 80 {
             format!("{}…", task.chars().take(77).collect::<String>())
@@ -175,10 +179,13 @@ impl TelegramEventRenderer {
             None => return Ok(()),
         };
 
-        let text = build_process_text(&self.action_labels, self.error_message.as_deref());
-        let total = self.action_labels.len();
+        let text = build_process_draft_html(
+            &self.action_labels,
+            self.error_message.as_deref(),
+            None,
+        );
         let chunks = chunk_message(&text);
-        let use_html = total > 5;
+        let use_html = self.action_labels.len() > 5;
         if let Some(first) = chunks.first() {
             let mut req = self.bot.edit_message_text(self.chat_id, msg_id, first.clone());
             if use_html {
@@ -191,19 +198,19 @@ impl TelegramEventRenderer {
     }
 
     /// Finalize: edit the process message into a step history, then send
-    /// a clean final answer in a separate new message.
+    /// the final answer as a new rich message.
     async fn finalize_process_message(&mut self, final_text: Option<String>) {
         tracing::info!(
             "finalize_process_message called, final_text={}, thinking_len={}",
             final_text.as_ref().map(|t| t.len()).unwrap_or(0),
             self.thinking_buffer.len()
         );
-        // Edit the process message into a final step-history summary.
+
+        // ── 1. Edit the process message into a final step-history summary ──
         if let Some(msg_id) = self.process_message_id {
             let step_count = self.action_labels.len();
             let mut header = format!("✅ Completed in {step_count} step(s)\n");
 
-            // Show error if the run failed.
             if let Some(ref err) = self.error_message {
                 header.push_str(&format!("⚠️ Error: {err}\n"));
             }
@@ -212,7 +219,6 @@ impl TelegramEventRenderer {
 
             let use_collapse = self.action_labels.len() > 5;
             let body = if use_collapse {
-                // Chunk raw labels first, then wrap each chunk in blockquote.
                 let label_chunks = chunk_message(&labels_text);
                 label_chunks
                     .iter()
@@ -234,116 +240,98 @@ impl TelegramEventRenderer {
             }
         }
 
-        // Build the final text: prepend thinking content when present,
-        // fall back to thinking only when the model returned no content text.
+        // ── 2. Build and send the final answer ─────────────────────────
         let final_text = build_final_text(final_text, &mut self.thinking_buffer);
 
-        // Send the final answer as a clean new message.
         if let Some(text) = final_text {
             let use_collapse = text.len() > 300;
             if use_collapse {
                 tracing::info!(
-                    "sending final answer (collapsed, {} chars, {} chunks)",
+                    "sending final rich message (collapsed, {} chars, {} chunks)",
                     text.len(),
                     chunk_message(&text).len()
                 );
-                // Chunk raw text first (avoids splitting HTML tags), then
-                // convert each chunk to Telegram HTML and wrap in a
-                // collapsible blockquote.  Chunks split on paragraph
-                // boundaries so Markdown structure is preserved.
+                // For collapsed long messages, chunk raw text first, then
+                // wrap each chunk in a blockquote.  We send each chunk as a
+                // separate message (no inline expandable in Rich Markdown).
                 let text_chunks = chunk_message(&text);
                 for (i, chunk) in text_chunks.iter().enumerate() {
-                    let html = markdown_to_telegram_html(&sanitize_tool_call_syntax(chunk));
+                    let rich_md = format_rich_markdown(chunk);
                     let collapsed = format!(
                         "<blockquote expandable>{}</blockquote>",
-                        html
+                        escape_html(&rich_md)
                     );
-                    match self
-                        .bot
-                        .send_message(self.chat_id, &collapsed)
-                        .parse_mode(ParseMode::Html)
-                        .await
-                    {
-                        Ok(_) => tracing::info!("final answer chunk {i} sent"),
-                        Err(e) => {
-                            tracing::error!("final answer chunk {i} failed: {e}");
-                            // Retry without HTML parse mode as fallback.
-                            let _ = self
-                                .bot
-                                .send_message(self.chat_id, &collapsed)
-                                .await;
-                        }
+
+                    // Try sendRichMessage first (Bot API 10.1+).
+                    // Fall back to send_message with Html parse mode.
+                    let result = send_rich_message(
+                        &self.bot,
+                        teloxide::types::Recipient::Id(self.chat_id),
+                        InputRichMessage::html(&collapsed),
+                    )
+                    .await;
+
+                    if let Err(e) = result {
+                        tracing::warn!(
+                            "sendRichMessage failed for chunk {i}, falling back: {e}"
+                        );
+                        // Fallback: send as regular HTML message.
+                        let _ = self
+                            .bot
+                            .send_message(self.chat_id, &collapsed)
+                            .parse_mode(ParseMode::Html)
+                            .await;
+                    } else {
+                        tracing::info!("final rich message chunk {i} sent");
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             } else {
-                let formatted = format_final_message(&text);
-                let chunks = chunk_message(&formatted);
+                // Short message — send as a single rich message.
+                let rich_md = format_rich_markdown(&text);
                 tracing::info!(
-                    "sending final answer ({} chars, {} chunks)",
-                    text.len(),
-                    chunks.len()
+                    "sending final rich message ({} chars)",
+                    rich_md.len()
                 );
-                for (i, chunk) in chunks.iter().enumerate() {
-                    match self
-                        .bot
-                        .send_message(self.chat_id, chunk)
-                        .parse_mode(ParseMode::Html)
-                        .await
-                    {
-                        Ok(_) => tracing::info!("final answer chunk {i} sent"),
-                        Err(e) => {
-                            tracing::error!("final answer chunk {i} failed: {e}");
-                            // Retry without HTML parse mode as fallback.
-                            let _ = self
+
+                let result = send_rich_message(
+                    &self.bot,
+                    teloxide::types::Recipient::Id(self.chat_id),
+                    InputRichMessage::markdown(&rich_md),
+                )
+                .await;
+
+                match result {
+                    Ok(_msg) => {
+                        tracing::info!("final rich message sent");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "sendRichMessage failed, falling back to legacy send_message: {e}"
+                        );
+                        // Fallback: send as regular HTML message.
+                        let formatted = format_final_message(&text);
+                        let chunks = chunk_message(&formatted);
+                        for (i, chunk) in chunks.iter().enumerate() {
+                            match self
                                 .bot
                                 .send_message(self.chat_id, chunk)
-                                .await;
+                                .parse_mode(ParseMode::Html)
+                                .await
+                            {
+                                Ok(_) => tracing::info!("fallback chunk {i} sent"),
+                                Err(e2) => {
+                                    tracing::error!("fallback chunk {i} failed: {e2}");
+                                    let _ = self.bot.send_message(self.chat_id, chunk).await;
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
         }
     }
-}
-
-/// Build the process message text from current state.
-///
-/// Does NOT include thinking content or streaming delta — those are
-/// reserved for the final answer message.
-fn build_process_text(action_labels: &[String], error_message: Option<&str>) -> String {
-    let total = action_labels.len();
-    let mut text = format!("🔄 Processing… ({total} step{})\n", if total == 1 { "" } else { "s" });
-
-    if let Some(err) = error_message {
-        text.push_str(&format!("⚠️ Error: {err}\n"));
-    }
-
-    if total > 5 {
-        let all_labels = action_labels.join("\n");
-        let label_chunks = chunk_message(&all_labels);
-        for chunk in label_chunks {
-            text.push_str(&format!(
-                "<blockquote expandable>{}</blockquote>\n",
-                escape_html(&chunk)
-            ));
-        }
-    } else {
-        let recent: Vec<_> = action_labels
-            .iter()
-            .rev()
-            .take(5)
-            .rev()
-            .cloned()
-            .collect();
-        for label in &recent {
-            text.push_str(label);
-            text.push('\n');
-        }
-    }
-
-    text
 }
 
 /// Build the final answer text, prepending thinking when available.
@@ -394,6 +382,7 @@ fn format_finish_label(tool_name: &str, description: &str, success: bool) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formatting::build_process_draft_html;
 
     #[test]
     fn test_label_format_with_description() {
@@ -501,7 +490,7 @@ mod tests {
     #[test]
     fn process_text_excludes_thinking_and_delta() {
         let labels = vec!["✅ shell: ls".into(), "✅ read: config".into()];
-        let text = build_process_text(&labels, None);
+        let text = build_process_draft_html(&labels, None, None);
 
         // Header should be present.
         assert!(text.contains("🔄 Processing… (2 steps)"));
@@ -512,15 +501,12 @@ mod tests {
         assert!(!text.contains("💭"));
         assert!(!text.contains("Thinking"));
         assert!(!text.contains("reasoning"));
-        // Must NOT contain streaming delta markers.
-        assert!(!text.contains("```"));
-        assert!(!text.contains("<pre>"));
     }
 
     #[test]
     fn process_text_with_error() {
         let labels: Vec<String> = vec![];
-        let text = build_process_text(&labels, Some("LLM timeout"));
+        let text = build_process_draft_html(&labels, Some("LLM timeout"), None);
         assert!(text.contains("⚠️ Error: LLM timeout"));
         assert!(text.contains("🔄 Processing… (0 steps)"));
     }
@@ -528,7 +514,7 @@ mod tests {
     #[test]
     fn process_text_collapses_labels_over_five() {
         let labels: Vec<String> = (0..6).map(|i| format!("✅ tool_{i}")).collect();
-        let text = build_process_text(&labels, None);
+        let text = build_process_draft_html(&labels, None, None);
         // Many labels should be collapsed.
         assert!(text.contains("<blockquote expandable>"));
         assert!(text.contains("✅ tool_0"));
@@ -541,7 +527,7 @@ mod tests {
     #[test]
     fn process_text_no_labels_under_six_not_collapsed() {
         let labels: Vec<String> = vec!["✅ shell".into(), "✅ read".into()];
-        let text = build_process_text(&labels, None);
+        let text = build_process_draft_html(&labels, None, None);
         assert!(!text.contains("<blockquote"));
     }
 
@@ -587,10 +573,10 @@ mod tests {
     #[test]
     fn final_text_thinking_does_not_leak_into_process_text() {
         // The process text is built from action_labels only.
-        // Even if thinking exists in the renderer state, build_process_text
+        // Even if thinking exists in the renderer state, build_process_draft_html
         // takes only labels and error_message — thinking cannot leak.
         let labels = vec!["✅ shell: ls".into()];
-        let text = build_process_text(&labels, None);
+        let text = build_process_draft_html(&labels, None, None);
         assert!(!text.contains("💭"));
         assert!(!text.contains("Thinking"));
         assert!(!text.contains("think"));

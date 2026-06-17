@@ -920,6 +920,7 @@ dependencies = [
  "duga-types",
  "notify",
  "pulldown-cmark",
+ "reqwest 0.12.28",
  "schemars 1.2.1",
  "serde",
  "serde_json",

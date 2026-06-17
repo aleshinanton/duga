@@ -473,7 +473,7 @@ impl CommandExecutor for DockerExecutor {
 
         Ok(ToolResult {
             tool_call_id: CallId::new(),
-            success: true,
+            success: exit_code == Some(0),
             output,
             steering_hint: None,
             metadata,

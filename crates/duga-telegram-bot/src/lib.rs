@@ -1,5 +1,6 @@
 //! duga Telegram bot — library for testing.
 
+pub mod api_types;
 pub mod attachments;
 pub mod auth;
 pub mod bot;

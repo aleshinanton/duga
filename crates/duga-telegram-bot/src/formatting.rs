@@ -2,7 +2,8 @@
 //!
 //! Handles escaping, chunking, and final formatting of Telegram messages.
 //! Partial streaming output is escaped as plain text; the final complete
-//! message is converted from Markdown to Telegram-compatible HTML.
+//! message is converted from Markdown to Telegram-compatible HTML (legacy)
+//! or passed as Rich Markdown (Bot API 10.1+).
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
@@ -159,12 +160,145 @@ fn push_end_tag(output: &mut String, tag: TagEnd) {
     }
 }
 
-/// Format a final message with Telegram HTML.
+/// Format a final message with Telegram HTML (legacy mode).
 ///
 /// Delegates to `markdown_to_telegram_html` for full Markdown→HTML conversion
 /// that Telegram's `ParseMode::Html` can render.
 pub fn format_final_message(text: &str) -> String {
     markdown_to_telegram_html(&sanitize_tool_call_syntax(text))
+}
+
+/// Format a final message for Rich Markdown (Bot API 10.1+).
+///
+/// Converts Markdown to Telegram's Rich Markdown format.  Rich Markdown is
+/// GitHub-Flavored Markdown compatible with Telegram extensions:
+///   - Tables with alignment (`|:---|:---:|`)
+///   - Task lists (`- [ ]`, `- [x]`)
+///   - Strikethrough (`~~text~~`), marked/highlight (`==text==`)
+///   - Spoilers (`||text||`)
+///   - Footnotes (`[^id]` / `[^id]: def`)
+///   - Math blocks (`$$formula$$` / ```math)
+///   - Details (`<details><summary>...</summary>...</details>`)
+///   - Collages, slideshows, maps, pull quotes via HTML tags
+///   - Custom emoji, date/time formatting
+///
+/// Most Markdown passes through unchanged because Rich Markdown is a superset.
+/// We only:
+///   1. Sanitize tool-call XML syntax (same as legacy HTML mode).
+///   2. Collapse multiple blank lines.
+///   3. Trim.
+pub fn format_rich_markdown(text: &str) -> String {
+    let sanitized = sanitize_tool_call_syntax(text);
+
+    // Collapse 3+ consecutive newlines to at most 2 (preserve paragraph breaks,
+    // but avoid excessive whitespace that wastes screen space on mobile).
+    let mut result = String::with_capacity(sanitized.len());
+    let mut newline_count = 0u32;
+    for ch in sanitized.chars() {
+        if ch == '\n' {
+            newline_count += 1;
+            if newline_count <= 2 {
+                result.push(ch);
+            }
+        } else {
+            newline_count = 0;
+            result.push(ch);
+        }
+    }
+
+    result.trim().to_string()
+}
+
+/// Build a Rich HTML message for streamed draft content.
+///
+/// Wraps text in a `<tg-thinking>` block for animated streaming,
+/// optionally followed by the partial answer content.
+pub fn build_draft_html(
+    thinking_text: Option<&str>,
+    partial_answer: Option<&str>,
+) -> String {
+    let mut html = String::new();
+
+    if let Some(thinking) = thinking_text {
+        if !thinking.is_empty() {
+            html.push_str(&format!(
+                "<tg-thinking>{}</tg-thinking>\n",
+                escape_html(&truncate_str(thinking, 200))
+            ));
+        }
+    }
+
+    if let Some(answer) = partial_answer {
+        if !answer.is_empty() {
+            let rendered = markdown_to_telegram_html(answer);
+            if !rendered.is_empty() {
+                html.push_str(&rendered);
+            }
+        }
+    }
+
+    html
+}
+
+/// Build a step-progress body for the process message using Rich HTML.
+///
+/// Renders action labels as a collapsible `<blockquote expandable>` block
+/// when there are many steps.  For shorter runs, labels are shown inline.
+pub fn build_process_draft_html(
+    action_labels: &[String],
+    error_message: Option<&str>,
+    streaming_delta: Option<&str>,
+) -> String {
+    let total = action_labels.len();
+    let mut html = format!(
+        "<b>🔄 Processing… ({total} step{})</b>\n",
+        if total == 1 { "" } else { "s" }
+    );
+
+    if let Some(err) = error_message {
+        html.push_str(&format!("⚠️ Error: {}  \n", escape_html(err)));
+    }
+
+    if total > 5 && !action_labels.is_empty() {
+        // Collapse the step labels.
+        let all_labels = action_labels.join("  \n");
+        html.push_str(&format!(
+            "<blockquote expandable>{}</blockquote>\n",
+            escape_html(&all_labels)
+        ));
+    } else {
+        // Show labels inline (last 5).
+        let recent: Vec<_> = action_labels
+            .iter()
+            .rev()
+            .take(5)
+            .rev()
+            .cloned()
+            .collect();
+        for label in &recent {
+            html.push_str(&escape_html(label));
+            html.push_str("  \n"); // double space for Telegram line break in HTML
+        }
+    }
+
+    if let Some(delta) = streaming_delta {
+        if !delta.is_empty() {
+            html.push_str("\n<tg-thinking>");
+            html.push_str(&escape_html(&truncate_str(delta, 120)));
+            html.push_str("</tg-thinking>\n");
+        }
+    }
+
+    html
+}
+
+/// Truncate a string to at most `max` chars, appending "…" if truncated.
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
 }
 
 /// Strip raw XML-like tool-call syntax that LLMs sometimes emit as prose.
