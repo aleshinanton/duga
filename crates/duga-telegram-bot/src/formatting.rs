@@ -58,8 +58,11 @@ pub fn maybe_collapse(text: &str, threshold: usize) -> (String, bool) {
 /// escaped text.  Raw `Event::Html` nodes from the parser are escaped to
 /// mitigate indirect prompt injection.
 pub fn markdown_to_telegram_html(input: &str) -> String {
+    // First normalize raw inline HTML from untrusted tool output so that
+    // safe tags like `<b>` render instead of showing as literal text.
+    let input = sanitize_inline_html_to_markdown(input);
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
-    let parser = Parser::new_ext(input, options);
+    let parser = Parser::new_ext(&input, options);
 
     let mut output = String::new();
 
@@ -165,7 +168,8 @@ fn push_end_tag(output: &mut String, tag: TagEnd) {
 /// Delegates to `markdown_to_telegram_html` for full Markdown→HTML conversion
 /// that Telegram's `ParseMode::Html` can render.
 pub fn format_final_message(text: &str) -> String {
-    markdown_to_telegram_html(&sanitize_tool_call_syntax(text))
+    let sanitized = sanitize_tool_call_syntax(text);
+    markdown_to_telegram_html(&sanitized)
 }
 
 /// Format a final message for Rich Markdown (Bot API 10.1+).
@@ -189,6 +193,7 @@ pub fn format_final_message(text: &str) -> String {
 ///   3. Trim.
 pub fn format_rich_markdown(text: &str) -> String {
     let sanitized = sanitize_tool_call_syntax(text);
+    let sanitized = sanitize_inline_html_to_markdown(&sanitized);
 
     // Collapse 3+ consecutive newlines to at most 2 (preserve paragraph breaks,
     // but avoid excessive whitespace that wastes screen space on mobile).
@@ -299,6 +304,107 @@ fn truncate_str(s: &str, max: usize) -> String {
     } else {
         format!("{}…", s.chars().take(max).collect::<String>())
     }
+}
+
+/// Convert common inline HTML tags to Markdown and escape the rest.
+///
+/// Tool output and web pages often contain raw HTML like `<b>`, `<i>`, or
+/// `<a href="...">`.  When the LLM includes that content in its answer, the
+/// Telegram formatter would otherwise escape the tags literally, so the user
+/// sees raw `<b>text</b>` instead of bold text.
+///
+/// This function converts safe formatting tags to Markdown syntax:
+///   - `<b>`, `<strong>` → `**`
+///   - `<i>`, `<em>` → `*`
+///   - `<s>`, `<strike>`, `<del>` → `~~`
+///   - `<code>` → `` ` ``
+///   - `<a href="...">text</a>` → `[text](href)`
+///   - `<br>` / `<br/>` → newline
+///
+/// Unknown or unsafe tags are escaped as HTML entities (`&lt;tag&gt;`) so
+/// they render literally and cannot be interpreted as Telegram HTML/Markdown.
+pub(crate) fn sanitize_inline_html_to_markdown(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut anchor_stack: Vec<String> = Vec::new();
+
+    while let Some(pos) = rest.find('<') {
+        result.push_str(&rest[..pos]);
+        let after_lt = &rest[pos + 1..];
+
+        let Some(end) = after_lt.find('>') else {
+            // No matching '>' — escape the rest and stop.
+            result.push_str(&escape_html(rest));
+            break;
+        };
+
+        let tag_raw = &rest[pos + 1..pos + 1 + end];
+        rest = &rest[pos + end + 2..];
+
+        let tag_lower = tag_raw.to_lowercase();
+        let is_self_closing = tag_lower.ends_with('/');
+        let trimmed = tag_lower.trim().trim_end_matches('/').trim();
+
+        match trimmed {
+            "b" | "strong" => result.push_str("**"),
+            "/b" | "/strong" => result.push_str("**"),
+            "i" | "em" => result.push('*'),
+            "/i" | "/em" => result.push('*'),
+            "s" | "strike" | "del" => result.push_str("~~"),
+            "/s" | "/strike" | "/del" => result.push_str("~~"),
+            "code" => result.push('`'),
+            "/code" => result.push('`'),
+            "br" | "hr" => result.push('\n'),
+            t if t == "a" || t.starts_with("a ") => {
+                if let Some(href) = extract_href_value(tag_raw) {
+                    anchor_stack.push(href);
+                    result.push('[');
+                } else {
+                    result.push_str("&lt;a&gt;");
+                }
+            }
+            "/a" => {
+                if let Some(href) = anchor_stack.pop() {
+                    result.push_str(&format!("]({href})"));
+                } else {
+                    result.push_str("&lt;/a&gt;");
+                }
+            }
+            _ => {
+                // Unknown/unsafe tag: escape the whole thing.
+                result.push_str("&lt;");
+                if is_self_closing {
+                    result.push_str(tag_raw);
+                    result.push_str("/&gt;");
+                } else {
+                    result.push_str(tag_raw);
+                    result.push_str("&gt;");
+                }
+            }
+        }
+    }
+
+    result.push_str(rest);
+
+    // Close any unclosed anchor tags so the Markdown stays balanced.
+    for href in anchor_stack {
+        result.push_str(&format!("]({href})"));
+    }
+
+    result
+}
+
+/// Extract the value of an `href` attribute from an `<a ...>` tag.
+fn extract_href_value(tag: &str) -> Option<String> {
+    let lower = tag.to_lowercase();
+    let idx = lower.find("href=")? + 5;
+    let rest = &tag[idx..];
+    let quote = rest.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let end = rest[1..].find(quote)? + 1;
+    Some(rest[1..end].to_string())
 }
 
 /// Strip raw XML-like tool-call syntax that LLMs sometimes emit as prose.
@@ -548,6 +654,72 @@ mod tests {
         let input = "Normal text with < and > characters";
         let result = super::sanitize_tool_call_syntax(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn sanitize_inline_html_converts_bold() {
+        let input = "Hello <b>world</b> and <strong>universe</strong>";
+        let result = super::sanitize_inline_html_to_markdown(input);
+        assert_eq!(result, "Hello **world** and **universe**");
+    }
+
+    #[test]
+    fn sanitize_inline_html_converts_italic() {
+        let input = "<i>italic</i> and <em>emphasis</em>";
+        let result = super::sanitize_inline_html_to_markdown(input);
+        assert_eq!(result, "*italic* and *emphasis*");
+    }
+
+    #[test]
+    fn sanitize_inline_html_converts_strikethrough() {
+        let input = "<s>strike</s>, <strike>strike2</strike>, <del>del</del>";
+        let result = super::sanitize_inline_html_to_markdown(input);
+        assert_eq!(result, "~~strike~~, ~~strike2~~, ~~del~~");
+    }
+
+    #[test]
+    fn sanitize_inline_html_converts_code() {
+        let input = "Use <code>cargo build</code> to compile";
+        let result = super::sanitize_inline_html_to_markdown(input);
+        assert_eq!(result, "Use `cargo build` to compile");
+    }
+
+    #[test]
+    fn sanitize_inline_html_converts_link() {
+        let input = "See <a href=\"https://example.com\">example</a> here";
+        let result = super::sanitize_inline_html_to_markdown(input);
+        assert_eq!(result, "See [example](https://example.com) here");
+    }
+
+    #[test]
+    fn sanitize_inline_html_converts_self_closing_br() {
+        let input = "Line one<br>Line two<br/>Line three";
+        let result = super::sanitize_inline_html_to_markdown(input);
+        assert_eq!(result, "Line one\nLine two\nLine three");
+    }
+
+    #[test]
+    fn sanitize_inline_html_escapes_unknown_tags() {
+        let input = "<script>alert(1)</script> and <div>block</div>";
+        let result = super::sanitize_inline_html_to_markdown(input);
+        assert_eq!(
+            result,
+            "&lt;script&gt;alert(1)&lt;/script&gt; and &lt;div&gt;block&lt;/div&gt;"
+        );
+    }
+
+    #[test]
+    fn sanitize_inline_html_preserves_plain_angle_brackets() {
+        let input = "Use < or > for comparison";
+        let result = super::sanitize_inline_html_to_markdown(input);
+        assert_eq!(result, "Use &lt; or &gt; for comparison");
+    }
+
+    #[test]
+    fn sanitize_inline_html_unclosed_anchor_is_balanced() {
+        let input = "<a href=\"https://example.com\">unclosed";
+        let result = super::sanitize_inline_html_to_markdown(input);
+        assert_eq!(result, "[unclosed](https://example.com)");
     }
 
     #[test]
