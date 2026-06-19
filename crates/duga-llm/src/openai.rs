@@ -188,9 +188,13 @@ impl OpenAiClient {
                                             acc_tools.push(OpenAiStreamToolCall::default());
                                         }
                                         let e = &mut acc_tools[idx];
-                                        if let Some(id) = tc["id"].as_str() { e.id = Some(id.to_string()); }
+                                        if let Some(id) = tc["id"].as_str() {
+                                            if !id.is_empty() { e.id = Some(id.to_string()); }
+                                        }
                                         if let Some(fn_info) = tc.get("function") {
-                                            if let Some(n) = fn_info["name"].as_str() { e.name = Some(n.to_string()); }
+                                            if let Some(n) = fn_info["name"].as_str() {
+                                                if !n.is_empty() { e.name = Some(n.to_string()); }
+                                            }
                                             if let Some(a) = fn_info["arguments"].as_str() { e.arguments.push_str(a); }
                                         }
                                     }
@@ -203,7 +207,16 @@ impl OpenAiClient {
         }
 
         let tool_calls: Vec<ToolCall> = acc_tools.iter().filter_map(|tc| {
-            let name = tc.name.as_deref().unwrap_or("unknown");
+            let name = match tc.name.as_deref() {
+                Some(n) if !n.is_empty() => n,
+                _ => {
+                    eprintln!(
+                        "openai stream: dropping tool_call with empty name (id={:?}, args_len={})",
+                        tc.id, tc.arguments.len()
+                    );
+                    return None;
+                }
+            };
             // When the LLM streams a tool call name but never streams arguments
             // (e.g. in thinking mode), arguments remain empty.  Use an empty
             // object instead of Value::Null so round-trip serialization doesn't
@@ -402,7 +415,17 @@ fn openai_message(message: &Message) -> Result<OpenAiMessage, LlmError> {
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::ToolCall(call) => Some(OpenAiToolCall::from_duga(call)),
+            ContentBlock::ToolCall(call) => {
+                if call.tool.trim().is_empty() {
+                    eprintln!(
+                        "openai_message: skipping ToolCall with empty name (id={})",
+                        call.id
+                    );
+                    None
+                } else {
+                    Some(OpenAiToolCall::from_duga(call))
+                }
+            }
             ContentBlock::Text { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -1268,5 +1291,36 @@ mod tests {
         // When serialized to OpenAI format, arguments should be "{}"
         let oai = OpenAiToolCall::from_duga(&tc);
         assert_eq!(oai.function.arguments, "{}");
+    }
+
+    #[test]
+    fn outbound_skips_assistant_tool_call_with_empty_name() {
+        // Regression for the
+        // `messages.N.content.0.tool_use.name: Field required` failure mode:
+        // if a previous step ended up with a ToolCall whose name is empty
+        // (e.g. produced by a malformed streamed delta from an upstream
+        // proxy), we must not forward it in the next request.
+        let bad_tc = ToolCall::new("", serde_json::json!({"label": "oops"}));
+        let msg = Message::assistant(None, vec![bad_tc], None);
+        let openai = openai_message(&msg).unwrap();
+        let json = serde_json::to_value(&openai).unwrap();
+        assert_eq!(json["role"], "assistant");
+        assert!(
+            json.get("tool_calls").is_none(),
+            "empty-named tool_call should be dropped, got: {:?}",
+            json.get("tool_calls")
+        );
+    }
+
+    #[test]
+    fn outbound_preserves_named_tool_call() {
+        let good_tc = ToolCall::new("shell", serde_json::json!({"command": ["ls"]}));
+        let msg = Message::assistant(None, vec![good_tc], None);
+        let openai = openai_message(&msg).unwrap();
+        let json = serde_json::to_value(&openai).unwrap();
+        assert_eq!(
+            json["tool_calls"][0]["function"]["name"], "shell",
+            "named tool calls must be forwarded unchanged"
+        );
     }
 }
