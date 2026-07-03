@@ -8,8 +8,11 @@ use std::path::PathBuf;
     after_help = "Examples:\n  duga-harness --config duga.yaml \"write tests\"\n  duga-harness --config duga.yaml --model dummy/test --task \"echo hello\""
 )]
 pub struct Cli {
-    #[arg(long)]
-    pub config: PathBuf,
+    #[arg(long, required_unless_present = "login")]
+    pub config: Option<PathBuf>,
+    /// Run an interactive OAuth login for a provider (e.g. "anthropic") and exit.
+    #[arg(long, value_name = "PROVIDER")]
+    pub login: Option<String>,
     #[arg(long)]
     pub task: Option<String>,
     #[arg(long)]
@@ -49,8 +52,15 @@ mod tests {
     #[test]
     fn parses_positional_task() {
         let cli = Cli::parse_args(["duga-harness", "--config", "cfg.yaml", "do work"]);
-        assert_eq!(cli.config, PathBuf::from("cfg.yaml"));
+        assert_eq!(cli.config, Some(PathBuf::from("cfg.yaml")));
         assert_eq!(cli.task_text(), Some("do work"));
+    }
+
+    #[test]
+    fn parses_login_without_config() {
+        let cli = Cli::parse_args(["duga-harness", "--login", "anthropic"]);
+        assert_eq!(cli.login.as_deref(), Some("anthropic"));
+        assert_eq!(cli.config, None);
     }
 
     #[test]

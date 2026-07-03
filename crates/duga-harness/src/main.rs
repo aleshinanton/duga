@@ -21,8 +21,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.verbose)?;
 
-    let mut config = Config::load(&cli.config)
-        .with_context(|| format!("loading config {}", cli.config.display()))?;
+    if let Some(provider) = &cli.login {
+        return run_login(provider).await;
+    }
+
+    let config_path = cli
+        .config
+        .as_ref()
+        .context("--config is required unless --login is used")?;
+    let mut config = Config::load(config_path)
+        .with_context(|| format!("loading config {}", config_path.display()))?;
     if let Some(model) = &cli.model {
         config.model = model.clone();
     }
@@ -102,6 +110,21 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Err(error) => Err(anyhow::anyhow!(error)),
+    }
+}
+
+/// Run an interactive OAuth login for the given provider and exit.
+async fn run_login(provider: &str) -> Result<()> {
+    match provider {
+        "anthropic" => {
+            let path = duga_llm::oauth::default_credentials_path();
+            duga_llm::oauth::login_interactive(&path)
+                .await
+                .map_err(|e| anyhow::anyhow!("anthropic OAuth login failed: {e}"))
+        }
+        other => Err(anyhow::anyhow!(
+            "OAuth login is not supported for provider '{other}' (supported: anthropic)"
+        )),
     }
 }
 

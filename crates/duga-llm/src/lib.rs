@@ -2,6 +2,7 @@
 
 pub mod anthropic;
 pub mod dummy;
+pub mod oauth;
 pub mod openai;
 pub mod registry;
 
@@ -13,6 +14,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 pub use anthropic::AnthropicClient;
+pub use oauth::OAuthManager;
 pub use openai::OpenAiClient;
 pub use registry::{ProviderRegistry, ProviderRegistryError};
 

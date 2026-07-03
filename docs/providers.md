@@ -8,7 +8,7 @@ hosted OpenAI, Anthropic, dummy, and OpenAI-compatible local endpoints (e.g. Oll
 | Provider | Client Type | API Key Required | Default Base URL |
 |----------|------------|-----------------|-----------------|
 | `openai` | `OpenAiClient` | `OPENAI_API_KEY` (unless BASE_URL set) | `https://api.openai.com/v1` |
-| `anthropic` | `AnthropicClient` | `ANTHROPIC_API_KEY` | `https://api.anthropic.com` |
+| `anthropic` | `AnthropicClient` | `ANTHROPIC_API_KEY` or OAuth (`--login anthropic`) | `https://api.anthropic.com` |
 | `dummy` | `DummyClient` | No | N/A (offline) |
 
 ## Configuration
@@ -106,6 +106,10 @@ This allows using Ollama or other OpenAI-compatible servers without an API key.
 
 ## Anthropic
 
+Supports two authentication modes: API key and OAuth.
+
+### API key
+
 Requires `ANTHROPIC_API_KEY` environment variable:
 
 ```sh
@@ -124,6 +128,39 @@ To use a custom-compatible Anthropic endpoint, set `BASE_URL`:
 ```sh
 export BASE_URL=https://custom.anthropic.endpoint/v1
 ```
+
+### OAuth (Claude Pro/Max subscription)
+
+Instead of an API key, you can log in with your Claude account via a
+PKCE OAuth flow (the same flow Claude Code uses):
+
+```sh
+duga-harness --login anthropic
+# or
+duga-tui --login anthropic
+```
+
+This prints an authorize URL; open it in a browser, approve access, and
+paste the displayed `code#state` string back into the terminal. Tokens are
+stored in `~/.duga/auth.json` (override with `DUGA_AUTH_FILE`) with `0600`
+permissions and are refreshed automatically before they expire.
+
+Credential resolution order for `provider: "anthropic"`:
+
+1. `provider_auth: "oauth"` in config → always use stored OAuth tokens.
+2. API key (`provider_api_key`, `provider_api_key_env`, or `ANTHROPIC_API_KEY`).
+3. Stored OAuth credentials, when no API key is configured.
+
+```yaml
+provider: "anthropic"
+model: "claude-sonnet-4-5"
+provider_auth: "oauth"
+```
+
+OAuth requests are sent with `Authorization: Bearer` and the
+`anthropic-beta: oauth-2025-04-20` header, and the system prompt is
+prefixed with the Claude Code identity line required by Anthropic for
+OAuth-authenticated inference.
 
 ## Dummy Provider (Offline Development)
 

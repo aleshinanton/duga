@@ -1,5 +1,6 @@
 //! Anthropic Messages API provider.
 
+use crate::oauth::{OAUTH_BETA_HEADER, OAuthManager};
 use crate::{ChatFuture, LlmClient, LlmError, estimate_tokens, message_text};
 use duga_config::ThinkingLevel;
 use duga_events::{Event, EventSink};
@@ -10,16 +11,29 @@ use duga_types::tool_schema::ToolSchema;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 const MIN_VISIBLE_OUTPUT_TOKENS: u32 = 1024;
+/// OAuth tokens are only accepted for requests that identify as Claude Code.
+const OAUTH_SYSTEM_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+/// Authentication mode for the Anthropic API.
+#[derive(Debug)]
+pub enum AnthropicAuth {
+    /// Classic API key sent via the `x-api-key` header.
+    ApiKey(String),
+    /// OAuth access token sent via `Authorization: Bearer` with the
+    /// `anthropic-beta: oauth-2025-04-20` header. Refreshed transparently.
+    OAuth(Arc<OAuthManager>),
+}
 
 #[derive(Debug)]
 pub struct AnthropicClient {
     model: String,
-    api_key: String,
+    auth: AnthropicAuth,
     base_url: String,
     max_tokens: u32,
     thinking_level: ThinkingLevel,
@@ -41,9 +55,28 @@ impl AnthropicClient {
         base_url: Option<String>,
         thinking_level: ThinkingLevel,
     ) -> Self {
+        Self::with_auth(model, AnthropicAuth::ApiKey(api_key.into()), base_url, thinking_level)
+    }
+
+    /// Build a client that authenticates with OAuth tokens (Claude Pro/Max).
+    pub fn with_oauth(
+        model: impl Into<String>,
+        manager: Arc<OAuthManager>,
+        base_url: Option<String>,
+        thinking_level: ThinkingLevel,
+    ) -> Self {
+        Self::with_auth(model, AnthropicAuth::OAuth(manager), base_url, thinking_level)
+    }
+
+    fn with_auth(
+        model: impl Into<String>,
+        auth: AnthropicAuth,
+        base_url: Option<String>,
+        thinking_level: ThinkingLevel,
+    ) -> Self {
         Self {
             model: model.into(),
-            api_key: api_key.into(),
+            auth,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.into()),
             max_tokens: DEFAULT_MAX_TOKENS,
             thinking_level,
@@ -76,20 +109,29 @@ impl LlmClient for AnthropicClient {
         event_sink: &'a dyn EventSink,
     ) -> ChatFuture<'a> {
         Box::pin(async move {
+            let is_oauth = matches!(self.auth, AnthropicAuth::OAuth(_));
             let mut request = AnthropicRequest::from_duga(
                 &self.model,
                 self.max_tokens,
                 messages,
                 tools,
                 &self.thinking_level,
+                is_oauth,
             );
             if options.streaming {
                 request.stream = Some(true);
             }
-            let response = self
-                .http
-                .post(self.endpoint())
-                .header("x-api-key", &self.api_key)
+            let builder = self.http.post(self.endpoint());
+            let builder = match &self.auth {
+                AnthropicAuth::ApiKey(key) => builder.header("x-api-key", key),
+                AnthropicAuth::OAuth(manager) => {
+                    let token = manager.access_token().await?;
+                    builder
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("anthropic-beta", OAUTH_BETA_HEADER)
+                }
+            };
+            let response = builder
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .json(&request)
                 .send()
@@ -321,14 +363,22 @@ impl AnthropicRequest {
         messages: &[Message],
         tools: &[ToolSchema],
         thinking_level: &ThinkingLevel,
+        oauth: bool,
     ) -> Self {
-        let system = messages
-            .iter()
-            .filter(|message| matches!(message.role, Role::System))
-            .map(message_text)
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let mut system_parts: Vec<String> = Vec::new();
+        if oauth {
+            // OAuth tokens are only valid for requests that identify as
+            // Claude Code, so the identity line must lead the system prompt.
+            system_parts.push(OAUTH_SYSTEM_IDENTITY.into());
+        }
+        system_parts.extend(
+            messages
+                .iter()
+                .filter(|message| matches!(message.role, Role::System))
+                .map(message_text)
+                .filter(|text| !text.is_empty()),
+        );
+        let system = system_parts.join("\n\n");
         let thinking_budget = thinking_level.anthropic_budget_tokens();
         let max_tokens = Self::max_tokens_for_thinking(max_tokens, thinking_budget);
         let thinking = thinking_budget.map(|budget| AnthropicThinkingConfig {
@@ -519,6 +569,7 @@ mod tests {
                 serde_json::json!({"type": "object"}),
             )],
             &ThinkingLevel::Off,
+            false,
         );
         let json = serde_json::to_value(request).unwrap();
 
@@ -536,6 +587,7 @@ mod tests {
             &[Message::user("hello")],
             &[],
             &ThinkingLevel::High,
+            false,
         );
         let json = serde_json::to_value(request).unwrap();
 
@@ -544,6 +596,37 @@ mod tests {
             json["max_tokens"].as_u64().unwrap()
                 > json["thinking"]["budget_tokens"].as_u64().unwrap()
         );
+    }
+
+    #[test]
+    fn oauth_request_prepends_claude_code_identity() {
+        let request = AnthropicRequest::from_duga(
+            "claude-sonnet-4-5",
+            4096,
+            &[Message::system("sys"), Message::user("hello")],
+            &[],
+            &ThinkingLevel::Off,
+            true,
+        );
+        let json = serde_json::to_value(request).unwrap();
+
+        let system = json["system"].as_str().unwrap();
+        assert!(system.starts_with(OAUTH_SYSTEM_IDENTITY));
+        assert!(system.ends_with("sys"));
+    }
+
+    #[test]
+    fn oauth_request_has_identity_even_without_system_messages() {
+        let request = AnthropicRequest::from_duga(
+            "claude-sonnet-4-5",
+            4096,
+            &[Message::user("hello")],
+            &[],
+            &ThinkingLevel::Off,
+            true,
+        );
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["system"], OAUTH_SYSTEM_IDENTITY);
     }
 
     #[test]

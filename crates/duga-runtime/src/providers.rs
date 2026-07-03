@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use duga_config::Config;
 use duga_llm::dummy::DummyClient;
-use duga_llm::{AnthropicClient, LlmClient, OpenAiClient};
+use duga_llm::{AnthropicClient, LlmClient, OAuthManager, OpenAiClient};
 use std::sync::Arc;
 
 /// Resolved provider and model after processing config overrides.
@@ -122,19 +122,43 @@ pub fn build_llm(provider: &str, model_name: &str, config: &Config) -> Result<Ar
         }
         "anthropic" => {
             let base_url = resolve_base_url(config);
-            let api_key = resolve_api_key(config, "ANTHROPIC_API_KEY")
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "ANTHROPIC_API_KEY is not set; set provider_api_key or provider_api_key_env"
-                    )
-                })?;
             let thinking = config.thinking_level.clone();
-            Ok(Arc::new(AnthropicClient::with_thinking(
-                model_name,
-                api_key,
-                base_url,
-                thinking,
-            )))
+            let credentials_path = duga_llm::oauth::default_credentials_path();
+
+            // Explicit `provider_auth: "oauth"` always uses stored OAuth
+            // credentials. Otherwise prefer an API key, but fall back to
+            // stored OAuth credentials when no key is configured.
+            let oauth_requested = config.provider_auth.as_deref() == Some("oauth");
+            if oauth_requested {
+                let manager = OAuthManager::load(credentials_path)?;
+                return Ok(Arc::new(AnthropicClient::with_oauth(
+                    model_name,
+                    Arc::new(manager),
+                    base_url,
+                    thinking,
+                )));
+            }
+
+            match resolve_api_key(config, "ANTHROPIC_API_KEY") {
+                Some(api_key) => Ok(Arc::new(AnthropicClient::with_thinking(
+                    model_name,
+                    api_key,
+                    base_url,
+                    thinking,
+                ))),
+                None if credentials_path.is_file() => {
+                    let manager = OAuthManager::load(credentials_path)?;
+                    Ok(Arc::new(AnthropicClient::with_oauth(
+                        model_name,
+                        Arc::new(manager),
+                        base_url,
+                        thinking,
+                    )))
+                }
+                None => Err(anyhow::anyhow!(
+                    "no Anthropic credentials: set ANTHROPIC_API_KEY (or provider_api_key / provider_api_key_env), or log in with OAuth (--login anthropic) and set provider_auth: \"oauth\""
+                )),
+            }
         }
         other => Err(anyhow::anyhow!(
             "unsupported LLM provider '{other}' (supported: dummy, openai, anthropic)"
@@ -194,6 +218,7 @@ mod tests {
             provider_api_key_env: None,
             provider_base_url: None,
             provider_base_url_env: None,
+            provider_auth: None,
             thinking_level: Default::default(),
             context_window: None,
             agent: AgentConfig::default(),
@@ -276,6 +301,83 @@ mod tests {
         let config = test_config("dummy/test");
         let provider = build_llm("dummy", "test", &config).unwrap();
         assert_eq!(provider.model(), "dummy/test");
+    }
+
+
+    fn write_oauth_credentials(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let path = dir.path().join("auth.json");
+        let tokens = duga_llm::oauth::OAuthTokens {
+            access_token: "at".into(),
+            refresh_token: "rt".into(),
+            expires_at_ms: u64::MAX,
+        };
+        duga_llm::oauth::save_tokens(&path, &tokens).unwrap();
+        path
+    }
+
+    #[test]
+    fn build_anthropic_oauth_uses_stored_credentials() {
+        let _env = EnvGuard::new(&["DUGA_AUTH_FILE", "ANTHROPIC_API_KEY"]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_oauth_credentials(&dir);
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DUGA_AUTH_FILE", &path) };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+
+        let mut config = test_config("claude-sonnet-4-5");
+        config.provider = Some("anthropic".into());
+        config.provider_auth = Some("oauth".into());
+
+        let client = build_llm("anthropic", "claude-sonnet-4-5", &config).unwrap();
+        assert_eq!(client.model(), "claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn build_anthropic_oauth_errors_without_credentials() {
+        let _env = EnvGuard::new(&["DUGA_AUTH_FILE", "ANTHROPIC_API_KEY"]);
+        let dir = tempfile::tempdir().unwrap();
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DUGA_AUTH_FILE", dir.path().join("missing.json")) };
+
+        let mut config = test_config("claude-sonnet-4-5");
+        config.provider_auth = Some("oauth".into());
+
+        let err = match build_llm("anthropic", "claude-sonnet-4-5", &config) {
+            Ok(_) => panic!("oauth without credentials should fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(err.contains("login"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn build_anthropic_falls_back_to_oauth_when_no_api_key() {
+        let _env = EnvGuard::new(&["DUGA_AUTH_FILE", "ANTHROPIC_API_KEY"]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_oauth_credentials(&dir);
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DUGA_AUTH_FILE", &path) };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+
+        let config = test_config("claude-sonnet-4-5");
+        let client = build_llm("anthropic", "claude-sonnet-4-5", &config).unwrap();
+        assert_eq!(client.model(), "claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn build_anthropic_prefers_api_key_over_oauth_by_default() {
+        let _env = EnvGuard::new(&["DUGA_AUTH_FILE", "ANTHROPIC_API_KEY"]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_oauth_credentials(&dir);
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("DUGA_AUTH_FILE", &path) };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-key") };
+
+        let config = test_config("claude-sonnet-4-5");
+        let client = build_llm("anthropic", "claude-sonnet-4-5", &config).unwrap();
+        assert_eq!(client.model(), "claude-sonnet-4-5");
     }
 
     #[test]

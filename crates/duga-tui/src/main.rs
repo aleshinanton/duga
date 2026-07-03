@@ -29,11 +29,27 @@ struct Cli {
     /// Enable verbose tracing output.
     #[arg(short, long)]
     verbose: bool,
+
+    /// Run an interactive OAuth login for a provider (e.g. "anthropic") and exit.
+    #[arg(long, value_name = "PROVIDER")]
+    login: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(provider) = &cli.login {
+        anyhow::ensure!(
+            provider == "anthropic",
+            "OAuth login is not supported for provider '{provider}' (supported: anthropic)"
+        );
+        let path = duga_llm::oauth::default_credentials_path();
+        return duga_llm::oauth::login_interactive(&path)
+            .await
+            .map_err(|e| anyhow::anyhow!("anthropic OAuth login failed: {e}"));
+    }
+
     init_tracing(cli.verbose, &cli.replay_dir)?;
 
     let config = Config::load(&cli.config)

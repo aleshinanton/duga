@@ -438,6 +438,10 @@ pub struct Config {
     pub provider_base_url: Option<String>,
     #[serde(default)]
     pub provider_base_url_env: Option<String>,
+    /// Authentication mode for the provider: "api_key" (default) or "oauth".
+    /// With "oauth", stored OAuth credentials are used (run `--login` first).
+    #[serde(default)]
+    pub provider_auth: Option<String>,
     #[serde(default)]
     pub thinking_level: ThinkingLevel,
     #[serde(default)]
@@ -468,6 +472,7 @@ impl std::fmt::Debug for Config {
             .field("provider_api_key_env", &self.provider_api_key_env)
             .field("provider_base_url", &self.provider_base_url)
             .field("provider_base_url_env", &self.provider_base_url_env)
+            .field("provider_auth", &self.provider_auth)
             .field("thinking_level", &self.thinking_level)
             .field("context_window", &self.context_window)
             .field("agent", &self.agent)
