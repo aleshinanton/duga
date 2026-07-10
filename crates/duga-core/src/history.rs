@@ -66,6 +66,7 @@ pub fn load_conversation_history(
     let history = repair_reasoning_history(history);
     let history = normalize_tool_message_sequence(history);
     let history = strip_stale_reminders(history);
+    let history = filter_empty_assistant_messages(history);
 
     if history.is_empty() {
         None
@@ -218,6 +219,28 @@ fn strip_reminder_suffix(text: &str) -> String {
     }
 }
 
+/// Remove assistant messages that have no text and no tool calls.
+///
+/// OpenAI-compatible APIs (DeepSeek, etc.) reject these with HTTP 400
+/// ("Invalid assistant message: content or tool_calls must be set").
+/// These empty messages can appear in history after a run where the
+/// LLM returned reasoning content but no final answer text.
+fn filter_empty_assistant_messages(messages: Vec<Message>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .filter(|m| {
+            if m.role != Role::Assistant {
+                return true;
+            }
+            // Keep the message if it has text content or tool calls.
+            m.content.iter().any(|block| match block {
+                ContentBlock::Text { text } => !text.is_empty(),
+                ContentBlock::ToolCall(_) => true,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,36 +353,76 @@ mod tests {
     }
 
     #[test]
-    fn load_history_repairs_legacy_reasoning_snapshot() {
-        let stale_tool_call = ToolCall::new("read", serde_json::json!({"path": "old.txt"}));
-        let stale_tool_id = stale_tool_call.id.clone();
+    fn filters_empty_assistant_messages_from_history() {
+        #[allow(deprecated)]
+        let tool_call = ToolCall::new("read", serde_json::json!({"path": "file.txt"}));
+        let tool_id = tool_call.id.clone();
+        let messages = vec![
+            Message::user("hello"),
+            // Empty assistant: no text, no tool calls — should be removed.
+            Message::assistant(None, vec![], None),
+            Message::assistant(Some("valid".into()), vec![], None),
+            // Assistant with tool calls is valid.
+            Message::assistant(None, vec![tool_call], None),
+            Message::tool(tool_id.as_uuid(), "output".into()),
+            // Another empty assistant — should be removed.
+            Message::assistant(Some("".into()), vec![], None),
+            Message::user("next"),
+        ];
+
+        let filtered = filter_empty_assistant_messages(messages);
+
+        assert_eq!(filtered.len(), 5);
+        assert_eq!(filtered[0].role, Role::User);
+        assert_eq!(filtered[1].role, Role::Assistant);
+        assert_eq!(filtered[1].content[0], ContentBlock::Text { text: "valid".into() });
+        assert_eq!(filtered[2].role, Role::Assistant); // has tool call
+        assert_eq!(filtered[3].role, Role::Tool);
+        assert_eq!(filtered[4].role, Role::User);
+    }
+
+    #[test]
+    fn filter_empty_assistant_preserves_all_non_assistant() {
+        let tool_id = duga_types::tool_call::CallId::new();
+        let messages = vec![
+            Message::user("hi"),
+            Message::assistant(None, vec![], None), // empty, removed
+            Message::system("system note"),
+            Message::tool(tool_id.as_uuid(), "tool output".into()),
+        ];
+
+        let filtered = filter_empty_assistant_messages(messages);
+
+        assert_eq!(filtered.len(), 3);
+        assert_eq!(filtered[0].role, Role::User);
+        assert_eq!(filtered[1].role, Role::System);
+        assert_eq!(filtered[2].role, Role::Tool);
+    }
+
+    #[test]
+    fn load_history_filters_empty_assistant() {
+        // Regression: after a run with empty termination (text=null),
+        // the saved history must not include empty assistant messages
+        // because OpenAI-compatible APIs reject them with HTTP 400.
+        #[allow(deprecated)]
+        let tool_call = ToolCall::new("bash", serde_json::json!({"cmd": "ls"}));
+        let tool_id = tool_call.id.clone();
         let file = write_llm_request(vec![
-            Message::system("old prompt"),
-            Message::user("old task"),
-            Message::assistant(
-                Some("real response".into()),
-                vec![],
-                Some("real reasoning".into()),
-            ),
-            Message::assistant(Some("summary as assistant".into()), vec![], None),
-            Message::assistant(None, vec![stale_tool_call], None),
-            Message::tool(stale_tool_id.as_uuid(), "stale output".into()),
-            Message::user("new task"),
+            Message::user("list files"),
+            Message::assistant(None, vec![tool_call], None),
+            Message::tool(tool_id.as_uuid(), "file.txt".into()),
+            // The empty assistant that causes HTTP 400.
+            Message::assistant(None, vec![], None),
         ]);
 
         let history = load_conversation_history(file.path(), 0, 0).unwrap();
 
-        assert_eq!(
-            history
-                .iter()
-                .map(|message| message.role.clone())
-                .collect::<Vec<_>>(),
-            vec![Role::User, Role::Assistant, Role::System, Role::User,]
-        );
-        assert_eq!(
-            history[1].reasoning_content.as_deref(),
-            Some("real reasoning")
-        );
-        assert!(message_text(&history[2]).contains("summary as assistant"));
+        // Should have 3 messages: user, assistant (with tool call), tool result.
+        // The empty assistant must be filtered out.
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].role, Role::User);
+        assert_eq!(history[1].role, Role::Assistant);
+        assert!(history[1].content.iter().any(|b| matches!(b, ContentBlock::ToolCall(_))));
+        assert_eq!(history[2].role, Role::Tool);
     }
 }

@@ -244,6 +244,7 @@ async fn handle_command(
                    /start — Start the bot\n\
                    /help — Show this help\n\
                    /stop — Cancel the current task\n\
+                   /reset — Clear conversation history\n\
                    /steer — Inject guidance into running task\n\
                    /status — Show current task status\n\
                    /memory — Show current memory\n\
@@ -253,6 +254,14 @@ async fn handle_command(
         "stop" => {
             session_manager.cancel(chat_id.0);
             "🛑 Cancelling current task…".to_string()
+        }
+        "reset" => {
+            session_manager.cancel(chat_id.0);
+            let session_file = data_dir.join(chat_id.0.to_string()).join("session.jsonl");
+            match std::fs::write(&session_file, "") {
+                Ok(()) => "🧹 Conversation history cleared. Next message starts fresh.".to_string(),
+                Err(e) => format!("⚠️ Could not clear history: {e}"),
+            }
         }
         "steer" => {
             let guidance = text

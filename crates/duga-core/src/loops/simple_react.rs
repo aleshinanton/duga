@@ -141,7 +141,7 @@ async fn run_simple_react(
             completion_tokens = response.usage.completion,
             "LLM response"
         );
-        let assistant = response.message;
+        let mut assistant = response.message;
         ctx.event_sink
             .emit(Event::LlmResponse {
                 model: ctx.llm.model().into(),
@@ -153,6 +153,14 @@ async fn run_simple_react(
             .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
 
         if assistant.is_termination() {
+            // Guard: OpenAI-compatible APIs (DeepSeek, etc.) reject
+            // assistant messages with neither content nor tool_calls
+            // (HTTP 400: "content or tool_calls must be set").
+            // If the LLM returned reasoning but no final text, inject
+            // a fallback so the saved history doesn't corrupt future runs.
+            if assistant.text.as_deref().map_or(true, str::is_empty) {
+                assistant.text = Some("Done.".into());
+            }
             ctx.memory.push_assistant(assistant.clone());
             emit_final_snapshot(ctx).await?;
             ctx.event_sink

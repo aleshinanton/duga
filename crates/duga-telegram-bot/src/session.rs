@@ -97,8 +97,9 @@ impl SessionManager {
                     // via the RunFinished event (see render.rs::finalize_process_message).
                 }
                 Err(e) => {
+                    let err_msg = enrich_user_error(e.to_string());
                     let _ = bot_clone
-                        .send_message(ChatId(chat_id), format!("❌ Error: {e}"))
+                        .send_message(ChatId(chat_id), format!("❌ Error: {err_msg}"))
                         .await;
                 }
             }
@@ -233,9 +234,62 @@ impl SessionManager {
     }
 }
 
+/// Enrich LLM API errors with user-friendly guidance.
+///
+/// Raw API errors like HTTP 400 "Invalid assistant message" are hard to
+/// understand and don't tell the user how to recover.  This function
+/// detects common API error patterns and appends actionable suggestions.
+pub fn enrich_user_error(error: String) -> String {
+    if error.contains("400")
+        && (error.contains("invalid_request_error")
+            || error.contains("content or tool_calls must be set")
+            || error.contains("Invalid assistant message"))
+    {
+        format!(
+            "{}\n\n💡 The conversation history may be corrupted. \
+             Try /reset to clear it or restart the bot.",
+            error
+        )
+    } else if error.contains("429") || error.contains("rate_limit") {
+        format!(
+            "{}\n\n💡 Rate limit hit. Wait a moment and try again.",
+            error
+        )
+    } else {
+        error
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enrich_detects_400_invalid_assistant() {
+        let err = "llm failed: llm provider error: OpenAI HTTP 400 Bad Request: {\"error\":{\"message\":\"Invalid assistant message: content or tool_calls must be set\",\"type\":\"invalid_request_error\"}}".to_string();
+        let enriched = enrich_user_error(err);
+        assert!(enriched.contains("💡"), "should contain tip");
+        assert!(enriched.contains("/reset"), "should suggest /reset");
+        assert!(
+            enriched.contains("conversation history"),
+            "should mention history"
+        );
+    }
+
+    #[test]
+    fn enrich_detects_429_rate_limit() {
+        let err = "llm provider error: HTTP 429 Too Many Requests".to_string();
+        let enriched = enrich_user_error(err);
+        assert!(enriched.contains("💡"), "should contain tip");
+        assert!(enriched.contains("Rate limit"), "should mention rate limit");
+    }
+
+    #[test]
+    fn enrich_passes_through_normal_errors() {
+        let err = "sandbox timeout".to_string();
+        let enriched = enrich_user_error(err.clone());
+        assert_eq!(enriched, err, "normal errors should be unchanged");
+    }
 
     #[test]
     fn cancel_sets_flag_and_triggers_token() {
