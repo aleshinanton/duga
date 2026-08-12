@@ -63,7 +63,6 @@ pub fn load_conversation_history(
         }
     }
 
-    let history = repair_reasoning_history(history);
     let history = normalize_tool_message_sequence(history);
     let history = strip_stale_reminders(history);
     let history = filter_empty_assistant_messages(history);
@@ -107,59 +106,6 @@ pub fn normalize_tool_message_sequence(messages: Vec<Message>) -> Vec<Message> {
         }
     }
     out
-}
-
-fn repair_reasoning_history(messages: Vec<Message>) -> Vec<Message> {
-    if !messages
-        .iter()
-        .any(|message| message.role == Role::Assistant && assistant_has_reasoning(message))
-    {
-        return messages;
-    }
-
-    let mut out = Vec::with_capacity(messages.len());
-    let mut skip_tool_results = false;
-    for msg in messages {
-        if skip_tool_results {
-            if msg.role == Role::Tool {
-                continue;
-            }
-            skip_tool_results = false;
-        }
-
-        if msg.role != Role::Assistant || assistant_has_reasoning(&msg) {
-            out.push(msg);
-            continue;
-        }
-
-        if assistant_has_tool_calls(&msg) {
-            skip_tool_results = true;
-            continue;
-        }
-
-        let text = message_text(&msg);
-        if !text.is_empty() {
-            let mut context = Message::system(format!("Historical assistant response:\n{text}"));
-            context.pinned = msg.pinned;
-            out.push(context);
-        }
-    }
-
-    out
-}
-
-fn assistant_has_reasoning(message: &Message) -> bool {
-    message
-        .reasoning_content
-        .as_deref()
-        .is_some_and(|reasoning| !reasoning.is_empty())
-}
-
-fn assistant_has_tool_calls(message: &Message) -> bool {
-    message
-        .content
-        .iter()
-        .any(|block| matches!(block, ContentBlock::ToolCall(_)))
 }
 
 fn message_text(message: &Message) -> String {
@@ -284,6 +230,49 @@ mod tests {
     }
 
     #[test]
+    fn preserves_all_messages_including_mixed_reasoning() {
+        // All messages must survive loading intact.  Messages with
+        // reasoning_content keep it; messages without stay as-is.
+        // No destructive stripping or role conversion.
+        let tool_call = ToolCall::new("read", serde_json::json!({"path": "old.txt"}));
+        let tool_id = tool_call.id.clone();
+        let messages = vec![
+            Message::user("old task"),
+            Message::assistant(
+                Some("real reasoning turn".into()),
+                vec![],
+                Some("hidden reasoning".into()),
+            ),
+            Message::user("summary happened"),
+            Message::assistant(Some("summary without reasoning".into()), vec![], None),
+            Message::assistant(Some("stale tool text".into()), vec![tool_call], None),
+            Message::tool(tool_id.as_uuid(), "stale output".into()),
+            Message::user("next task"),
+        ];
+
+        let result = normalize_tool_message_sequence(messages);
+
+        // All messages preserved — no destructive conversion.
+        assert_eq!(
+            result.iter().map(|m| m.role.clone()).collect::<Vec<_>>(),
+            vec![
+                Role::User,
+                Role::Assistant,
+                Role::User,
+                Role::Assistant,
+                Role::Assistant,
+                Role::Tool,
+                Role::User,
+            ]
+        );
+        // Reasoning preserved on the message that had it.
+        assert_eq!(result[1].reasoning_content.as_deref(), Some("hidden reasoning"));
+        // Message without reasoning stays as assistant (not converted to system).
+        assert_eq!(result[3].role, Role::Assistant);
+        assert!(result[3].reasoning_content.is_none());
+    }
+
+    #[test]
     fn preserves_non_reasoning_assistant_history() {
         let tool_call = ToolCall::new("read", serde_json::json!({"path": "file.txt"}));
         let tool_id = tool_call.id.clone();
@@ -294,46 +283,12 @@ mod tests {
             Message::assistant(Some("done".into()), vec![], None),
         ];
 
-        let repaired = repair_reasoning_history(messages);
+        let result = normalize_tool_message_sequence(messages);
 
-        assert_eq!(repaired.len(), 4);
-        assert_eq!(repaired[1].role, Role::Assistant);
-        assert_eq!(repaired[2].role, Role::Tool);
-        assert_eq!(repaired[3].role, Role::Assistant);
-    }
-
-    #[test]
-    fn repairs_mixed_reasoning_history_without_orphan_tools() {
-        let stale_tool_call = ToolCall::new("read", serde_json::json!({"path": "old.txt"}));
-        let stale_tool_id = stale_tool_call.id.clone();
-        let messages = vec![
-            Message::user("old task"),
-            Message::assistant(
-                Some("kept response".into()),
-                vec![],
-                Some("kept reasoning".into()),
-            ),
-            Message::assistant(Some("synthetic assistant".into()), vec![], None),
-            Message::assistant(Some("stale tool text".into()), vec![stale_tool_call], None),
-            Message::tool(stale_tool_id.as_uuid(), "stale output".into()),
-            Message::user("next task"),
-        ];
-
-        let repaired = normalize_tool_message_sequence(repair_reasoning_history(messages));
-
-        assert_eq!(
-            repaired
-                .iter()
-                .map(|message| message.role.clone())
-                .collect::<Vec<_>>(),
-            vec![Role::User, Role::Assistant, Role::System, Role::User,]
-        );
-        assert_eq!(
-            repaired[1].reasoning_content.as_deref(),
-            Some("kept reasoning")
-        );
-        assert!(message_text(&repaired[2]).contains("synthetic assistant"));
-        assert!(repaired.iter().all(|message| message.role != Role::Tool));
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[1].role, Role::Assistant);
+        assert_eq!(result[2].role, Role::Tool);
+        assert_eq!(result[3].role, Role::Assistant);
     }
 
     #[test]

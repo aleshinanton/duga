@@ -274,7 +274,6 @@ impl OpenAiRequest {
         tools: &[ToolSchema],
         thinking_level: ThinkingLevel,
     ) -> Result<Self, LlmError> {
-        let messages = repair_reasoning_history_for_request(model, messages);
         let reasoning_effort = reasoning_effort_for_request(model, thinking_level)?;
         Ok(Self {
             model: model.into(),
@@ -290,84 +289,7 @@ impl OpenAiRequest {
     }
 }
 
-fn repair_reasoning_history_for_request(
-    model: &str,
-    messages: &[Message],
-) -> Vec<Message> {
-    let needs_reasoning_history =
-        model_uses_reasoning_history(model) || has_assistant_reasoning(messages);
-    if !needs_reasoning_history {
-        return messages.to_vec();
-    }
 
-    repair_reasoning_history(messages)
-}
-
-fn repair_reasoning_history(messages: &[Message]) -> Vec<Message> {
-    let mut repaired = Vec::with_capacity(messages.len());
-    let mut skip_tool_results = false;
-
-    for message in messages {
-        if skip_tool_results {
-            if message.role == Role::Tool {
-                continue;
-            }
-            skip_tool_results = false;
-        }
-
-        if message.role != Role::Assistant || assistant_has_reasoning(message) {
-            repaired.push(message.clone());
-            continue;
-        }
-
-        if assistant_has_tool_calls(message) {
-            skip_tool_results = true;
-            continue;
-        }
-
-        let text = message_text(message);
-        if text.is_empty() {
-            continue;
-        }
-
-        let mut context = Message::system(format!("Historical assistant response:\n{text}"));
-        context.pinned = message.pinned;
-        repaired.push(context);
-    }
-
-    repaired
-}
-
-fn model_uses_reasoning_history(model: &str) -> bool {
-    let normalized = model.to_ascii_lowercase();
-    normalized.contains("reasoner")
-        || normalized.contains("reasoning")
-        || normalized.contains("deepseek-r1")
-        || normalized.contains("deepseek_r1")
-        || normalized.ends_with("-r1")
-        || normalized.contains("-r1-")
-        || normalized.contains("/r1")
-}
-
-fn has_assistant_reasoning(messages: &[Message]) -> bool {
-    messages
-        .iter()
-        .any(|message| message.role == Role::Assistant && assistant_has_reasoning(message))
-}
-
-fn assistant_has_reasoning(message: &Message) -> bool {
-    message
-        .reasoning_content
-        .as_deref()
-        .is_some_and(|reasoning| !reasoning.is_empty())
-}
-
-fn assistant_has_tool_calls(message: &Message) -> bool {
-    message
-        .content
-        .iter()
-        .any(|block| matches!(block, ContentBlock::ToolCall(_)))
-}
 
 fn reasoning_effort_for_request(
     model: &str,
@@ -841,7 +763,11 @@ mod tests {
     }
 
     #[test]
-    fn request_repairs_mixed_reasoning_history() {
+    fn request_preserves_mixed_reasoning_history() {
+        // All messages must be preserved as-is: messages with reasoning_content
+        // keep it, messages without don't get it, and no messages are dropped
+        // or converted.  The per-message serialization in openai_message
+        // handles reasoning_content correctly without destructive repair.
         let stale_tool_call = make_tool_call("read", serde_json::json!({"path": "old.txt"}));
         let stale_tool_id = stale_tool_call.id.clone();
         let messages = vec![
@@ -868,17 +794,16 @@ mod tests {
             .map(|message| message["role"].as_str().unwrap())
             .collect::<Vec<_>>();
 
-        assert_eq!(roles, vec!["user", "assistant", "user", "system", "user"]);
+        // All messages preserved in original roles — no destructive conversion.
+        assert_eq!(roles, vec!["user", "assistant", "user", "assistant", "assistant", "tool", "user"]);
+        // Reasoning content preserved on the message that has it.
         assert_eq!(json["messages"][1]["reasoning_content"], "hidden reasoning");
-        assert!(json["messages"][3]["content"]
-            .as_str()
-            .unwrap()
-            .contains("summary without reasoning"));
-        assert!(json["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|message| message["role"] != "tool"));
+        // Message without reasoning is still an assistant, not converted to system.
+        assert_eq!(json["messages"][3]["role"], "assistant");
+        assert_eq!(json["messages"][3]["content"], "summary without reasoning");
+        assert!(json["messages"][3].get("reasoning_content").is_none());
+        // Tool message is preserved (not dropped).
+        assert_eq!(json["messages"][5]["role"], "tool");
     }
 
     #[test]
