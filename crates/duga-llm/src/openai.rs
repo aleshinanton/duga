@@ -275,6 +275,7 @@ impl OpenAiRequest {
         thinking_level: ThinkingLevel,
     ) -> Result<Self, LlmError> {
         let reasoning_effort = reasoning_effort_for_request(model, thinking_level)?;
+        let messages = normalize_reasoning(messages);
         Ok(Self {
             model: model.into(),
             messages: messages
@@ -290,6 +291,37 @@ impl OpenAiRequest {
 }
 
 
+
+/// Ensure all assistant messages carry `reasoning_content` when any assistant
+/// in the conversation has it.
+///
+/// DeepSeek models in thinking mode reject requests where some assistant
+/// messages have `reasoning_content` and others don't — the field must be
+/// present (even if empty) on every assistant message in a thinking-mode
+/// conversation.  Without this, the API returns HTTP 400:
+/// "The reasoning_content in the thinking mode must be passed back to the API."
+fn normalize_reasoning(messages: &[Message]) -> Vec<Message> {
+    let has_any_reasoning = messages
+        .iter()
+        .any(|m| m.role == Role::Assistant && m.reasoning_content.as_deref().is_some_and(|r| !r.is_empty()));
+
+    if !has_any_reasoning {
+        return messages.to_vec();
+    }
+
+    messages
+        .iter()
+        .map(|m| {
+            if m.role == Role::Assistant && m.reasoning_content.is_none() {
+                let mut cloned = m.clone();
+                cloned.reasoning_content = Some(String::new());
+                cloned
+            } else {
+                m.clone()
+            }
+        })
+        .collect()
+}
 
 fn reasoning_effort_for_request(
     model: &str,
@@ -763,11 +795,10 @@ mod tests {
     }
 
     #[test]
-    fn request_preserves_mixed_reasoning_history() {
-        // All messages must be preserved as-is: messages with reasoning_content
-        // keep it, messages without don't get it, and no messages are dropped
-        // or converted.  The per-message serialization in openai_message
-        // handles reasoning_content correctly without destructive repair.
+    fn request_normalizes_mixed_reasoning_assistants() {
+        // When any assistant has reasoning_content, all assistants in the
+        // conversation must carry the field (even if empty).  DeepSeek
+        // rejects requests where some assistants have it and others don't.
         let stale_tool_call = make_tool_call("read", serde_json::json!({"path": "old.txt"}));
         let stale_tool_id = stale_tool_call.id.clone();
         let messages = vec![
@@ -785,7 +816,7 @@ mod tests {
         ];
 
         let request =
-            OpenAiRequest::from_duga("gpt-4.1", &messages, &[], ThinkingLevel::Off).unwrap();
+            OpenAiRequest::from_duga("deepseek-v4-flash", &messages, &[], ThinkingLevel::Xhigh).unwrap();
         let json = serde_json::to_value(request).unwrap();
         let roles = json["messages"]
             .as_array()
@@ -794,14 +825,17 @@ mod tests {
             .map(|message| message["role"].as_str().unwrap())
             .collect::<Vec<_>>();
 
-        // All messages preserved in original roles — no destructive conversion.
+        // All messages preserved in original roles.
         assert_eq!(roles, vec!["user", "assistant", "user", "assistant", "assistant", "tool", "user"]);
         // Reasoning content preserved on the message that has it.
         assert_eq!(json["messages"][1]["reasoning_content"], "hidden reasoning");
-        // Message without reasoning is still an assistant, not converted to system.
+        // Assistants without reasoning now carry empty reasoning_content
+        // so DeepSeek doesn't reject the request.
         assert_eq!(json["messages"][3]["role"], "assistant");
         assert_eq!(json["messages"][3]["content"], "summary without reasoning");
-        assert!(json["messages"][3].get("reasoning_content").is_none());
+        assert_eq!(json["messages"][3]["reasoning_content"], "");
+        // Tool-call assistant without reasoning also gets empty reasoning.
+        assert_eq!(json["messages"][4]["reasoning_content"], "");
         // Tool message is preserved (not dropped).
         assert_eq!(json["messages"][5]["role"], "tool");
     }
