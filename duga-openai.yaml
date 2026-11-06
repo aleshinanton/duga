@@ -1,0 +1,50 @@
+# OpenAI / ChatGPT account login for duga-tui (no API key required).
+# 1. cargo run --release -p duga-tui -- --login openai
+# 2. Create data/openai-workspace (or set workspace.root to an existing directory).
+# 3. cargo run --release -p duga-tui -- --config duga-openai.yaml
+# Select a Codex model available to your account; model access/usage limits apply.
+provider: "openai"
+provider_auth: "oauth"
+model: "gpt-5.2-codex"
+thinking_level: "medium"
+
+agent:
+  limits:
+    max_steps: 30
+    max_tool_calls: 100
+    max_runtime: 30m
+    retry_on_error: 2
+  features:
+    streaming: true
+  output:
+    max_stdout_bytes: 8192
+    max_stderr_bytes: 8192
+    max_combined_bytes: 16384
+  think:
+    max_calls: 8
+    max_tokens: 8192
+
+# Safe default: file tools only; native subprocesses are denied.
+# For trusted local shell execution explicitly use mode: "host", or configure
+# Docker isolation. See docs/security-boundaries.md before changing this.
+sandbox:
+  mode: "capability"
+  timeout: 2m
+  allowed_binaries: []
+
+workspace:
+  root: "./data/openai-workspace"
+environment:
+  allowed: []
+memory:
+  max_tokens: 32768
+  compress_at_ratio: 0.8
+  context_window_size: 50
+  max_context_tokens: 24000
+  summarizer: "simple"
+plugins:
+  dir: "./plugins-examples"
+  modules: []
+frontend:
+  progress_mode: "summary"
+  confirmation_timeout: 120s

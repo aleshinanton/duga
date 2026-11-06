@@ -7,7 +7,8 @@ hosted OpenAI, Anthropic, dummy, and OpenAI-compatible local endpoints (e.g. Oll
 
 | Provider | Client Type | API Key Required | Default Base URL |
 |----------|------------|-----------------|-----------------|
-| `openai` | `OpenAiClient` | `OPENAI_API_KEY` (unless BASE_URL set) | `https://api.openai.com/v1` |
+| `openai` (API key) | `OpenAiClient` (Chat Completions) | `OPENAI_API_KEY` (unless BASE_URL set) | `https://api.openai.com/v1` |
+| `openai` + `provider_auth: oauth`, or `openai-codex` | `OpenAiCodexClient` (Responses) | ChatGPT browser login (`--login openai`) | `https://chatgpt.com/backend-api/codex/responses` |
 | `anthropic` | `AnthropicClient` | `ANTHROPIC_API_KEY` or OAuth (`--login anthropic`) | `https://api.anthropic.com` |
 | `dummy` | `DummyClient` | No | N/A (offline) |
 
@@ -76,6 +77,89 @@ provider_base_url_env: "OLLAMA_BASE_URL"
 ```
 
 ## Hosted OpenAI
+
+OpenAI supports **two distinct authentication paths**. An API key uses the
+standard OpenAI API and API billing; browser login uses the account's Codex
+access and ChatGPT usage limits. ChatGPT login does not grant access to every
+OpenAI API model or replace an API key for arbitrary compatible endpoints.
+
+### Browser login (ChatGPT / Codex)
+
+Run this **before starting the interactive TUI**, from a terminal on the same
+computer as your browser:
+
+```sh
+cargo run --release -p duga-tui -- --login openai
+# Installed binary: duga-tui --login openai
+# Also supported: duga-harness --login openai
+```
+
+Duga opens the OpenAI sign-in page in your browser (and prints the URL if you
+need to open it manually). Approve access there; the browser redirects to the
+short-lived loopback listener on `127.0.0.1:1455` (or `1457` if the first port is
+busy). The listener checks OAuth state and exchanges the code using PKCE S256.
+No password or authorization code needs to be pasted into duga. Login times out
+after five minutes; Ctrl+C cancels and closes the listener. This is a local
+browser flow, not a headless/device-code flow; remote shells need a suitable
+loopback tunnel or an API key instead.
+
+Then configure the model:
+
+```yaml
+provider: "openai"
+provider_auth: "oauth"
+model: "gpt-5.2-codex"  # choose a Codex model your account can access
+thinking_level: "medium"
+```
+
+A complete, safe-default example is provided in [`duga-openai.yaml`](../duga-openai.yaml):
+
+```sh
+mkdir -p data/openai-workspace
+cargo run --release -p duga-tui -- --config duga-openai.yaml
+```
+
+In PowerShell, create the directory with
+`New-Item -ItemType Directory -Force data/openai-workspace` instead of `mkdir -p`,
+or set `workspace.root` to an existing directory.
+
+`provider: "openai-codex"` is an explicit alias for the OAuth path; the legacy
+`model: "openai-codex/gpt-5.2-codex"` form is also supported.
+
+Credentials are stored separately from Anthropic in `~/.duga/openai-auth.json`
+(`%USERPROFILE%\.duga\openai-auth.json` on Windows when `HOME` is unset).
+Override this with `DUGA_OPENAI_AUTH_FILE`. The file is atomically replaced and
+created with owner-only `0600` permissions on Unix; Windows uses the containing
+directory's ACLs. Keep it in a private user directory, outside the agent's
+workspace; do not commit or share it. Tokens refresh automatically before
+expiry, and an HTTP 401 triggers one refresh/retry. Concurrent clients within
+one duga process share refresh state. Separate processes should use separate
+credential files/logins to avoid concurrent refresh-token rotation. Re-run
+`--login openai` if authorization is revoked. To remove locally stored login,
+stop duga and delete the credential file; revoke account access through OpenAI
+when needed.
+
+OAuth inference uses streaming Codex Responses with `store: false`, including
+text, reasoning summaries, tool calls and usage accounting. `thinking_level:
+max` maps to `xhigh`; available reasoning levels depend on the selected model.
+`off` omits the explicit effort override, leaving the model's default behavior.
+
+Credential resolution for `provider: "openai"`:
+
+1. `provider_auth: "oauth"` always uses ChatGPT credentials, never an API key.
+2. Otherwise, an API key or a configured compatible base URL uses the existing
+   Chat Completions client.
+3. When neither is configured, stored OpenAI OAuth credentials are used unless
+   `provider_auth: "api_key"` explicitly disables the fallback.
+
+For OAuth, remove `provider_base_url` / `provider_base_url_env` from the config;
+these overrides are rejected. Ambient `BASE_URL` is ignored in explicit OAuth
+mode, and bearer tokens are sent only to the fixed ChatGPT endpoint (redirects
+are disabled). Existing API-key and Ollama configurations remain unchanged.
+The TUI reports provider/authentication errors instead of silently substituting
+a dummy model.
+
+### API key
 
 Requires `OPENAI_API_KEY` environment variable:
 
@@ -205,9 +289,11 @@ A native `/api/chat` client is not planned unless Ollama deprecates the compatib
 
 | Variable | Provider | Required | Description |
 |----------|----------|----------|-------------|
-| `OPENAI_API_KEY` | `openai` | Yes (unless BASE_URL set) | OpenAI API key |
-| `ANTHROPIC_API_KEY` | `anthropic` | Yes | Anthropic API key |
-| `BASE_URL` | `openai`, `anthropic` | No | Override API base URL |
+| `OPENAI_API_KEY` | `openai` | Unless OAuth or BASE_URL is used | OpenAI API key |
+| `DUGA_OPENAI_AUTH_FILE` | `openai` OAuth / `openai-codex` | No | Override `~/.duga/openai-auth.json` |
+| `ANTHROPIC_API_KEY` | `anthropic` | Unless OAuth is used | Anthropic API key |
+| `DUGA_AUTH_FILE` | `anthropic` OAuth | No | Override `~/.duga/auth.json` |
+| `BASE_URL` | `openai`, `anthropic` (API-key modes) | No | Override API base URL; ignored by OpenAI OAuth |
 
 ## Migration Guide
 

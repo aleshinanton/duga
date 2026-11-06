@@ -439,7 +439,9 @@ pub struct Config {
     #[serde(default)]
     pub provider_base_url_env: Option<String>,
     /// Authentication mode for the provider: "api_key" (default) or "oauth".
-    /// With "oauth", stored OAuth credentials are used (run `--login` first).
+    /// With "oauth", stored OAuth credentials are used (run `--login openai`
+    /// or `--login anthropic` first). OpenAI OAuth uses ChatGPT's Codex Responses
+    /// endpoint rather than the API-key chat-completions endpoint.
     #[serde(default)]
     pub provider_auth: Option<String>,
     #[serde(default)]

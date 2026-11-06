@@ -6,7 +6,9 @@
 use anyhow::{Context, Result};
 use duga_config::Config;
 use duga_llm::dummy::DummyClient;
-use duga_llm::{AnthropicClient, LlmClient, OAuthManager, OpenAiClient};
+use duga_llm::{
+    AnthropicClient, LlmClient, OAuthManager, OpenAiClient, OpenAiCodexClient, OpenAiOAuthManager,
+};
 use std::sync::Arc;
 
 /// Resolved provider and model after processing config overrides.
@@ -94,6 +96,12 @@ fn resolve_base_url(config: &Config) -> Option<String> {
 /// Build an LLM client for the given provider and model,
 /// resolving credentials from config fields first, then env vars.
 pub fn build_llm(provider: &str, model_name: &str, config: &Config) -> Result<Arc<dyn LlmClient>> {
+    if let Some(auth) = config.provider_auth.as_deref() {
+        anyhow::ensure!(
+            matches!(auth, "api_key" | "oauth"),
+            "unsupported provider_auth '{auth}' (expected api_key or oauth)"
+        );
+    }
     match provider {
         "dummy" => Ok(Arc::new(DummyClient::with_response(
             format!("{provider}/{model_name}"),
@@ -101,7 +109,20 @@ pub fn build_llm(provider: &str, model_name: &str, config: &Config) -> Result<Ar
                 "Dummy provider for model '{model_name}' is wired correctly."
             )),
         ))),
-        "openai" => {
+        "openai" | "openai-codex" => {
+            if provider == "openai-codex" || config.provider_auth.as_deref() == Some("oauth") {
+                anyhow::ensure!(
+                    config.provider_base_url.is_none() && config.provider_base_url_env.is_none(),
+                    "OpenAI OAuth uses the ChatGPT Codex endpoint; remove provider_base_url/provider_base_url_env (use API-key auth for compatible endpoints)"
+                );
+                let manager =
+                    OpenAiOAuthManager::load(duga_llm::openai_oauth::default_credentials_path()?)?;
+                return Ok(Arc::new(OpenAiCodexClient::new(
+                    model_name,
+                    Arc::new(manager),
+                    config.thinking_level,
+                )));
+            }
             let base_url = resolve_base_url(config);
             let api_key = resolve_api_key(config, "OPENAI_API_KEY");
             let thinking = config.thinking_level;
@@ -115,9 +136,22 @@ pub fn build_llm(provider: &str, model_name: &str, config: &Config) -> Result<Ar
                         model_name, "", base_url, thinking,
                     )))
                 }
-                None => Err(anyhow::anyhow!(
-                    "OPENAI_API_KEY is not set; set provider_api_key, provider_api_key_env, or provider_base_url for local endpoints"
-                )),
+                None => {
+                    if config.provider_auth.as_deref() != Some("api_key") {
+                        let path = duga_llm::openai_oauth::default_credentials_path()?;
+                        if path.is_file() {
+                            let manager = OpenAiOAuthManager::load(path)?;
+                            return Ok(Arc::new(OpenAiCodexClient::new(
+                                model_name,
+                                Arc::new(manager),
+                                thinking,
+                            )));
+                        }
+                    }
+                    Err(anyhow::anyhow!(
+                        "no OpenAI credentials: set OPENAI_API_KEY, use provider_base_url for local endpoints, or run duga-tui --login openai and set provider_auth: oauth"
+                    ))
+                }
             }
         }
         "anthropic" => {
@@ -141,10 +175,7 @@ pub fn build_llm(provider: &str, model_name: &str, config: &Config) -> Result<Ar
 
             match resolve_api_key(config, "ANTHROPIC_API_KEY") {
                 Some(api_key) => Ok(Arc::new(AnthropicClient::with_thinking(
-                    model_name,
-                    api_key,
-                    base_url,
-                    thinking,
+                    model_name, api_key, base_url, thinking,
                 ))),
                 None if credentials_path.is_file() => {
                     let manager = OAuthManager::load(credentials_path)?;
@@ -161,7 +192,7 @@ pub fn build_llm(provider: &str, model_name: &str, config: &Config) -> Result<Ar
             }
         }
         other => Err(anyhow::anyhow!(
-            "unsupported LLM provider '{other}' (supported: dummy, openai, anthropic)"
+            "unsupported LLM provider '{other}' (supported: dummy, openai, openai-codex, anthropic)"
         )),
     }
 }
@@ -303,6 +334,64 @@ mod tests {
         assert_eq!(provider.model(), "dummy/test");
     }
 
+    #[test]
+    fn openai_oauth_uses_credentials_and_ignores_ambient_api_endpoint() {
+        let _env = EnvGuard::new(&["DUGA_OPENAI_AUTH_FILE", "OPENAI_API_KEY", "BASE_URL"]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openai.json");
+        duga_llm::openai_oauth::save_tokens(
+            &path,
+            &duga_llm::openai_oauth::OpenAiTokens {
+                access_token: "access".into(),
+                refresh_token: "refresh".into(),
+                account_id: "account".into(),
+                expires_at_ms: u64::MAX,
+            },
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("DUGA_OPENAI_AUTH_FILE", &path);
+            std::env::set_var("OPENAI_API_KEY", "unrelated-api-key");
+            std::env::set_var("BASE_URL", "http://localhost:11434/v1");
+        }
+        let mut config = test_config("openai/test-model");
+        config.provider_auth = Some("oauth".into());
+        assert_eq!(
+            build_llm("openai", "test-model", &config).unwrap().model(),
+            "test-model"
+        );
+        assert_eq!(
+            build_llm("openai-codex", "test-model", &config)
+                .unwrap()
+                .model(),
+            "test-model"
+        );
+    }
+
+    #[test]
+    fn openai_oauth_does_not_fall_back_to_api_key_or_custom_endpoint() {
+        let _env = EnvGuard::new(&["DUGA_OPENAI_AUTH_FILE"]);
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("DUGA_OPENAI_AUTH_FILE", dir.path().join("missing.json"));
+        }
+        let mut config = test_config("openai/test-model");
+        config.provider_auth = Some("oauth".into());
+        config.provider_api_key = Some("api-key".into());
+        let error = build_llm("openai", "test-model", &config)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("--login openai"));
+        config.provider_base_url = Some("http://localhost/attacker".into());
+        let error = build_llm("openai", "test-model", &config)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("remove provider_base_url"));
+        config.provider_auth = Some("api_key".into());
+        assert!(build_llm("openai", "test-model", &config).is_ok());
+    }
 
     fn write_oauth_credentials(dir: &tempfile::TempDir) -> std::path::PathBuf {
         let path = dir.path().join("auth.json");

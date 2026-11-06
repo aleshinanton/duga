@@ -44,7 +44,7 @@ provider: "openai"
 model: "gpt-4o-mini"
 ```
 
-Hosted OpenAI and Anthropic require their API keys:
+For API-key authentication with hosted OpenAI and Anthropic:
 
 ```bash
 export OPENAI_API_KEY="..."
@@ -80,6 +80,21 @@ See [docs/telegram-bot.md](docs/telegram-bot.md) for full configuration, trigger
 cargo build --release -p duga-tui
 ./target/release/duga-tui --config duga.yaml
 ```
+
+To use your **OpenAI / ChatGPT account** instead of an API key:
+
+```bash
+cargo run --release -p duga-tui -- --login openai
+mkdir -p data/openai-workspace
+cargo run --release -p duga-tui -- --config duga-openai.yaml
+```
+
+Sign in in the browser that opens; duga receives the callback and saves/refreshes
+credentials automatically. The example uses `provider: openai` with
+`provider_auth: oauth` and the Codex Responses endpoint. Your account must have
+access to the selected Codex model; ChatGPT usage limits apply. See
+[the provider guide](docs/providers.md#browser-login-chatgpt--codex) for storage,
+model selection, API-key alternatives and troubleshooting.
 
 **Keybindings:**
 

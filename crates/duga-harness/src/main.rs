@@ -116,6 +116,12 @@ async fn main() -> Result<()> {
 /// Run an interactive OAuth login for the given provider and exit.
 async fn run_login(provider: &str) -> Result<()> {
     match provider {
+        "openai" | "openai-codex" => {
+            let path = duga_llm::openai_oauth::default_credentials_path()?;
+            duga_llm::openai_oauth::login_interactive(&path)
+                .await
+                .context("OpenAI OAuth login failed")
+        }
         "anthropic" => {
             let path = duga_llm::oauth::default_credentials_path();
             duga_llm::oauth::login_interactive(&path)
@@ -123,7 +129,7 @@ async fn run_login(provider: &str) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("anthropic OAuth login failed: {e}"))
         }
         other => Err(anyhow::anyhow!(
-            "OAuth login is not supported for provider '{other}' (supported: anthropic)"
+            "OAuth login is not supported for provider '{other}' (supported: openai, anthropic)"
         )),
     }
 }

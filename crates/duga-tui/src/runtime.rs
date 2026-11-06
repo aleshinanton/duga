@@ -3,18 +3,16 @@
 //! Spawns agent runs from the TUI event loop, wiring up the
 //! `FrontendEventSink` and cancellation token.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use duga_config::Config;
+use duga_core::LoopResult;
 use duga_core::loop_context::LoopContext;
 use duga_core::loops::SimpleReActLoop;
-use duga_core::LoopResult;
-use duga_events::{EventSink, JsonlSink};
-use duga_llm::dummy::DummyClient;
-use duga_llm::LlmClient;
-use duga_runtime::{
-    ConfirmationMiddleware, ConfirmationPolicy, FrontendEventSink, build_agent, BuiltRuntime,
-};
 use duga_core::steering::SteeringReceiver;
+use duga_events::{EventSink, JsonlSink};
+use duga_runtime::{
+    BuiltRuntime, ConfirmationMiddleware, ConfirmationPolicy, FrontendEventSink, build_agent,
+};
 use duga_sandbox::{CancellationToken, Workspace};
 use duga_types::error::AgentError;
 use duga_types::message::Message;
@@ -30,24 +28,12 @@ pub async fn build_runtime(
     confirmation_tx: Option<tokio::sync::mpsc::UnboundedSender<PendingConfirmation>>,
     session_path: Option<&PathBuf>,
 ) -> Result<BuiltRuntime> {
-    let llm: Arc<dyn LlmClient> = match duga_runtime::providers::build_llm(
-        config.provider.as_deref().unwrap_or("dummy"),
-        &config.model,
-        config,
-    ) {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::warn!("LLM build failed ({e}), using dummy client for testing");
-            Arc::new(DummyClient::default())
-        }
-    };
+    let selection = duga_runtime::providers::resolve_provider(config)?;
+    let llm = duga_runtime::providers::build_llm(&selection.provider, &selection.model, config)
+        .context("building LLM client")?;
 
     let workspace = Arc::new(Workspace::open(&config.workspace.root)?);
-    let built = duga_runtime::tools::build_dispatcher(
-        config,
-        workspace.clone(),
-        vec![],
-    )?;
+    let built = duga_runtime::tools::build_dispatcher(config, workspace.clone(), vec![])?;
     let dispatcher = built.dispatcher;
 
     // Wire up confirmation middleware if tools are configured for it.
@@ -57,10 +43,7 @@ pub async fn build_runtime(
             .map(|c| c.require_confirmation_for.clone())
             .unwrap_or_default();
         if !require.is_empty() {
-            let policy = ConfirmationPolicy::new(
-                require,
-                config.frontend.confirmation_timeout,
-            );
+            let policy = ConfirmationPolicy::new(require, config.frontend.confirmation_timeout);
             let provider = Arc::new(TuiConfirmationProvider::new(confirm_tx));
             dispatcher.set_confirmation(ConfirmationMiddleware::new(policy, provider));
         }
@@ -73,7 +56,15 @@ pub async fn build_runtime(
             Err(e) => tracing::warn!("Could not open session file for writing: {e}"),
         }
     }
-    let runtime = build_agent(config, llm, dispatcher, workspace, sinks, None, built.mcp_adapter)?;
+    let runtime = build_agent(
+        config,
+        llm,
+        dispatcher,
+        workspace,
+        sinks,
+        None,
+        built.mcp_adapter,
+    )?;
 
     Ok(runtime)
 }
@@ -91,7 +82,7 @@ pub async fn run_agent(
 ) -> Result<LoopResult, AgentError> {
     let mut runtime = build_runtime(config, fe_sink, confirmation_tx, session_path.as_ref())
         .await
-        .map_err(|e| AgentError::EventSinkFailed(format!("failed to build runtime: {e}")))?;
+        .map_err(|e| AgentError::EventSinkFailed(format!("failed to build runtime: {e:#}")))?;
 
     if let Some(h) = history {
         runtime.memory_mut().restore_history(h);
@@ -119,17 +110,16 @@ pub async fn run_agent(
 
     // Select the loop from the registry based on config.
     let tui_cfg = config.tui.as_ref();
-    let loop_id = tui_cfg.map(|c| c.default_loop.as_str()).unwrap_or("simple_react");
-    let loop_impl = runtime
-        .registry
-        .get(loop_id)
-        .unwrap_or_else(|| {
-            tracing::warn!(
-                "configured loop '{}' not found in registry, falling back to simple_react",
-                loop_id
-            );
-            &SimpleReActLoop
-        });
+    let loop_id = tui_cfg
+        .map(|c| c.default_loop.as_str())
+        .unwrap_or("simple_react");
+    let loop_impl = runtime.registry.get(loop_id).unwrap_or_else(|| {
+        tracing::warn!(
+            "configured loop '{}' not found in registry, falling back to simple_react",
+            loop_id
+        );
+        &SimpleReActLoop
+    });
     let result = loop_impl.run(task, &mut ctx).await;
 
     // Shut down tool lifecycles.

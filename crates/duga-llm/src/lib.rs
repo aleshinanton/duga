@@ -4,6 +4,8 @@ pub mod anthropic;
 pub mod dummy;
 pub mod oauth;
 pub mod openai;
+pub mod openai_codex;
+pub mod openai_oauth;
 pub mod registry;
 
 use duga_events::EventSink;
@@ -16,6 +18,8 @@ use std::pin::Pin;
 pub use anthropic::AnthropicClient;
 pub use oauth::OAuthManager;
 pub use openai::OpenAiClient;
+pub use openai_codex::OpenAiCodexClient;
+pub use openai_oauth::OpenAiOAuthManager;
 pub use registry::{ProviderRegistry, ProviderRegistryError};
 
 pub type ChatFuture<'a> = Pin<Box<dyn Future<Output = Result<LlmResponse, LlmError>> + Send + 'a>>;

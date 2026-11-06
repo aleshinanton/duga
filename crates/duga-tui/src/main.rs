@@ -15,7 +15,7 @@ use std::path::PathBuf;
 #[command(
     name = "duga-tui",
     about = "Interactive terminal UI for the duga coding agent",
-    after_help = "Examples:\n  duga-tui --config duga.yaml\n  duga-tui --config duga.yaml --replay-dir ./replays"
+    after_help = "Examples:\n  duga-tui --login openai\n  duga-tui --config duga.yaml\n  duga-tui --config duga.yaml --replay-dir ./replays"
 )]
 struct Cli {
     /// Path to the duga YAML config file.
@@ -30,8 +30,8 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Run an interactive OAuth login for a provider (e.g. "anthropic") and exit.
-    #[arg(long, value_name = "PROVIDER")]
+    /// Sign in through a browser and exit (OpenAI uses ChatGPT/Codex account access).
+    #[arg(long, value_name = "PROVIDER", value_parser = ["openai", "openai-codex", "anthropic"])]
     login: Option<String>,
 }
 
@@ -40,14 +40,21 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if let Some(provider) = &cli.login {
-        anyhow::ensure!(
-            provider == "anthropic",
-            "OAuth login is not supported for provider '{provider}' (supported: anthropic)"
-        );
-        let path = duga_llm::oauth::default_credentials_path();
-        return duga_llm::oauth::login_interactive(&path)
-            .await
-            .map_err(|e| anyhow::anyhow!("anthropic OAuth login failed: {e}"));
+        return match provider.as_str() {
+            "openai" | "openai-codex" => {
+                let path = duga_llm::openai_oauth::default_credentials_path()?;
+                duga_llm::openai_oauth::login_interactive(&path)
+                    .await
+                    .context("OpenAI OAuth login failed")
+            }
+            "anthropic" => {
+                let path = duga_llm::oauth::default_credentials_path();
+                duga_llm::oauth::login_interactive(&path)
+                    .await
+                    .context("Anthropic OAuth login failed")
+            }
+            _ => unreachable!("clap validates the login provider"),
+        };
     }
 
     init_tracing(cli.verbose, &cli.replay_dir)?;
@@ -97,4 +104,20 @@ fn init_tracing(verbose: bool, replay_dir: &std::path::Path) -> Result<()> {
         .with_writer(writer)
         .try_init()
         .map_err(|e| anyhow::anyhow!("initializing tracing: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn login_does_not_require_a_config_file() {
+        for provider in ["openai", "openai-codex", "anthropic"] {
+            let cli = Cli::try_parse_from(["duga-tui", "--login", provider]).unwrap();
+            assert_eq!(cli.login.as_deref(), Some(provider));
+        }
+    }
+    #[test]
+    fn unsupported_login_provider_is_rejected_before_startup() {
+        assert!(Cli::try_parse_from(["duga-tui", "--login", "unknown"]).is_err());
+    }
 }
