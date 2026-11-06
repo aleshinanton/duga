@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use duga_config::{Config, TuiConfig};
 use duga_core::LoopResult;
 use duga_core::steering::{SteeringReceiver, SteeringSender};
@@ -427,6 +427,14 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: &KeyEvent) {
+        // Windows reports key-up as well as key-down. Dispatching both inserts
+        // each character twice and repeats shortcuts/backspace. Keep Repeat
+        // events so holding a key still works, but never dispatch Release to
+        // the editor, overlays or confirmation dialogs.
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
+
         // 0. Confirmation dialog takes priority over everything.
         if let Some(ref mut dialog) = self.active_confirm_dialog {
             let action = dialog.handle_key(key);
@@ -1711,6 +1719,51 @@ plugins:
         std::fs::write(&path, yaml).unwrap();
         let config = Config::load(&path).expect("test config must parse");
         (dir, config)
+    }
+
+    #[test]
+    fn windows_key_events_insert_once_per_press_and_preserve_repeats() {
+        use crossterm::event::{Event, KeyEventKind};
+        let mut app = make_app();
+        for character in ['a', 'Ж'] {
+            for kind in [KeyEventKind::Press, KeyEventKind::Release] {
+                app.update(AppEvent::Crossterm(Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char(character), KeyModifiers::NONE, kind,
+                ))));
+            }
+        }
+        assert_eq!(app.editor.text(), "aЖ");
+        for kind in [KeyEventKind::Press, KeyEventKind::Repeat, KeyEventKind::Release] {
+            app.update(AppEvent::Crossterm(Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Char('x'), KeyModifiers::NONE, kind,
+            ))));
+        }
+        assert_eq!(app.editor.text(), "aЖxx");
+    }
+
+    #[test]
+    fn windows_key_events_backspace_only_on_press() {
+        use crossterm::event::KeyEventKind;
+        let mut app = make_app();
+        app.editor.insert_text("abc");
+        for kind in [KeyEventKind::Press, KeyEventKind::Release] {
+            app.handle_key(&KeyEvent::new_with_kind(KeyCode::Backspace, KeyModifiers::NONE, kind));
+        }
+        assert_eq!(app.editor.text(), "ab");
+    }
+
+    #[test]
+    fn windows_key_events_release_does_not_toggle_help_or_quit() {
+        use crossterm::event::KeyEventKind;
+        let mut app = make_app();
+        app.handle_key(&KeyEvent::new_with_kind(KeyCode::F(1), KeyModifiers::NONE, KeyEventKind::Press));
+        assert!(app.overlays.has_overlay());
+        app.handle_key(&KeyEvent::new_with_kind(KeyCode::F(1), KeyModifiers::NONE, KeyEventKind::Release));
+        assert!(app.overlays.has_overlay());
+        app.handle_key(&KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press));
+        assert!(!app.overlays.has_overlay());
+        app.handle_key(&KeyEvent::new_with_kind(KeyCode::Char('q'), KeyModifiers::CONTROL, KeyEventKind::Release));
+        assert!(!app.should_quit());
     }
 
     #[test]

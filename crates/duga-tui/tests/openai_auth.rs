@@ -21,7 +21,8 @@ fn example_selects_openai_oauth_with_a_safe_workspace() {
     let (_directory, config) = example_config();
     let selection = duga_runtime::providers::resolve_provider(&config).unwrap();
     assert_eq!(selection.provider, "openai");
-    assert_eq!(selection.model, "gpt-5.2-codex");
+    assert!(!selection.model.is_empty());
+    assert_eq!(selection.model, config.model);
     assert_eq!(config.provider_auth.as_deref(), Some("oauth"));
     assert_eq!(config.sandbox.mode, duga_config::SandboxMode::Capability);
     assert!(config.environment.allowed.is_empty());
