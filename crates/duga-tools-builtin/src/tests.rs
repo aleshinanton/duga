@@ -174,7 +174,7 @@ async fn test_think_works() {
 }
 
 #[tokio::test]
-async fn test_shell_cat() {
+async fn test_capability_shell_denies_cat() {
     let (_d, ws, dp) = setup();
     let c = CancellationToken::new();
     let s = NullSink;
@@ -193,9 +193,8 @@ async fn test_shell_cat() {
             c.clone(),
             &s,
         )
-        .await
-        .unwrap();
-    assert!(r.output.contains("data"));
+        .await;
+    assert!(matches!(r, Err(duga_types::error::ToolError::Denied(_))));
 }
 
 #[tokio::test]

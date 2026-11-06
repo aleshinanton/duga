@@ -37,7 +37,11 @@ impl Loop for SimpleReActLoop {
     }
 
     fn run<'a>(&'a self, task: String, ctx: &'a mut LoopContext<'a>) -> LoopRunFuture<'a> {
-        Box::pin(async move { run_simple_react(task, ctx).await })
+        Box::pin(async move {
+            let remaining = ctx.begin_run()?;
+            let cancel = ctx.cancellation.clone();
+            super::bounded_run(remaining, cancel, run_simple_react(task, ctx)).await
+        })
     }
 }
 
@@ -121,6 +125,7 @@ async fn run_simple_react(
             .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
 
         let llm_started = Instant::now();
+        ctx.memory.run_budget.step(ctx.config)?;
         let response = match call_llm(
             ctx.llm.as_ref(),
             &messages,
@@ -447,6 +452,8 @@ async fn try_handle_delegate(
         .await
         .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
 
+    ctx.memory.run_budget.tool(ctx.config)?;
+
     // Run the target loop against a temporary memory tail. The child sees the
     // valid parent context up to this point, but its messages are removed before
     // the parent assistant + delegate result are appended contiguously.
@@ -520,6 +527,7 @@ pub async fn dispatch_tool_with_events(
         ));
     }
 
+    ctx.memory.run_budget.tool(ctx.config)?;
     let retryable = ctx
         .tools
         .get(&call.tool)
@@ -549,10 +557,12 @@ pub async fn dispatch_tool_with_events(
             ctx.event_sink.as_ref(),
         );
 
-        // Timeout bounded by config.max_runtime — but we don't have a
-        // loop_started Instant here.  Use a generous 60s timeout that the
-        // cancellation token can still interrupt.
-        let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), dispatch).await;
+        let remaining = ctx.memory.run_budget.remaining(ctx.config)?;
+        let outcome = tokio::select! {
+            biased;
+            _ = ctx.cancellation.cancelled() => return Err(AgentError::Cancelled),
+            result = tokio::time::timeout(remaining, dispatch) => result,
+        };
 
         match outcome {
             Ok(Ok(result)) => {
@@ -596,20 +606,9 @@ pub async fn dispatch_tool_with_events(
                     .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
                 return Ok(result);
             }
-            Err(_timeout) => {
-                // Timeout — return the last error if any, or a timeout error
-                let error = last_error.unwrap_or(duga_types::error::ToolError::Timeout);
-                let result =
-                    ToolResult::from_outcome(call.id.clone(), &call.tool, Err(error), start);
-                ctx.event_sink
-                    .emit(Event::ToolCallFinished {
-                        result: result.clone(),
-                        attempt,
-                        tool_name: call.tool.clone(),
-                    })
-                    .await
-                    .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
-                return Ok(result);
+            Err(_) => {
+                ctx.cancellation.cancel();
+                return Err(AgentError::Timeout);
             }
         }
     }
@@ -650,7 +649,6 @@ async fn call_llm(
     }
 
     let remaining = remaining_runtime(config, started)?;
-    let mut cancelled = cancellation.subscribe();
     let call = llm.chat(
         messages,
         tools,
@@ -668,7 +666,7 @@ async fn call_llm(
                 Err(_) => Err(AgentError::Timeout),
             }
         }
-        _ = cancelled.changed() => Err(AgentError::Cancelled),
+        _ = cancellation.cancelled() => Err(AgentError::Cancelled),
     }
 }
 
@@ -678,6 +676,7 @@ async fn execute_tool(
     loop_started: Instant,
     cancellation: &CancellationToken,
 ) -> Result<ToolResult, AgentError> {
+    ctx.memory.run_budget.tool(ctx.config)?;
     let retryable = ctx
         .tools
         .get(&call.tool)
@@ -699,14 +698,19 @@ async fn execute_tool(
             .map_err(|e| AgentError::EventSinkFailed(e.to_string()))?;
 
         let started = Instant::now();
-        let remaining = remaining_runtime(ctx.config, loop_started)?;
+        let remaining = remaining_runtime(ctx.config, loop_started)?
+            .min(ctx.memory.run_budget.remaining(ctx.config)?);
         let dispatch = ctx.tools.dispatch(
             call,
             ctx.workspace,
             cancellation.clone(),
             ctx.event_sink.as_ref(),
         );
-        let outcome = tokio::time::timeout(remaining, dispatch).await;
+        let outcome = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(AgentError::Cancelled),
+            result = tokio::time::timeout(remaining, dispatch) => result,
+        };
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(_) => {

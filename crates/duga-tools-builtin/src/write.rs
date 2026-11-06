@@ -65,7 +65,7 @@ impl WriteTool {
         let raw = PathBuf::from(path_str);
 
         // Relative path: workspace only. `execute` creates parent dirs.
-        if !raw.is_absolute() {
+        if !raw.has_root() {
             return ctx
                 .workspace
                 .resolve(&raw)

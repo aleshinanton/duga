@@ -71,11 +71,8 @@ pub fn sandbox_environment_context(config: &Config) -> String {
              Check available commands with `which` or `command -v` before \
              assuming they exist. File system changes persist across sessions."
             .to_string(),
-        SandboxMode::Capability | SandboxMode::Host => {
-            "You are running with direct system access. Standard Unix tools \
-             should be available. Use `shell` for exploration and execution."
-                .to_string()
-        }
+        SandboxMode::Capability => "Filesystem tools are capability-bounded to the workspace. Subprocess execution is disabled; use read, write, edit and search instead of shell.".to_string(),
+        SandboxMode::Host => "You are running in explicitly trusted host mode, without OS isolation. Commands have the host user's permissions. Use caution with filesystem and network access.".to_string(),
     }
 }
 
@@ -139,9 +136,7 @@ pub fn build_agent(
     let system_text = system_prompt.unwrap_or_else(|| {
         let env = sandbox_environment_context(config);
         let tools = tool_guidance();
-        let strategies = registry.build_strategies_prompt(
-            &config.agent.loop_config.enabled_loops,
-        );
+        let strategies = registry.build_strategies_prompt(&config.agent.loop_config.enabled_loops);
         let today = {
             use std::time::SystemTime;
             let now = SystemTime::now()
@@ -266,7 +261,7 @@ sandbox:
   mode: {mode_str}
   timeout: 30s
   allowed_binaries:
-    - /bin/echo
+    - echo
 workspace:
   root: {workspace_root}
 environment:
@@ -302,14 +297,14 @@ plugins:
     fn sandbox_context_host_mode() {
         let config = make_config(SandboxMode::Host);
         let ctx = sandbox_environment_context(&config);
-        assert!(ctx.contains("direct system access"));
+        assert!(ctx.contains("without OS isolation"));
     }
 
     #[test]
     fn sandbox_context_capability_mode() {
         let config = make_config(SandboxMode::Capability);
         let ctx = sandbox_environment_context(&config);
-        assert!(ctx.contains("direct system access"));
+        assert!(ctx.contains("Subprocess execution is disabled"));
     }
 
     #[test]
@@ -326,7 +321,10 @@ plugins:
     #[test]
     fn tool_guidance_requires_non_empty_labels() {
         let guidance = tool_guidance();
-        assert!(guidance.contains("label"), "should mention label requirement");
+        assert!(
+            guidance.contains("label"),
+            "should mention label requirement"
+        );
         assert!(guidance.contains("non-empty"), "should require non-empty");
     }
 

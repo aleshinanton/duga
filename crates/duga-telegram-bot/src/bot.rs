@@ -12,6 +12,8 @@ use teloxide::types::{ChatId, Message};
 
 /// Start the bot poll loop.
 pub async fn run(config: &Config, token: &str) -> Result<()> {
+    // Validate isolation before polling, rather than failing on the first task.
+    crate::runtime::chat_config(config, 0)?;
     let bot = Bot::new(token);
     let bot_username = bot.get_me().await?.username().to_string();
 
@@ -22,58 +24,53 @@ pub async fn run(config: &Config, token: &str) -> Result<()> {
     let runtime = Arc::new(TelegramRuntime::new(config.clone()));
 
     let schema = dptree::entry()
-        .branch(
-            Update::filter_message().endpoint({
+        .branch(Update::filter_message().endpoint({
+            let session_manager = session_manager.clone();
+            let telegram_config = telegram_config.clone();
+            let bot_logger = bot_logger.clone();
+            let runtime = runtime.clone();
+            let bot_username = bot_username.clone();
+
+            move |bot_moved: Bot, msg: Message| {
+                let bot = bot_moved.clone();
                 let session_manager = session_manager.clone();
                 let telegram_config = telegram_config.clone();
                 let bot_logger = bot_logger.clone();
                 let runtime = runtime.clone();
                 let bot_username = bot_username.clone();
 
-                move |bot_moved: Bot, msg: Message| {
-                    let bot = bot_moved.clone();
-                    let session_manager = session_manager.clone();
-                    let telegram_config = telegram_config.clone();
-                    let bot_logger = bot_logger.clone();
-                    let runtime = runtime.clone();
-                    let bot_username = bot_username.clone();
-
-                    async move {
-                        handle_message(
-                            bot,
-                            msg,
-                            session_manager,
-                            telegram_config,
-                            bot_logger,
-                            runtime,
-                            bot_username,
-                        )
-                        .await;
-                        Ok::<_, anyhow::Error>(())
-                    }
+                async move {
+                    handle_message(
+                        bot,
+                        msg,
+                        session_manager,
+                        telegram_config,
+                        bot_logger,
+                        runtime,
+                        bot_username,
+                    )
+                    .await;
+                    Ok::<_, anyhow::Error>(())
                 }
-            }),
-        )
-        .branch(
-            Update::filter_callback_query().endpoint({
+            }
+        }))
+        .branch(Update::filter_callback_query().endpoint({
+            let session_manager = session_manager.clone();
+            let telegram_config = telegram_config.clone();
+            let runtime = runtime.clone();
+
+            move |bot_moved: Bot, cb: CallbackQuery| {
+                let bot = bot_moved.clone();
                 let session_manager = session_manager.clone();
                 let telegram_config = telegram_config.clone();
                 let runtime = runtime.clone();
 
-                move |bot_moved: Bot, cb: CallbackQuery| {
-                    let bot = bot_moved.clone();
-                    let session_manager = session_manager.clone();
-                    let telegram_config = telegram_config.clone();
-                    let runtime = runtime.clone();
-
-                    async move {
-                        handle_callback_query(bot, cb, session_manager, telegram_config, runtime)
-                            .await;
-                        Ok::<_, anyhow::Error>(())
-                    }
+                async move {
+                    handle_callback_query(bot, cb, session_manager, telegram_config, runtime).await;
+                    Ok::<_, anyhow::Error>(())
                 }
-            }),
-        );
+            }
+        }));
 
     tracing::info!("bot @{bot_username} started, polling for updates…");
     Dispatcher::builder(bot, schema)
@@ -108,12 +105,26 @@ async fn handle_message(
 
     if let Some(ref t) = text {
         if t.starts_with('/') {
-            handle_command(&bot, chat_id, t, &session_manager, &telegram_config.data_dir).await;
+            handle_command(
+                &bot,
+                chat_id,
+                t,
+                &session_manager,
+                &telegram_config.data_dir,
+            )
+            .await;
             return;
         }
         // Also recognise plain "stop"/"cancel" (case-insensitive) as /stop.
         if is_cancel_text(t) {
-            handle_command(&bot, chat_id, "/stop", &session_manager, &telegram_config.data_dir).await;
+            handle_command(
+                &bot,
+                chat_id,
+                "/stop",
+                &session_manager,
+                &telegram_config.data_dir,
+            )
+            .await;
             return;
         }
     }
@@ -131,11 +142,16 @@ async fn handle_message(
             .join(chat_id_i64.to_string())
             .join("attachments");
         let _ = tokio::fs::create_dir_all(&chat_dir).await;
-        match crate::attachments::download_attachments(&bot, &msg, &chat_dir, &telegram_config).await {
+        match crate::attachments::download_attachments(&bot, &msg, &chat_dir, &telegram_config)
+            .await
+        {
             Ok(files) if !files.is_empty() => {
                 let summary = crate::attachments::summarize_attachments(&files);
                 let _ = bot
-                    .send_message(chat_id, format!("📎 Downloaded {} attachment(s)", files.len()))
+                    .send_message(
+                        chat_id,
+                        format!("📎 Downloaded {} attachment(s)", files.len()),
+                    )
                     .await;
                 summary
             }
@@ -167,9 +183,7 @@ async fn handle_message(
     };
 
     // Log the incoming message.
-    let _ = bot_logger
-        .log_message(chat_id_i64, &msg, 0, true)
-        .await;
+    let _ = bot_logger.log_message(chat_id_i64, &msg, 0, true).await;
 
     // ── Steering: if a loop is already running, inject the message as Reprompt ──
     match session_manager.try_steer(chat_id_i64, &task) {
@@ -351,7 +365,7 @@ mod tests {
     #[test]
     fn is_cancel_text_rejects_non_cancel() {
         assert!(!is_cancel_text("hello"));
-        assert!(!is_cancel_text("/stop"));     // handled by / prefix check
+        assert!(!is_cancel_text("/stop")); // handled by / prefix check
         assert!(!is_cancel_text("stopping"));
         assert!(!is_cancel_text("stopp"));
         assert!(!is_cancel_text(""));

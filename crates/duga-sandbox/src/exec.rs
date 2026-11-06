@@ -11,8 +11,8 @@ use duga_types::tool_result::ToolResult;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
@@ -59,6 +59,15 @@ impl CancellationToken {
     /// Returns a watch receiver that resolves when `cancel()` is called.
     pub fn subscribe(&self) -> watch::Receiver<()> {
         self.tx.subscribe()
+    }
+
+    /// Race-free cancellation wait: subscribe first, then inspect the flag.
+    pub async fn cancelled(&self) {
+        let mut rx = self.subscribe();
+        if self.is_cancelled() {
+            return;
+        }
+        let _ = rx.changed().await;
     }
 }
 
@@ -159,17 +168,40 @@ pub async fn run_captured(
         .map_err(|e| ToolError::Denied(e.to_string()))?;
     let full_cwd = workspace.root_path().join(resolved_cwd);
 
-    let mut child = tokio::process::Command::new(binary)
+    let mut command = tokio::process::Command::new(binary);
+    command
         .args(args)
         .current_dir(&full_cwd)
         .env_clear()
         .env("PATH", crate::env::SANITIZED_PATH)
-        .envs(env)
+        .envs(env);
+    #[cfg(windows)]
+    if let Ok(root) = std::env::var("SystemRoot") {
+        command.env("SystemRoot", root);
+    }
+    run_process(command, limits, timeout, cancel).await
+}
+
+/// Execute a prepared host process with a single deadline for exit AND pipe EOF.
+/// All exits, errors and dropped futures kill the process tree and abort readers.
+pub(crate) async fn run_process(
+    mut command: tokio::process::Command,
+    limits: &OutputLimits,
+    timeout: Duration,
+    cancel: CancellationToken,
+) -> Result<ToolResult, ToolError> {
+    if cancel.is_cancelled() {
+        return Err(ToolError::Cancelled);
+    }
+    let deadline = tokio::time::Instant::now() + timeout;
+    crate::process_tree::configure(&mut command);
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| ToolError::Io(e.to_string()))?;
+    let tree = crate::process_tree::ProcessTree::attach(&child)?;
 
     let stdout_fd = child.stdout.take().expect("stdout piped");
     let stderr_fd = child.stderr.take().expect("stderr piped");
@@ -207,51 +239,40 @@ pub async fn run_captured(
         Ok((total, buf, truncated))
     }
 
-    let stdout_task = tokio::spawn(read_limited(
+    let mut stdout_task = crate::process_tree::AbortOnDrop(tokio::spawn(read_limited(
         tokio::io::BufReader::new(stdout_fd),
         limits.max_stdout_bytes,
-    ));
-    let stderr_task = tokio::spawn(read_limited(
+    )));
+    let mut stderr_task = crate::process_tree::AbortOnDrop(tokio::spawn(read_limited(
         tokio::io::BufReader::new(stderr_fd),
         limits.max_stderr_bytes,
-    ));
+    )));
 
-    // ── Wait future with timeout ─────────────────────────────────────────
-    // Cancellation watcher via tokio::sync::watch
-    let mut cancel_rx = cancel.subscribe();
-
-    // Biased select: timeout checked first, then cancellation, then natural exit.
-    let exit_status = tokio::select! {
-        biased;
-
-        result = tokio::time::timeout(timeout, child.wait()) => {
-            match result {
-                Ok(Ok(status)) => status,
-                Ok(Err(e)) => return Err(ToolError::Io(e.to_string())),
-                Err(_) => {
-                    let _ = child.kill().await;
-                    stdout_task.abort();
-                    stderr_task.abort();
-                    return Err(ToolError::Timeout);
-                }
-            }
-        }
-
-        _ = cancel_rx.changed() => {
-            let _ = child.kill().await;
-            stdout_task.abort();
-            stderr_task.abort();
-            return Err(ToolError::Cancelled);
-        }
+    let completed = async {
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| ToolError::Io(e.to_string()))?;
+        // Parent exit must not leave background descendants alive holding pipes.
+        drop(tree);
+        let stdout = (&mut stdout_task.0)
+            .await
+            .map_err(|e| ToolError::Io(format!("stdout reader failed: {e}")))??;
+        let stderr = (&mut stderr_task.0)
+            .await
+            .map_err(|e| ToolError::Io(format!("stderr reader failed: {e}")))??;
+        Ok::<_, ToolError>((status, stdout, stderr))
     };
-
-    // ── Process exited normally; collect drained output ───────────────────
-    let (stdout_bytes, mut stdout_buf, stdout_trunc) = stdout_task
-        .await
-        .map_err(|e| ToolError::Io(format!("stdout reader failed: {}", e)))??;
-    let (stderr_bytes, mut stderr_buf, stderr_trunc) = stderr_task
-        .await
-        .map_err(|e| ToolError::Io(format!("stderr reader failed: {}", e)))??;
+    let (
+        exit_status,
+        (stdout_bytes, mut stdout_buf, stdout_trunc),
+        (stderr_bytes, mut stderr_buf, stderr_trunc),
+    ) = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(ToolError::Cancelled),
+        result = tokio::time::timeout_at(deadline, completed) =>
+            result.map_err(|_| ToolError::Timeout)??,
+    };
 
     // Combined limit check
     let combined_bytes = stdout_bytes.saturating_add(stderr_bytes);
@@ -416,9 +437,11 @@ mod tests {
         .unwrap();
 
         assert!(result.truncated);
-        assert!(result
-            .output
-            .contains("[TRUNCATED] stdout exceeded 1024 byte limit"));
+        assert!(
+            result
+                .output
+                .contains("[TRUNCATED] stdout exceeded 1024 byte limit")
+        );
     }
 
     // ── TASK-5.1: exit code handling and output formatting ──────────────

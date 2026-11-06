@@ -8,7 +8,7 @@ use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
 use crate::loops::simple_react::{dispatch_tool_with_events, schemas_without_delegate};
-use crate::steering::{check_steer, SteerAction};
+use crate::steering::{SteerAction, check_steer};
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
@@ -33,7 +33,9 @@ impl Loop for DecompositionLoop {
 
     fn run<'a>(&'a self, task: String, ctx: &'a mut LoopContext<'a>) -> LoopRunFuture<'a> {
         Box::pin(async move {
-            run_decomposition(task, ctx).await
+            let remaining = ctx.begin_run()?;
+            let cancel = ctx.cancellation.clone();
+            super::bounded_run(remaining, cancel, run_decomposition(task, ctx)).await
         })
     }
 }
@@ -143,19 +145,14 @@ async fn decompose(
     let messages = crate::loops::problem_solving::minimal_context(ctx, &prompt);
 
     let response = ctx
-        .llm
-        .chat(
-            &messages,
-            &[],
-            LlmCallOptions { streaming: false },
-            ctx.event_sink.as_ref(),
-        )
-        .await
-        .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+        .chat(&messages, &[], LlmCallOptions { streaming: false })
+        .await?;
 
     let raw = response.message.text.unwrap_or_default();
     match serde_json::from_str::<Vec<SubtaskDef>>(&raw) {
-        Ok(subtasks) if !subtasks.is_empty() => Ok(subtasks),
+        Ok(subtasks) if !subtasks.is_empty() => {
+            Ok(subtasks.into_iter().take(max_count as usize).collect())
+        }
         _ => {
             // Fallback: single subtask
             Ok(vec![SubtaskDef {
@@ -166,11 +163,10 @@ async fn decompose(
     }
 }
 
-async fn solve_subtask(
-    task: &str,
-    ctx: &mut LoopContext<'_>,
-) -> Result<(String, u32), AgentError> {
-    ctx.memory.push_user(format!("Subtask: {task}\n\nSolve this subtask. Start with tools if needed."));
+async fn solve_subtask(task: &str, ctx: &mut LoopContext<'_>) -> Result<(String, u32), AgentError> {
+    ctx.memory.push_user(format!(
+        "Subtask: {task}\n\nSolve this subtask. Start with tools if needed."
+    ));
 
     let mut output = String::new();
     let mut tool_calls = 0u32;
@@ -183,15 +179,8 @@ async fn solve_subtask(
         let messages = ctx.memory.messages();
         let schemas = schemas_without_delegate(&ctx.tools.schemas());
         let response = ctx
-            .llm
-            .chat(
-                &messages,
-                &schemas,
-                LlmCallOptions { streaming: false },
-                ctx.event_sink.as_ref(),
-            )
-            .await
-            .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+            .chat(&messages, &schemas, LlmCallOptions { streaming: false })
+            .await?;
 
         let assistant = response.message;
         let text = assistant.text.clone().unwrap_or_default();
@@ -199,18 +188,13 @@ async fn solve_subtask(
 
         for call in &assistant.tool_calls {
             tool_calls += 1;
-            let result = match dispatch_tool_with_events(ctx, call).await {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
+            let result = dispatch_tool_with_events(ctx, call).await?;
             ctx.memory.push_tool_result(result);
         }
 
         output.push_str(&text);
 
-        if assistant.is_termination()
-            || (!text.is_empty() && assistant.tool_calls.is_empty())
-        {
+        if assistant.is_termination() || (!text.is_empty() && assistant.tool_calls.is_empty()) {
             break;
         }
     }
@@ -244,15 +228,8 @@ async fn merge_results(
     let messages = crate::loops::problem_solving::minimal_context(ctx, &merge_prompt);
 
     let response = ctx
-        .llm
-        .chat(
-            &messages,
-            &[],
-            LlmCallOptions { streaming: false },
-            ctx.event_sink.as_ref(),
-        )
-        .await
-        .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+        .chat(&messages, &[], LlmCallOptions { streaming: false })
+        .await?;
 
     Ok(response.message.text.unwrap_or_default())
 }
@@ -277,14 +254,19 @@ mod tests {
                 tool_calls: vec![],
                 reasoning_content: None,
             },
-            usage: TokenUsage { prompt: 0, completion: 0 },
+            usage: TokenUsage {
+                prompt: 0,
+                completion: 0,
+            },
         }
     }
 
     #[tokio::test]
     async fn decomposition_with_subtasks() {
         let llm: Arc<dyn LlmClient> = Arc::new(MockLlm::new(vec![
-            Ok(text(r#"[{"title": "A", "description": "do A"}, {"title": "B", "description": "do B"}]"#)),
+            Ok(text(
+                r#"[{"title": "A", "description": "do A"}, {"title": "B", "description": "do B"}]"#,
+            )),
             Ok(text("A done")),
             Ok(text("B done")),
             Ok(text("Merged: A done, B done")),
@@ -333,9 +315,9 @@ mod tests {
     #[tokio::test]
     async fn empty_decompose_falls_back_to_direct() {
         let llm: Arc<dyn LlmClient> = Arc::new(MockLlm::new(vec![
-            Ok(text("not valid json")),   // decompose
-            Ok(text("done directly")),     // solve subtask
-            Ok(text("merged result")),     // merge results
+            Ok(text("not valid json")), // decompose
+            Ok(text("done directly")),  // solve subtask
+            Ok(text("merged result")),  // merge results
         ]));
         let config = AgentConfig::default();
         let mut memory = crate::Memory::new(vec![Message::system("s")], 10000, 0.8, 0, 0);

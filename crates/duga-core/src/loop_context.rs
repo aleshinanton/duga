@@ -60,6 +60,32 @@ pub struct LoopContext<'a> {
 }
 
 impl<'a> LoopContext<'a> {
+    /// Start only at a root entry point; delegations share the existing budget.
+    pub(crate) fn begin_run(&self) -> Result<std::time::Duration, duga_types::error::AgentError> {
+        if self.delegation_depth == 0 {
+            self.memory.run_budget.reset();
+        }
+        self.memory.run_budget.remaining(self.config)
+    }
+
+    /// Every LLM request, including planning/auditing, consumes the same step budget.
+    pub(crate) async fn chat(
+        &self,
+        messages: &[duga_types::message::Message],
+        tools: &[duga_types::tool_schema::ToolSchema],
+        options: duga_types::llm::LlmCallOptions,
+    ) -> Result<duga_types::llm::LlmResponse, duga_types::error::AgentError> {
+        use duga_types::error::AgentError;
+        self.memory.run_budget.step(self.config)?;
+        let remaining = self.memory.run_budget.remaining(self.config)?;
+        tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => Err(AgentError::Cancelled),
+            result = tokio::time::timeout(remaining, self.llm.chat(messages, tools, options, self.event_sink.as_ref())) =>
+                result.map_err(|_| AgentError::Timeout)?.map_err(|e| AgentError::LlmFailed(e.to_string())),
+        }
+    }
+
     /// Build a child context with incremented `delegation_depth`.
     ///
     /// Re-borrows `memory` from the parent context — safe because the
@@ -97,7 +123,7 @@ mod tests {
     use duga_sandbox::CancellationToken;
     use duga_tools::ToolDispatcher;
     use duga_types::config::AgentConfig;
-    
+
     use duga_types::message::Message;
     use std::sync::Arc;
 
@@ -149,16 +175,19 @@ mod tests {
         let summarizer: Arc<dyn Summarizer> = Arc::new(NoopSummarizer);
         let cancel = CancellationToken::new();
         let registry = Arc::new(LoopRegistry::new());
-        let mut memory = crate::memory::Memory::new(
-            vec![Message::system("test")],
-            16_000,
-            0.8,
-            0,
-            16_000,
-        );
+        let mut memory =
+            crate::memory::Memory::new(vec![Message::system("test")], 16_000, 0.8, 0, 16_000);
 
         let mut ctx = make_test_ctx(
-            &config, &mut memory, &llm, &tools, &workspace, &sink, &summarizer, &cancel, &registry,
+            &config,
+            &mut memory,
+            &llm,
+            &tools,
+            &workspace,
+            &sink,
+            &summarizer,
+            &cancel,
+            &registry,
         );
         assert_eq!(ctx.delegation_depth, 0);
 
@@ -178,16 +207,19 @@ mod tests {
         let summarizer: Arc<dyn Summarizer> = Arc::new(NoopSummarizer);
         let cancel = CancellationToken::new();
         let registry = Arc::new(LoopRegistry::new());
-        let mut memory = crate::memory::Memory::new(
-            vec![Message::system("test")],
-            16_000,
-            0.8,
-            0,
-            16_000,
-        );
+        let mut memory =
+            crate::memory::Memory::new(vec![Message::system("test")], 16_000, 0.8, 0, 16_000);
 
         let mut ctx = make_test_ctx(
-            &config, &mut memory, &llm, &tools, &workspace, &sink, &summarizer, &cancel, &registry,
+            &config,
+            &mut memory,
+            &llm,
+            &tools,
+            &workspace,
+            &sink,
+            &summarizer,
+            &cancel,
+            &registry,
         );
         ctx.max_refinement_iterations = 5;
         ctx.max_delegation_depth = 7;
@@ -195,8 +227,14 @@ mod tests {
         // Verify child inherits fields correctly
         {
             let child = ctx.child();
-            assert_eq!(child.max_refinement_iterations, 5, "child inherits refinement iters");
-            assert_eq!(child.max_delegation_depth, 7, "child inherits max delegation depth");
+            assert_eq!(
+                child.max_refinement_iterations, 5,
+                "child inherits refinement iters"
+            );
+            assert_eq!(
+                child.max_delegation_depth, 7,
+                "child inherits max delegation depth"
+            );
             assert_eq!(child.delegation_depth, 1, "depth incremented once");
             // child shares references with parent
             assert!(std::ptr::eq(child.config, ctx.config));
@@ -214,16 +252,19 @@ mod tests {
         let summarizer: Arc<dyn Summarizer> = Arc::new(NoopSummarizer);
         let cancel = CancellationToken::new();
         let registry = Arc::new(LoopRegistry::new());
-        let mut memory = crate::memory::Memory::new(
-            vec![Message::system("test")],
-            16_000,
-            0.8,
-            0,
-            16_000,
-        );
+        let mut memory =
+            crate::memory::Memory::new(vec![Message::system("test")], 16_000, 0.8, 0, 16_000);
 
         let mut ctx = make_test_ctx(
-            &config, &mut memory, &llm, &tools, &workspace, &sink, &summarizer, &cancel, &registry,
+            &config,
+            &mut memory,
+            &llm,
+            &tools,
+            &workspace,
+            &sink,
+            &summarizer,
+            &cancel,
+            &registry,
         );
 
         let child1 = ctx.child();
@@ -245,16 +286,19 @@ mod tests {
         let summarizer: Arc<dyn Summarizer> = Arc::new(NoopSummarizer);
         let cancel = CancellationToken::new();
         let registry = Arc::new(LoopRegistry::new());
-        let mut memory = crate::memory::Memory::new(
-            vec![Message::system("test")],
-            16_000,
-            0.8,
-            0,
-            16_000,
-        );
+        let mut memory =
+            crate::memory::Memory::new(vec![Message::system("test")], 16_000, 0.8, 0, 16_000);
 
         let ctx = make_test_ctx(
-            &config, &mut memory, &llm, &tools, &workspace, &sink, &summarizer, &cancel, &registry,
+            &config,
+            &mut memory,
+            &llm,
+            &tools,
+            &workspace,
+            &sink,
+            &summarizer,
+            &cancel,
+            &registry,
         );
         assert_eq!(ctx.delegation_depth, 0, "root context starts at depth 0");
     }

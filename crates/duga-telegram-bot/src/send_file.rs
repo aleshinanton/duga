@@ -120,100 +120,12 @@ impl SendFileTool {
     /// LLMs running inside the Docker sandbox often pass absolute paths like
     /// `/workspace/chess.svg` (the sandbox mount point). On the host, the file
     /// may live at `{workspace_root}/chess.svg` or `{aux_root}/chess.svg`.
+    #[cfg(test)]
     fn resolve_send_path(&self, path: &str) -> Result<(PathBuf, bool, PathBuf), String> {
-        // Helper: try workspace resolution and verify the file exists there.
-        let try_workspace = |relative: &Path| -> Option<(PathBuf, bool, PathBuf)> {
-            self.workspace.resolve(relative).ok().and_then(|resolved| {
-                // Only return if the file actually exists in the workspace.
-                if self.workspace.is_file(&resolved) {
-                    let full = self.workspace.root_path().join(&resolved);
-                    Some((resolved, false, full))
-                } else {
-                    None
-                }
-            })
-        };
-
-        let raw = PathBuf::from(path);
-
-        // Relative path: try workspace first.
-        if !raw.is_absolute() {
-            if let Some(result) = try_workspace(&raw) {
-                return Ok(result);
-            }
-            // Try aux_roots.
-            if !self.aux_roots.is_empty()
-                && !raw
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::ParentDir))
-            {
-                for aux in &self.aux_roots {
-                    let aux_full = aux.join(&raw);
-                    if aux_full.is_file() {
-                        return Ok((raw.clone(), true, aux_full));
-                    }
-                }
-            }
-            return Err(format!("file not found: {}", path));
-        }
-
-        // Absolute path: try multiple strategies.
-        // 1. Strip workspace root prefix.
-        if let Ok(relative) = raw.strip_prefix(self.workspace.root_path()) {
-            if let Some(result) = try_workspace(Path::new(relative)) {
-                return Ok(result);
-            }
-        }
-
-        // 2. Canonicalize then strip workspace root.
-        if let Ok(canonical) = raw.canonicalize() {
-            if let Ok(relative) = canonical.strip_prefix(self.workspace.root_path()) {
-                if let Some(result) = try_workspace(Path::new(relative)) {
-                    return Ok(result);
-                }
-            }
-            // Also check if canonicalized path is in an aux_root.
-            for aux in &self.aux_roots {
-                let aux_canonical = aux.canonicalize().unwrap_or_else(|_| aux.clone());
-                if let Ok(relative) = canonical.strip_prefix(&aux_canonical) {
-                    let aux_full = aux.join(relative);
-                    if aux_full.is_file() {
-                        return Ok((relative.to_path_buf(), true, aux_full));
-                    }
-                }
-            }
-        }
-
-        // 3. Strip known sandbox mount prefixes (e.g. /workspace/).
-        const KNOWN_MOUNT_PREFIXES: &[&str] = &["/workspace/", "/workspace"];
-        for prefix in KNOWN_MOUNT_PREFIXES {
-            if let Ok(relative) = raw.strip_prefix(prefix) {
-                let rel = Path::new(relative);
-                if let Some(result) = try_workspace(rel) {
-                    return Ok(result);
-                }
-                // Try aux_roots with the stripped relative path.
-                for aux in &self.aux_roots {
-                    let aux_full = aux.join(rel);
-                    if aux_full.is_file() {
-                        return Ok((rel.to_path_buf(), true, aux_full));
-                    }
-                }
-            }
-        }
-
-        // 4. Try each aux_root with the original absolute path stripped.
-        for aux in &self.aux_roots {
-            let aux_canonical = aux.canonicalize().unwrap_or_else(|_| aux.clone());
-            if let Ok(relative) = raw.strip_prefix(&aux_canonical) {
-                let aux_full = aux.join(relative);
-                if aux_full.is_file() {
-                    return Ok((relative.to_path_buf(), true, aux_full));
-                }
-            }
-        }
-
-        Err(format!("file not found: {}", path))
+        self.workspace
+            .open_allowed_file(Path::new(path), &self.aux_roots)
+            .map(|(relative, is_aux, full, _file)| (relative, is_aux, full))
+            .map_err(|e| format!("file not found or denied: {e}"))
     }
 }
 
@@ -232,13 +144,16 @@ impl Tool for SendFileTool {
         let start = std::time::Instant::now();
 
         // Resolve the path within the workspace or aux_roots (supports absolute paths).
-        let (resolved, is_aux, full_path) = match self.resolve_send_path(&args.path) {
+        let (resolved, _is_aux, _full_path, mut file) = match self
+            .workspace
+            .open_allowed_file(Path::new(&args.path), &self.aux_roots)
+        {
             Ok(result) => result,
             Err(msg) => {
                 return Ok(ToolResult {
                     tool_call_id: CallId::new(),
                     success: false,
-                    output: format!("Error: {}", msg),
+                    output: format!("Error: file not found or denied: {}", msg),
                     steering_hint: None,
                     metadata: serde_json::json!({"error": "path_escapes_workspace"}),
                     duration_ms: start.elapsed().as_millis() as u64,
@@ -250,11 +165,7 @@ impl Tool for SendFileTool {
         };
 
         // Check that the file exists and is a regular file.
-        let file_exists = if is_aux {
-            full_path.is_file()
-        } else {
-            self.workspace.is_file(&resolved)
-        };
+        let file_exists = file.metadata().map(|m| m.is_file()).unwrap_or(false);
         if !file_exists {
             return Ok(ToolResult {
                 tool_call_id: CallId::new(),
@@ -310,20 +221,8 @@ impl Tool for SendFileTool {
         }
 
         // Check file size (use full_path for aux-root files).
-        let file_size = if is_aux {
-            std::fs::metadata(&full_path)
-                .ok()
-                .map(|m| m.len())
-                .unwrap_or(0)
-        } else {
-            self.workspace
-                .root_dir()
-                .metadata(&resolved)
-                .ok()
-                .map(|m| m.len())
-                .unwrap_or(0)
-        };
-        let max_bytes = (self.config.max_file_size_mb as u64) * 1024 * 1024;
+        let file_size = file.metadata().map_err(ToolError::from)?.len();
+        let max_bytes = self.config.max_file_size_mb.saturating_mul(1024 * 1024);
         if file_size > max_bytes {
             return Ok(ToolResult {
                 tool_call_id: CallId::new(),
@@ -350,19 +249,23 @@ impl Tool for SendFileTool {
         let send_method = Self::get_send_method(&resolved, args.as_photo.unwrap_or(false));
         let method_name = Self::send_method_name(&send_method);
 
-        // Build the full path for reading the file.
-        // For aux-root files, full_path was already resolved by resolve_send_path.
-        let read_path = if is_aux {
-            full_path.clone()
-        } else {
-            self.workspace.root_path().join(&resolved)
-        };
+        // Read the already-opened capability handle, never an ambient pathname.
+        // Bound the read as well as metadata: a file can grow after the size check.
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(max_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(ToolError::from)?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(ToolError::Denied("file grew beyond send size limit".into()));
+        }
         let file_name = resolved
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let input_file = teloxide::types::InputFile::file(&read_path).file_name(file_name);
+        let input_file = teloxide::types::InputFile::memory(bytes).file_name(file_name);
 
         // Prepare caption (Telegram limit: 1024 chars).
         let caption = args.caption.as_deref().map(|c| {

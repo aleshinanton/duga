@@ -19,6 +19,7 @@ No hardcoded workflows. No orchestration DAGs. Just a bounded, observable, repla
 | [docs/architecture.md](docs/architecture.md) | Full architecture specification (core loop, tools, memory, sandbox, plugins, threat model) |
 | [docs/implementation-plan.md](docs/implementation-plan.md) | Implementation plan (crate tree, phases, testing strategy, GAP tracking) |
 | [docs/telegram-bot.md](docs/telegram-bot.md) | Telegram bot frontend setup and usage |
+| [docs/security-boundaries.md](docs/security-boundaries.md) | Execution modes, per-chat isolation, cancellation, and migration |
 | [docs/](docs/) | All documentation |
 
 ## Quick Start
@@ -115,6 +116,15 @@ tui:
 
 - **`tool_event_format`**: `full` always shows expanded tool blocks; `collapsed` (default) shows them collapsed; `final_only` only reveals tool names after completion.
 - **Keybindings** accept `ctrl-`, `alt-`, and `shift-` modifiers (e.g. `ctrl-shift-c`).
+
+### Security modes
+
+The default `capability` mode bounds filesystem tools and **disables subprocesses**.
+Use `docker` for isolated command execution, or explicitly select `host` for
+trusted local execution without OS isolation. Telegram rejects host execution,
+uses `<workspace.root>/chats/<chat_id>` workspaces, and requires a dedicated Docker
+container per chat (`container: "duga-{chat_id}"`). Binary permissions never
+silently disable user confirmations. See [security boundaries and migration](docs/security-boundaries.md).
 
 ### Docker + Allow-All Mode
 

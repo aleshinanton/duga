@@ -3,9 +3,9 @@
 use duga_sandbox::binary_registry::BinaryRegistry;
 use duga_sandbox::shell_session::{SessionCommand, ShellSession};
 use duga_sandbox::{CommandExecutor, CommandSpec, SandboxExecutor, Workspace};
+use duga_tools::Tool;
 use duga_tools::context::ToolContext;
 use duga_tools::result::ToolCallResult;
-use duga_tools::Tool;
 use duga_types::config::OutputLimits;
 use duga_types::error::ToolError;
 use duga_types::tool_call::CallId;
@@ -288,7 +288,7 @@ mod tests {
             Arc::new(ws.clone()),
             OutputLimits::default(),
             Duration::from_secs(30),
-            Arc::new(SandboxExecutor::capability()),
+            Arc::new(SandboxExecutor::host()),
         );
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt

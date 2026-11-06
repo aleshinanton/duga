@@ -57,7 +57,7 @@ impl Workspace {
             return Ok(PathBuf::from("."));
         }
 
-        if relative_path.is_absolute() {
+        if relative_path.has_root() {
             return Err(WorkspaceError::PathEscapesWorkspace(relative_path.into()));
         }
 
@@ -92,6 +92,48 @@ impl Workspace {
         } else {
             Ok(resolved)
         }
+    }
+
+    /// Open a regular file through a directory capability, including auxiliary roots.
+    /// Absolute paths are accepted only beneath an allowed root or `/workspace`.
+    /// Never canonicalize an untrusted file path or reopen its ambient pathname.
+    pub fn open_allowed_file(
+        &self,
+        path: &Path,
+        aux_roots: &[PathBuf],
+    ) -> Result<(PathBuf, bool, PathBuf, std::fs::File), WorkspaceError> {
+        let mut roots = vec![(self.clone(), false)];
+        for root in aux_roots {
+            if let Ok(ws) = Self::open(root) {
+                roots.push((ws, true));
+            }
+        }
+        // Reject traversal before any prefix translation (including Windows prefixes).
+        if path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(WorkspaceError::PathEscapesWorkspace(path.into()));
+        }
+        for (root, is_aux) in &roots {
+            let relative = if path.has_root() {
+                path.strip_prefix(root.root_path())
+                    .or_else(|_| path.strip_prefix("/workspace"))
+                    .ok()
+            } else {
+                Some(path)
+            };
+            if let Some(relative) = relative {
+                let resolved = root.resolve(relative)?;
+                if let Ok(file) = root.root_dir().open(&resolved) {
+                    if file.metadata()?.is_file() {
+                        let full = root.root_path().join(&resolved);
+                        return Ok((resolved, *is_aux, full, file.into_std()));
+                    }
+                }
+            }
+        }
+        Err(WorkspaceError::NotFound(path.into()))
     }
 
     // ── TASK-5.4: Directory and path utility methods ─────────────────────

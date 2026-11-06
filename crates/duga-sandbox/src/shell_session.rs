@@ -198,11 +198,9 @@ mod tests {
 
     #[test]
     fn test_apply_pwd() {
-        let (_dir, _ws) = make_ws();
+        let (_dir, ws) = make_ws();
         let mut sess = ShellSession::new(PathBuf::from("src"));
-        let result = sess
-            .apply(SessionCommand::Pwd, &Workspace::open("/tmp").unwrap())
-            .unwrap();
+        let result = sess.apply(SessionCommand::Pwd, &ws).unwrap();
         assert_eq!(result, Some("src".into()));
     }
 

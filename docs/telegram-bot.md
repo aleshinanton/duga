@@ -2,6 +2,13 @@
 
 A Telegram bot frontend for the duga agent runtime. Supports text tasks, command handling, inline confirmation callbacks, scheduled events, attachment downloading, and per-chat sessions.
 
+> **Security migration:** workspaces are now private to each chat at
+> `<workspace.root>/chats/<chat_id>`. The default `capability` mode disables
+> subprocesses; shell execution requires dedicated per-chat Docker containers
+> (`container: "duga-{chat_id}"`). Host mode is rejected. Existing shared files
+> are not automatically copied. See [security boundaries](security-boundaries.md)
+> for provisioning, cancellation behavior and migration.
+
 ## Setup
 
 ### 1. Create a Telegram bot

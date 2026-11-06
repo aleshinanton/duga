@@ -10,6 +10,8 @@ use std::collections::VecDeque;
 
 #[derive(Debug)]
 pub struct Memory {
+    /// Execution state deliberately excluded from conversation checkpoints.
+    pub(crate) run_budget: crate::budget::RunBudget,
     system_messages: Vec<Message>,
     /// Task anchoring prefix pinned at position 0 of every request.
     /// Never compressed, never evicted.
@@ -43,6 +45,7 @@ impl Memory {
         };
 
         Self {
+            run_budget: crate::budget::RunBudget::default(),
             system_messages,
             task_anchor: None,
             summary: None,
@@ -136,11 +139,7 @@ impl Memory {
             let mut dropped = 0;
             while dropped < excess && self.recent_messages.len() > 1 {
                 // Find the first non-pinned message to drop.
-                if let Some(idx) = self
-                    .recent_messages
-                    .iter()
-                    .position(|m| !m.pinned)
-                {
+                if let Some(idx) = self.recent_messages.iter().position(|m| !m.pinned) {
                     self.recent_messages.remove(idx);
                     dropped += 1;
                 } else {
@@ -154,11 +153,7 @@ impl Memory {
                 > max_tokens
                 && self.recent_messages.len() > 1
             {
-                if let Some(idx) = self
-                    .recent_messages
-                    .iter()
-                    .position(|m| !m.pinned)
-                {
+                if let Some(idx) = self.recent_messages.iter().position(|m| !m.pinned) {
                     self.recent_messages.remove(idx);
                 } else {
                     break;
@@ -178,8 +173,11 @@ impl Memory {
     }
 
     pub fn push_assistant(&mut self, msg: AssistantMessage) {
-        self.recent_messages
-            .push_back(Message::assistant(msg.text, msg.tool_calls, msg.reasoning_content));
+        self.recent_messages.push_back(Message::assistant(
+            msg.text,
+            msg.tool_calls,
+            msg.reasoning_content,
+        ));
     }
 
     pub fn push_tool_result(&mut self, result: ToolResult) {
@@ -271,8 +269,7 @@ impl Memory {
         // The task anchor lives in its own field and is never passed here
         // (it is not part of recent_messages).  Therefore no explicit
         // filtering is needed — the anchor is excluded by construction.
-        let mut input =
-            Vec::with_capacity(oldest.len() + usize::from(self.summary.is_some()) + 1);
+        let mut input = Vec::with_capacity(oldest.len() + usize::from(self.summary.is_some()) + 1);
         if !pinned_facts.is_empty() {
             input.push(Message::system(format_pinned_facts(pinned_facts)));
         }
@@ -610,10 +607,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(memory
-            .recent_messages()
-            .iter()
-            .all(|message| message.pinned));
+        assert!(
+            memory
+                .recent_messages()
+                .iter()
+                .all(|message| message.pinned)
+        );
     }
 
     #[tokio::test]
@@ -638,7 +637,10 @@ mod tests {
         memory.push_user("task".into());
         memory.push_assistant(AssistantMessage {
             text: None,
-            tool_calls: vec![ToolCall::new("bash", serde_json::json!({"command": ["ls"]}))],
+            tool_calls: vec![ToolCall::new(
+                "bash",
+                serde_json::json!({"command": ["ls"]}),
+            )],
             reasoning_content: None,
         });
         memory.push_tool_result(
@@ -789,7 +791,10 @@ mod tests {
         memory.push_user("task".into());
         memory.push_assistant(AssistantMessage {
             text: None,
-            tool_calls: vec![ToolCall::new("bash", serde_json::json!({"command": ["ls"]}))],
+            tool_calls: vec![ToolCall::new(
+                "bash",
+                serde_json::json!({"command": ["ls"]}),
+            )],
             reasoning_content: None,
         });
         memory.push_tool_result(
@@ -815,11 +820,7 @@ mod tests {
 
         // No message in recent should be an orphaned tool role.
         for msg in memory.recent_messages().iter() {
-            assert_ne!(
-                msg.role,
-                Role::Tool,
-                "tool messages must not be orphaned"
-            );
+            assert_ne!(msg.role, Role::Tool, "tool messages must not be orphaned");
         }
     }
 
@@ -848,10 +849,7 @@ mod tests {
 
     #[test]
     fn checkpoint_restore_preserves_system_and_pinned() {
-        let mut memory = Memory::new(
-            vec![Message::system("sys")],
-            1000, 0.8, 0, 0,
-        );
+        let mut memory = Memory::new(vec![Message::system("sys")], 1000, 0.8, 0, 0);
         memory.set_task_anchor(Some("task".into()));
 
         let cp = memory.checkpoint();
@@ -860,17 +858,24 @@ mod tests {
 
         let msgs = memory.messages();
         // Should still have task anchor + system
-        assert!(msgs.iter().any(|m| m.role == Role::System),
-            "system messages must survive checkpoint/restore");
-        let anchor_text: String = msgs.iter()
-            .filter_map(|m| m.content.iter().find_map(|c| match c {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            }))
+        assert!(
+            msgs.iter().any(|m| m.role == Role::System),
+            "system messages must survive checkpoint/restore"
+        );
+        let anchor_text: String = msgs
+            .iter()
+            .filter_map(|m| {
+                m.content.iter().find_map(|c| match c {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
             .collect::<Vec<_>>()
             .join("");
-        assert!(anchor_text.contains("task"),
-            "task anchor must survive checkpoint/restore");
+        assert!(
+            anchor_text.contains("task"),
+            "task anchor must survive checkpoint/restore"
+        );
     }
 
     #[test]
@@ -898,11 +903,7 @@ mod tests {
         let assistant = Message::assistant(Some("old reply".into()), vec![], None);
         // assistant is not pinned by default — verify it stays that way
 
-        memory.restore_history(vec![
-            pinned_user,
-            assistant.clone(),
-            pinned_user2,
-        ]);
+        memory.restore_history(vec![pinned_user, assistant.clone(), pinned_user2]);
 
         // All three messages should be present.
         assert_eq!(memory.recent_messages().len(), 3);
@@ -932,8 +933,10 @@ mod tests {
         old.pinned = true;
         memory.restore_history(vec![old]);
 
-        assert!(!memory.recent_messages()[0].pinned,
-            "restored message should be unpinned");
+        assert!(
+            !memory.recent_messages()[0].pinned,
+            "restored message should be unpinned"
+        );
 
         // Now push the current run's task — this should be pinned.
         memory.push_user("current task".into());
@@ -990,11 +993,7 @@ mod tests {
         assert!(memory.recent_messages()[0].pinned);
 
         // Capture what would be in the LlmRequest.
-        let run1_snapshot: Vec<Message> = memory
-            .recent_messages()
-            .iter()
-            .cloned()
-            .collect();
+        let run1_snapshot: Vec<Message> = memory.recent_messages().iter().cloned().collect();
 
         // Run 2: fresh memory, restore run 1, add run 2.
         let mut memory2 = Memory::new(vec![], 1000, 0.8, 50, 24000);

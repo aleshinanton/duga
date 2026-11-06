@@ -9,12 +9,12 @@ use crossterm::Command;
 use crossterm::event::{EnableBracketedPaste, EnableFocusChange};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use duga_config::Config;
 use duga_runtime::{FrontendEventBridge, FrontendEventSink};
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal as RatatuiTerminal;
+use ratatui::backend::CrosstermBackend;
 use std::fmt;
 use std::io::stdout;
 use std::path::Path;
@@ -35,6 +35,12 @@ impl Command for EnableAlternateScroll {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
         f.write_str("\x1b[?1007h")
     }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> std::io::Result<()> {
+        // Legacy WinAPI consoles have no alternate-scroll mode.
+        Ok(())
+    }
 }
 
 struct DisableAlternateScroll;
@@ -42,6 +48,11 @@ struct DisableAlternateScroll;
 impl Command for DisableAlternateScroll {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
         f.write_str("\x1b[?1007l")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -162,8 +173,9 @@ pub async fn run_tui(config: Config, replay_dir: &Path) -> Result<()> {
             timestamp: std::time::Instant::now(),
         });
         transcript.push(crate::transcript::TranscriptItem::SystemMessage {
-            text: "Type a task or question and press Enter. F1 for help, Ctrl+C to cancel, q to quit."
-                .into(),
+            text:
+                "Type a task or question and press Enter. F1 for help, Ctrl+C to cancel, q to quit."
+                    .into(),
             level: crate::transcript::SystemLevel::Info,
             timestamp: std::time::Instant::now(),
         });

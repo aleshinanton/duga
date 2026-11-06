@@ -13,7 +13,7 @@ use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
 use crate::loops::simple_react::{dispatch_tool_with_events, schemas_without_delegate};
-use crate::steering::{check_steer, SteerAction};
+use crate::steering::{SteerAction, check_steer};
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
@@ -39,7 +39,9 @@ impl Loop for ProblemSolvingLoop {
 
     fn run<'a>(&'a self, task: String, ctx: &'a mut LoopContext<'a>) -> LoopRunFuture<'a> {
         Box::pin(async move {
-            run_problem_solving(task, ctx).await
+            let remaining = ctx.begin_run()?;
+            let cancel = ctx.cancellation.clone();
+            super::bounded_run(remaining, cancel, run_problem_solving(task, ctx)).await
         })
     }
 }
@@ -112,10 +114,7 @@ async fn run_problem_solving(
         // Refine: use the audit's clean final_answer (or accumulated output
         // as fallback) for the next iteration's context — not the raw
         // execute_plan output which contains LLM meta-commentary.
-        let previous = audit
-            .final_answer
-            .as_deref()
-            .unwrap_or(&accumulated_output);
+        let previous = audit.final_answer.as_deref().unwrap_or(&accumulated_output);
         current_task = format!(
             "{task}\n\nPrevious attempt result:\n{previous}\n\nGaps found:\n{gaps}",
             gaps = audit.gaps.unwrap_or_default()
@@ -177,15 +176,8 @@ async fn plan_phase(task: &str, ctx: &LoopContext<'_>) -> Result<Plan, AgentErro
     let messages = minimal_context(ctx, &plan_prompt);
 
     let response = ctx
-        .llm
-        .chat(
-            &messages,
-            &[],
-            LlmCallOptions { streaming: false },
-            ctx.event_sink.as_ref(),
-        )
-        .await
-        .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+        .chat(&messages, &[], LlmCallOptions { streaming: false })
+        .await?;
 
     let raw = response.message.text.unwrap_or_default();
     let steps: Vec<String> = match serde_json::from_str(&raw) {
@@ -208,10 +200,7 @@ async fn plan_phase(task: &str, ctx: &LoopContext<'_>) -> Result<Plan, AgentErro
     Ok(Plan { steps })
 }
 
-async fn execute_plan(
-    plan: &Plan,
-    ctx: &mut LoopContext<'_>,
-) -> Result<(String, u32), AgentError> {
+async fn execute_plan(plan: &Plan, ctx: &mut LoopContext<'_>) -> Result<(String, u32), AgentError> {
     let mut all_output = String::new();
     let mut tool_calls = 0u32;
     // Push the plan as context so the LLM sees it
@@ -237,17 +226,8 @@ async fn execute_plan(
         let schemas = schemas_without_delegate(&ctx.tools.schemas());
 
         let response = ctx
-            .llm
-            .chat(
-                &messages,
-                &schemas,
-                LlmCallOptions {
-                    streaming: false,
-                },
-                ctx.event_sink.as_ref(),
-            )
-            .await
-            .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+            .chat(&messages, &schemas, LlmCallOptions { streaming: false })
+            .await?;
 
         let assistant = response.message;
         let text = assistant.text.clone().unwrap_or_default();
@@ -261,10 +241,7 @@ async fn execute_plan(
         // Execute tool calls
         for call in &assistant.tool_calls {
             tool_calls += 1;
-            let result = match dispatch_tool_with_events(ctx, call).await {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
+            let result = dispatch_tool_with_events(ctx, call).await?;
             ctx.memory.push_tool_result(result);
         }
 
@@ -308,15 +285,8 @@ async fn audit_phase(
     let messages = minimal_context(ctx, &audit_prompt);
 
     let response = ctx
-        .llm
-        .chat(
-            &messages,
-            &[],
-            LlmCallOptions { streaming: false },
-            ctx.event_sink.as_ref(),
-        )
-        .await
-        .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+        .chat(&messages, &[], LlmCallOptions { streaming: false })
+        .await?;
 
     let raw = response.message.text.unwrap_or_default();
 
@@ -378,36 +348,29 @@ mod tests {
     async fn problem_solving_completes_with_plan_and_audit() {
         let llm = MockLlm::new(vec![
             // Plan phase: return a JSON plan
-            Ok(llm_text(r#"["Step 1: Create file", "Step 2: Test it", "Step 3: Verify"]"#)),
+            Ok(llm_text(
+                r#"["Step 1: Create file", "Step 2: Test it", "Step 3: Verify"]"#,
+            )),
             // Execute phase: LLM completes the plan
             Ok(llm_text("Executed step 1. ALL STEPS COMPLETE")),
             // Audit phase: complete=true
-            Ok(llm_text(r#"{"complete": true, "final_answer": "Task done", "gaps": null}"#)),
+            Ok(llm_text(
+                r#"{"complete": true, "final_answer": "Task done", "gaps": null}"#,
+            )),
         ]);
         let llm: Arc<dyn LlmClient> = Arc::new(llm);
 
         let tools = Arc::new(ToolDispatcher::new());
         let config = AgentConfig::default();
-        let mut memory = crate::Memory::new(
-            vec![Message::system("system")],
-            10000,
-            0.8,
-            0,
-            0,
-        );
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
         let dir = tempfile::tempdir().unwrap();
         let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
         let sink: Arc<dyn duga_events::EventSink> = Arc::new(NullSink);
 
         struct DummySummarizer;
         impl crate::Summarizer for DummySummarizer {
-            fn summarize<'a>(
-                &'a self,
-                _msgs: &'a [Message],
-            ) -> crate::SummaryFuture<'a> {
-                Box::pin(async {
-                    Ok(duga_types::llm::SummaryMessage::new("summary".into()))
-                })
+            fn summarize<'a>(&'a self, _msgs: &'a [Message]) -> crate::SummaryFuture<'a> {
+                Box::pin(async { Ok(duga_types::llm::SummaryMessage::new("summary".into())) })
             }
         }
         let summarizer: Arc<dyn crate::Summarizer> = Arc::new(DummySummarizer);
@@ -459,22 +422,14 @@ mod tests {
         let llm: Arc<dyn LlmClient> = Arc::new(llm);
         let tools = Arc::new(ToolDispatcher::new());
         let config = AgentConfig::default();
-        let mut memory = crate::Memory::new(
-            vec![Message::system("system")],
-            10000,
-            0.8,
-            0,
-            0,
-        );
+        let mut memory = crate::Memory::new(vec![Message::system("system")], 10000, 0.8, 0, 0);
         let dir = tempfile::tempdir().unwrap();
         let workspace = duga_sandbox::Workspace::open(dir.path()).unwrap();
         let sink: Arc<dyn duga_events::EventSink> = Arc::new(NullSink);
         struct DS;
         impl crate::Summarizer for DS {
             fn summarize<'a>(&'a self, _m: &'a [Message]) -> crate::SummaryFuture<'a> {
-                Box::pin(async {
-                    Ok(duga_types::llm::SummaryMessage::new("s".into()))
-                })
+                Box::pin(async { Ok(duga_types::llm::SummaryMessage::new("s".into())) })
             }
         }
         let summarizer: Arc<dyn crate::Summarizer> = Arc::new(DS);
@@ -499,12 +454,15 @@ mod tests {
         };
 
         let loop_impl = ProblemSolvingLoop;
-        let result = loop_impl
-            .run("task".into(), &mut ctx)
-            .await
-            .unwrap();
+        let result = loop_impl.run("task".into(), &mut ctx).await.unwrap();
 
         assert_eq!(result.loop_id, "problem_solving");
-        assert!(result.message.text.unwrap().contains("refinement iterations"));
+        assert!(
+            result
+                .message
+                .text
+                .unwrap()
+                .contains("refinement iterations")
+        );
     }
 }

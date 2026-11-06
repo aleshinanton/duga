@@ -11,7 +11,7 @@ use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
 use crate::loops::simple_react::{dispatch_tool_with_events, schemas_without_delegate};
-use crate::steering::{check_steer, SteerAction};
+use crate::steering::{SteerAction, check_steer};
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
@@ -36,7 +36,9 @@ impl Loop for VerificationLoop {
 
     fn run<'a>(&'a self, task: String, ctx: &'a mut LoopContext<'a>) -> LoopRunFuture<'a> {
         Box::pin(async move {
-            run_verification(task, ctx).await
+            let remaining = ctx.begin_run()?;
+            let cancel = ctx.cancellation.clone();
+            super::bounded_run(remaining, cancel, run_verification(task, ctx)).await
         })
     }
 }
@@ -133,15 +135,8 @@ async fn generate_answer(
         let messages = ctx.memory.messages();
         let schemas = schemas_without_delegate(&ctx.tools.schemas());
         let response = ctx
-            .llm
-            .chat(
-                &messages,
-                &schemas,
-                LlmCallOptions { streaming: false },
-                ctx.event_sink.as_ref(),
-            )
-            .await
-            .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+            .chat(&messages, &schemas, LlmCallOptions { streaming: false })
+            .await?;
 
         let assistant = response.message;
         let text = assistant.text.clone().unwrap_or_default();
@@ -150,10 +145,7 @@ async fn generate_answer(
         // Execute tool calls
         for call in &assistant.tool_calls {
             tool_calls += 1;
-            let result = match dispatch_tool_with_events(ctx, call).await {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
+            let result = dispatch_tool_with_events(ctx, call).await?;
             ctx.memory.push_tool_result(result);
         }
 
@@ -167,11 +159,7 @@ async fn generate_answer(
     Ok((output, tool_calls))
 }
 
-async fn vote(
-    answers: &[String],
-    task: &str,
-    ctx: &LoopContext<'_>,
-) -> Result<String, AgentError> {
+async fn vote(answers: &[String], task: &str, ctx: &LoopContext<'_>) -> Result<String, AgentError> {
     let answers_text = answers
         .iter()
         .enumerate()
@@ -189,15 +177,8 @@ async fn vote(
     let messages = crate::loops::problem_solving::minimal_context(ctx, &vote_prompt);
 
     let response = ctx
-        .llm
-        .chat(
-            &messages,
-            &[],
-            LlmCallOptions { streaming: false },
-            ctx.event_sink.as_ref(),
-        )
-        .await
-        .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+        .chat(&messages, &[], LlmCallOptions { streaming: false })
+        .await?;
 
     Ok(response.message.text.unwrap_or_default())
 }
@@ -222,7 +203,10 @@ mod tests {
                 tool_calls: vec![],
                 reasoning_content: None,
             },
-            usage: TokenUsage { prompt: 0, completion: 0 },
+            usage: TokenUsage {
+                prompt: 0,
+                completion: 0,
+            },
         }
     }
 
@@ -246,15 +230,27 @@ mod tests {
         let cancel = duga_sandbox::CancellationToken::new();
 
         let mut ctx = LoopContext {
-            config: &config, memory: &mut memory, llm: &llm, tools: &tools,
-            workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
-            cancellation: &cancel, registry: &registry,
-            max_refinement_iterations: 1, max_delegation_depth: 2, delegation_depth: 0,
-            steer: None, steer_limits: None,
+            config: &config,
+            memory: &mut memory,
+            llm: &llm,
+            tools: &tools,
+            workspace: &workspace,
+            event_sink: &sink,
+            summarizer: &summarizer,
+            cancellation: &cancel,
+            registry: &registry,
+            max_refinement_iterations: 1,
+            max_delegation_depth: 2,
+            delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = VerificationLoop;
-        let result = loop_impl.run("What is the answer?".into(), &mut ctx).await.unwrap();
+        let result = loop_impl
+            .run("What is the answer?".into(), &mut ctx)
+            .await
+            .unwrap();
         assert_eq!(result.loop_id, "verification");
         assert!(result.message.text.unwrap().contains("42"));
     }
@@ -284,15 +280,27 @@ mod tests {
         let cancel = duga_sandbox::CancellationToken::new();
 
         let mut ctx = LoopContext {
-            config: &config, memory: &mut memory, llm: &llm, tools: &tools,
-            workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
-            cancellation: &cancel, registry: &registry,
-            max_refinement_iterations: 3, max_delegation_depth: 2, delegation_depth: 0,
-            steer: None, steer_limits: None,
+            config: &config,
+            memory: &mut memory,
+            llm: &llm,
+            tools: &tools,
+            workspace: &workspace,
+            event_sink: &sink,
+            summarizer: &summarizer,
+            cancellation: &cancel,
+            registry: &registry,
+            max_refinement_iterations: 3,
+            max_delegation_depth: 2,
+            delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = VerificationLoop;
-        let result = loop_impl.run("What is the answer?".into(), &mut ctx).await.unwrap();
+        let result = loop_impl
+            .run("What is the answer?".into(), &mut ctx)
+            .await
+            .unwrap();
         assert_eq!(result.loop_id, "verification");
         assert!(result.message.text.unwrap().contains("42"));
     }
@@ -317,11 +325,20 @@ mod tests {
         let cancel = duga_sandbox::CancellationToken::new();
 
         let mut ctx = LoopContext {
-            config: &config, memory: &mut memory, llm: &llm, tools: &tools,
-            workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
-            cancellation: &cancel, registry: &registry,
-            max_refinement_iterations: 0, max_delegation_depth: 2, delegation_depth: 0,
-            steer: None, steer_limits: None,
+            config: &config,
+            memory: &mut memory,
+            llm: &llm,
+            tools: &tools,
+            workspace: &workspace,
+            event_sink: &sink,
+            summarizer: &summarizer,
+            cancellation: &cancel,
+            registry: &registry,
+            max_refinement_iterations: 0,
+            max_delegation_depth: 2,
+            delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = VerificationLoop;

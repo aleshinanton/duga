@@ -8,7 +8,7 @@ use crate::loop_context::LoopContext;
 use crate::loop_result::LoopResult;
 use crate::loop_trait::{Loop, LoopRunFuture};
 use crate::loops::simple_react::{dispatch_tool_with_events, schemas_without_delegate};
-use crate::steering::{check_steer, SteerAction};
+use crate::steering::{SteerAction, check_steer};
 use duga_events::Event;
 use duga_types::error::AgentError;
 use duga_types::llm::LlmCallOptions;
@@ -34,16 +34,15 @@ impl Loop for SearchLoop {
 
     fn run<'a>(&'a self, task: String, ctx: &'a mut LoopContext<'a>) -> LoopRunFuture<'a> {
         Box::pin(async move {
-            run_search(task, ctx).await
+            let remaining = ctx.begin_run()?;
+            let cancel = ctx.cancellation.clone();
+            super::bounded_run(remaining, cancel, run_search(task, ctx)).await
         })
     }
 }
 
 #[tracing::instrument(skip(ctx), fields(loop_id = "search", depth = ctx.delegation_depth))]
-async fn run_search(
-    task: String,
-    ctx: &mut LoopContext<'_>,
-) -> Result<LoopResult, AgentError> {
+async fn run_search(task: String, ctx: &mut LoopContext<'_>) -> Result<LoopResult, AgentError> {
     let started = Instant::now();
     let max_cycles = ctx.max_refinement_iterations.max(1).min(5);
     let mut total_tool_calls = 0u32;
@@ -137,15 +136,8 @@ async fn formulate_query(task: &str, ctx: &LoopContext<'_>) -> Result<String, Ag
     messages.push(Message::user(&prompt));
 
     let response = ctx
-        .llm
-        .chat(
-            &messages,
-            &[],
-            LlmCallOptions { streaming: false },
-            ctx.event_sink.as_ref(),
-        )
-        .await
-        .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+        .chat(&messages, &[], LlmCallOptions { streaming: false })
+        .await?;
 
     let raw = response.message.text.unwrap_or_default();
     let query = raw.trim().to_string();
@@ -179,15 +171,8 @@ async fn execute_search(
         let messages = ctx.memory.messages();
         let schemas = schemas_without_delegate(&ctx.tools.schemas());
         let response = ctx
-            .llm
-            .chat(
-                &messages,
-                &schemas,
-                LlmCallOptions { streaming: false },
-                ctx.event_sink.as_ref(),
-            )
-            .await
-            .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+            .chat(&messages, &schemas, LlmCallOptions { streaming: false })
+            .await?;
 
         let assistant = response.message;
         let text = assistant.text.clone().unwrap_or_default();
@@ -195,18 +180,13 @@ async fn execute_search(
 
         for call in &assistant.tool_calls {
             tool_calls += 1;
-            let result = match dispatch_tool_with_events(ctx, call).await {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
+            let result = dispatch_tool_with_events(ctx, call).await?;
             ctx.memory.push_tool_result(result);
         }
 
         output.push_str(&text);
 
-        if assistant.is_termination()
-            || (!text.is_empty() && assistant.tool_calls.is_empty())
-        {
+        if assistant.is_termination() || (!text.is_empty() && assistant.tool_calls.is_empty()) {
             break;
         }
     }
@@ -232,15 +212,8 @@ async fn evaluate_results(
     messages.push(Message::user(&prompt));
 
     let response = ctx
-        .llm
-        .chat(
-            &messages,
-            &[],
-            LlmCallOptions { streaming: false },
-            ctx.event_sink.as_ref(),
-        )
-        .await
-        .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+        .chat(&messages, &[], LlmCallOptions { streaming: false })
+        .await?;
 
     let raw = response.message.text.unwrap_or_default();
 
@@ -279,15 +252,8 @@ async fn synthesize_findings(
     messages.push(Message::user(&prompt));
 
     let response = ctx
-        .llm
-        .chat(
-            &messages,
-            &[],
-            LlmCallOptions { streaming: false },
-            ctx.event_sink.as_ref(),
-        )
-        .await
-        .map_err(|e| AgentError::LlmFailed(e.to_string()))?;
+        .chat(&messages, &[], LlmCallOptions { streaming: false })
+        .await?;
 
     Ok(response.message.text.unwrap_or_default())
 }
@@ -312,7 +278,10 @@ mod tests {
                 tool_calls: vec![],
                 reasoning_content: None,
             },
-            usage: TokenUsage { prompt: 0, completion: 0 },
+            usage: TokenUsage {
+                prompt: 0,
+                completion: 0,
+            },
         }
     }
 
@@ -352,15 +321,27 @@ mod tests {
         let cancel = duga_sandbox::CancellationToken::new();
 
         let mut ctx = LoopContext {
-            config: &config, memory: &mut memory, llm: &llm, tools: &tools,
-            workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
-            cancellation: &cancel, registry: &registry,
-            max_refinement_iterations: 2, max_delegation_depth: 2, delegation_depth: 0,
-            steer: None, steer_limits: None,
+            config: &config,
+            memory: &mut memory,
+            llm: &llm,
+            tools: &tools,
+            workspace: &workspace,
+            event_sink: &sink,
+            summarizer: &summarizer,
+            cancellation: &cancel,
+            registry: &registry,
+            max_refinement_iterations: 2,
+            max_delegation_depth: 2,
+            delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = SearchLoop;
-        let result = loop_impl.run("find auth logic".into(), &mut ctx).await.unwrap();
+        let result = loop_impl
+            .run("find auth logic".into(), &mut ctx)
+            .await
+            .unwrap();
         assert_eq!(result.loop_id, "search");
         assert!(result.message.text.unwrap().contains("src/auth.rs"));
     }
@@ -370,7 +351,9 @@ mod tests {
         let llm: Arc<dyn LlmClient> = Arc::new(MockLlm::new(vec![
             Ok(text("auth")),
             Ok(text("No results found")),
-            Ok(text(r#"{"sufficient": false, "next_query": "authentication"}"#)),
+            Ok(text(
+                r#"{"sufficient": false, "next_query": "authentication"}"#,
+            )),
             Ok(text("Found auth module in src/")),
             Ok(text(r#"{"sufficient": true, "next_query": ""}"#)),
             Ok(text("Auth module in src/")),
@@ -383,15 +366,27 @@ mod tests {
         let cancel = duga_sandbox::CancellationToken::new();
 
         let mut ctx = LoopContext {
-            config: &config, memory: &mut memory, llm: &llm, tools: &tools,
-            workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
-            cancellation: &cancel, registry: &registry,
-            max_refinement_iterations: 2, max_delegation_depth: 2, delegation_depth: 0,
-            steer: None, steer_limits: None,
+            config: &config,
+            memory: &mut memory,
+            llm: &llm,
+            tools: &tools,
+            workspace: &workspace,
+            event_sink: &sink,
+            summarizer: &summarizer,
+            cancellation: &cancel,
+            registry: &registry,
+            max_refinement_iterations: 2,
+            max_delegation_depth: 2,
+            delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = SearchLoop;
-        let result = loop_impl.run("find auth logic".into(), &mut ctx).await.unwrap();
+        let result = loop_impl
+            .run("find auth logic".into(), &mut ctx)
+            .await
+            .unwrap();
         assert_eq!(result.loop_id, "search");
         assert!(result.message.text.unwrap().contains("src/"));
     }
@@ -412,11 +407,20 @@ mod tests {
         let cancel = duga_sandbox::CancellationToken::new();
 
         let mut ctx = LoopContext {
-            config: &config, memory: &mut memory, llm: &llm, tools: &tools,
-            workspace: &workspace, event_sink: &sink, summarizer: &summarizer,
-            cancellation: &cancel, registry: &registry,
-            max_refinement_iterations: 1, max_delegation_depth: 2, delegation_depth: 0,
-            steer: None, steer_limits: None,
+            config: &config,
+            memory: &mut memory,
+            llm: &llm,
+            tools: &tools,
+            workspace: &workspace,
+            event_sink: &sink,
+            summarizer: &summarizer,
+            cancellation: &cancel,
+            registry: &registry,
+            max_refinement_iterations: 1,
+            max_delegation_depth: 2,
+            delegation_depth: 0,
+            steer: None,
+            steer_limits: None,
         };
 
         let loop_impl = SearchLoop;

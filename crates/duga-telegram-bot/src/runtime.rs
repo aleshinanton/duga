@@ -10,28 +10,50 @@ use crate::send_file::SendFileTool;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use duga_config::{Config, TelegramConfig};
-use duga_core::loop_context::LoopContext;
-use duga_core::loops::{register_default_loops, SimpleReActLoop};
 use duga_core::LoopRegistry;
+use duga_core::loop_context::LoopContext;
+use duga_core::loops::{SimpleReActLoop, register_default_loops};
 use duga_events::{JsonlSink, RedactingSink};
-use duga_tools::ErasedTool;
-use duga_tools_builtin::skill_install::InstallSkillTool;
-use duga_tools_builtin::skill_list::ListSkillsTool;
-use duga_tools_builtin::skill_remove::RemoveSkillTool;
 use duga_runtime::events::FrontendEventBridge;
 use duga_runtime::memory_context::{format_memory_for_prompt, load_persistent_memory};
 use duga_runtime::skills::{discover_skills, format_skills_index_for_prompt};
 use duga_runtime::{
-    build_agent, build_dispatcher, build_llm, resolve_provider, sandbox_environment_context,
-    tool_guidance, ConfirmationMiddleware, ConfirmationPolicy,
+    ConfirmationMiddleware, ConfirmationPolicy, build_agent, build_dispatcher, build_llm,
+    resolve_provider, sandbox_environment_context, tool_guidance,
 };
 use duga_sandbox::{CancellationToken, Workspace};
+use duga_tools::ErasedTool;
+use duga_tools_builtin::skill_install::InstallSkillTool;
+use duga_tools_builtin::skill_list::ListSkillsTool;
+use duga_tools_builtin::skill_remove::RemoveSkillTool;
 use std::sync::Arc;
 use teloxide::prelude::*;
 
 #[derive(Clone)]
 pub struct TelegramRuntime {
     config: Config,
+}
+
+/// Derive an isolated filesystem and execution namespace for a Telegram chat.
+/// Host execution is deliberately unavailable to this multi-tenant frontend.
+pub(crate) fn chat_config(base: &Config, chat_id: i64) -> Result<Config> {
+    let mut config = base.clone();
+    config.workspace.root = base.workspace.root.join("chats").join(chat_id.to_string());
+    match config.sandbox.mode {
+        duga_config::SandboxMode::Host => anyhow::bail!(
+            "Telegram does not support host execution; use capability (no subprocesses) or a per-chat Docker container"
+        ),
+        duga_config::SandboxMode::Docker => {
+            let container = config.sandbox.container.as_deref().unwrap_or("");
+            anyhow::ensure!(
+                container.contains("{chat_id}"),
+                "Telegram Docker container must include {{chat_id}}; shared containers are not allowed"
+            );
+            config.sandbox.container = Some(container.replace("{chat_id}", &chat_id.to_string()));
+        }
+        duga_config::SandboxMode::Capability => {}
+    }
+    Ok(config)
 }
 
 /// Request to run a task in a chat.
@@ -57,14 +79,18 @@ impl TelegramRuntime {
         cancellation: CancellationToken,
         steering_rx: Option<duga_core::steering::SteeringReceiver>,
     ) -> Result<String> {
-        let selection = resolve_provider(&self.config)?;
-        let llm = build_llm(&selection.provider, &selection.model, &self.config)?;
+        let config = chat_config(&self.config, chat_id)?;
+        tokio::fs::create_dir_all(&config.workspace.root).await?;
+        let chat_dir = telegram_config.data_dir.join(chat_id.to_string());
+        tokio::fs::create_dir_all(&chat_dir).await?;
+        let selection = resolve_provider(&config)?;
+        let llm = build_llm(&selection.provider, &selection.model, &config)?;
 
         let workspace =
-            Arc::new(Workspace::open(&self.config.workspace.root).context("opening workspace")?);
+            Arc::new(Workspace::open(&config.workspace.root).context("opening workspace")?);
 
-        let aux_roots = vec![telegram_config.data_dir.clone()];
-        let built = build_dispatcher(&self.config, workspace.clone(), aux_roots.clone())?;
+        let aux_roots = vec![chat_dir.clone()];
+        let built = build_dispatcher(&config, workspace.clone(), aux_roots.clone())?;
         let dispatcher = built.dispatcher;
 
         // Start MCP session (per-chat).
@@ -86,8 +112,8 @@ impl TelegramRuntime {
 
         // Register skill management tools (EPIC-30).
         // Skills live under workspace: workspace/skills/ (global), workspace/<chat_id>/skills/ (channel).
-        let global_skills_dir = self.config.workspace.root.join("skills");
-        let channel_skills_base = self.config.workspace.root.clone();
+        let global_skills_dir = config.workspace.root.join("skills");
+        let channel_skills_base = config.workspace.root.clone();
         dispatcher
             .register_erased(ErasedTool::erase(InstallSkillTool::new(
                 global_skills_dir.clone(),
@@ -107,23 +133,11 @@ impl TelegramRuntime {
             )))
             .context("registering remove-skill tool")?;
 
-        // When allow_all_binaries is enabled, shell confirmations are redundant —
-        // the operator has already accepted the risk of arbitrary command execution.
-        let require_confirmation: Vec<String> = if self.config.sandbox.allow_all_binaries {
-            telegram_config
-                .require_confirmation_for
-                .iter()
-                .filter(|t| !matches!(t.as_str(), "shell" | "bash"))
-                .cloned()
-                .collect()
-        } else {
-            telegram_config.require_confirmation_for.clone()
-        };
+        // Binary permissions and per-action consent are independent policies.
+        let require_confirmation = telegram_config.require_confirmation_for.clone();
         if !require_confirmation.is_empty() {
-            let policy = ConfirmationPolicy::new(
-                require_confirmation,
-                self.config.frontend.confirmation_timeout,
-            );
+            let policy =
+                ConfirmationPolicy::new(require_confirmation, config.frontend.confirmation_timeout);
             let provider = Arc::new(TelegramConfirmationProvider::new(
                 bot.clone(),
                 ChatId(chat_id),
@@ -140,8 +154,6 @@ impl TelegramRuntime {
         ));
 
         // JSONL replay sink for the chat.
-        let chat_dir = telegram_config.data_dir.join(chat_id.to_string());
-        tokio::fs::create_dir_all(&chat_dir).await?;
         let jsonl_path = chat_dir.join("session.jsonl");
         let jsonl_sink = Arc::new(JsonlSink::new(&jsonl_path)?);
         let replay_sink = Arc::new(RedactingSink::new(jsonl_sink));
@@ -149,31 +161,25 @@ impl TelegramRuntime {
         // Load previous conversation context so the agent remembers the chat.
         let conversation_history = duga_core::history::load_conversation_history(
             &jsonl_path,
-            self.config.memory.context_window_size,
-            self.config.memory.max_context_tokens,
+            config.memory.context_window_size,
+            config.memory.max_context_tokens,
         );
 
         // Load skills index (metadata-only) from workspace/skills/ and chat-level skills/.
         // Full bodies are lazy-loaded on demand when the LLM calls `read` on a SKILL.md.
         // Channel skills live under workspace/<chat_id>/skills/ (same tree as install-skill).
-        let chat_skills = self.config.workspace.root.join(chat_id.to_string());
-        let skill_indexes = discover_skills(
-            &self.config.workspace.root,
-            Some(&chat_skills),
-        )
-        .unwrap_or_default();
+        let chat_skills = config.workspace.root.join(chat_id.to_string());
+        let skill_indexes =
+            discover_skills(&config.workspace.root, Some(&chat_skills)).unwrap_or_default();
         let skills_prompt = format_skills_index_for_prompt(&skill_indexes);
 
         // Load persistent memory (MEMORY.md) from workspace and chat-level directories.
-        let persistent_memory = load_persistent_memory(
-            &self.config.workspace.root,
-            Some(&chat_dir),
-        )
-        .unwrap_or(duga_runtime::memory_context::PersistentMemory {
-            workspace_memory: None,
-            channel_memory: None,
-            workspace_path: self.config.workspace.root.join("MEMORY.md"),
-        });
+        let persistent_memory = load_persistent_memory(&config.workspace.root, Some(&chat_dir))
+            .unwrap_or(duga_runtime::memory_context::PersistentMemory {
+                workspace_memory: None,
+                channel_memory: None,
+                workspace_path: config.workspace.root.join("MEMORY.md"),
+            });
         let memory_prompt = format_memory_for_prompt(&persistent_memory);
 
         // Build frontend context for system prompt.
@@ -182,7 +188,7 @@ impl TelegramRuntime {
         // AgentLoop::run() via Memory::set_task_anchor() and always appears
         // at position 0 of every LLM request.  We build the remaining
         // system prompt here — it sits right after the anchor.
-        let env_ctx = sandbox_environment_context(&self.config);
+        let env_ctx = sandbox_environment_context(&config);
         let tool_guide = tool_guidance();
 
         // Build the strategies prompt from the loop registry.
@@ -190,9 +196,7 @@ impl TelegramRuntime {
         reg.register(Box::new(SimpleReActLoop))
             .expect("SimpleReActLoop must register successfully");
         register_default_loops(&mut reg);
-        let strategies = reg.build_strategies_prompt(
-            &self.config.agent.loop_config.enabled_loops,
-        );
+        let strategies = reg.build_strategies_prompt(&config.agent.loop_config.enabled_loops);
 
         // Combine all system prompt sections, skipping empty ones.
         let mut sections: Vec<&str> = Vec::new();
@@ -233,7 +237,7 @@ impl TelegramRuntime {
         );
 
         let mut runtime = build_agent(
-            &self.config,
+            &config,
             llm,
             dispatcher,
             workspace,
@@ -258,11 +262,8 @@ impl TelegramRuntime {
         // Scope ctx so borrows are released before we drop `runtime`.
         let result = {
             let loop_id = telegram_config.default_loop.as_str();
-            let loop_impl = runtime
-                .registry
-                .get(loop_id)
-                .unwrap_or(&SimpleReActLoop);
-            let agent_config = self.config.agent.clone();
+            let loop_impl = runtime.registry.get(loop_id).unwrap_or(&SimpleReActLoop);
+            let agent_config = config.agent.clone();
             let loop_config = &agent_config.loop_config;
             let mut ctx = LoopContext {
                 config: &agent_config,
@@ -278,7 +279,8 @@ impl TelegramRuntime {
                 max_delegation_depth: loop_config.max_delegation_depth,
                 delegation_depth: 0,
                 steer: steering_rx,
-                steer_limits: None,            };
+                steer_limits: None,
+            };
 
             loop_impl.run(task.clone(), &mut ctx).await
         }; // ctx dropped here → borrows released
@@ -298,10 +300,7 @@ impl TelegramRuntime {
             Ok(run_result) => {
                 let mut text = run_result.message.text.unwrap_or_default();
                 if run_result.loop_id != "simple_react" {
-                    text.push_str(&format!(
-                        "\n\n⟳ via *{}* loop",
-                        run_result.loop_id
-                    ));
+                    text.push_str(&format!("\n\n⟳ via *{}* loop", run_result.loop_id));
                 }
                 tracing::info!(
                     loop_id = %run_result.loop_id,
@@ -319,9 +318,56 @@ impl TelegramRuntime {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
+    fn security_config() -> duga_config::Config {
+        serde_json::from_value(serde_json::json!({
+            "model": "dummy/test", "agent": duga_types::config::AgentConfig::default(),
+            "sandbox": {"mode": "capability", "timeout": "30s", "allow_all_binaries": true},
+            "workspace": {"root": "workspace"}, "environment": {"allowed": []},
+            "memory": {"max_tokens": 4096, "compress_at_ratio": 0.8},
+            "plugins": {"dir": "plugins", "modules": []},
+            "telegram": {"require_confirmation_for": ["shell", "write"]}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn chat_namespaces_and_consent_are_independent() {
+        let base = security_config();
+        let first = super::chat_config(&base, 11).unwrap();
+        let second = super::chat_config(&base, 22).unwrap();
+        assert_eq!(first.workspace.root, base.workspace.root.join("chats/11"));
+        assert_ne!(first.workspace.root, second.workspace.root);
+        assert!(
+            first
+                .telegram
+                .unwrap()
+                .require_confirmation_for
+                .contains(&"shell".into())
+        );
+        assert_eq!(base.workspace.root, std::path::PathBuf::from("workspace"));
+    }
+
+    #[test]
+    fn telegram_rejects_host_and_shared_containers() {
+        let mut base = security_config();
+        base.sandbox.mode = duga_config::SandboxMode::Host;
+        assert!(super::chat_config(&base, 11).is_err());
+        base.sandbox.mode = duga_config::SandboxMode::Docker;
+        base.sandbox.container = Some("shared".into());
+        assert!(super::chat_config(&base, 11).is_err());
+        base.sandbox.container = Some("duga-{chat_id}".into());
+        assert_eq!(
+            super::chat_config(&base, 11)
+                .unwrap()
+                .sandbox
+                .container
+                .as_deref(),
+            Some("duga-11")
+        );
+    }
+
     use duga_core::history::normalize_tool_message_sequence;
     use duga_types::message::{ContentBlock, Message, Role};
     use duga_types::tool_call::ToolCall;
@@ -425,8 +471,8 @@ mod tests {
     /// into the system prompt in `run_task_for_chat`.
     #[test]
     fn system_prompt_includes_skills_and_memory() {
-        use duga_runtime::skills::{format_skills_for_prompt, load_skills};
         use duga_runtime::memory_context::{format_memory_for_prompt, load_persistent_memory};
+        use duga_runtime::skills::{format_skills_for_prompt, load_skills};
 
         let ws = tempfile::tempdir().unwrap();
 
@@ -501,24 +547,34 @@ mod tests {
         );
 
         // Verify both skills and memory appear in the assembled prompt
-        assert!(system_prompt.contains("## Available Skills"),
-            "System prompt should contain skills section");
-        assert!(system_prompt.contains("## Workspace Memory"),
-            "System prompt should contain memory section");
-        assert!(system_prompt.contains("code-review"),
-            "System prompt should contain skill name");
-        assert!(system_prompt.contains("Telegram coding bot"),
-            "System prompt should contain memory content");
-        assert!(system_prompt.contains("Some other context."),
-            "System prompt should still contain original sections");
+        assert!(
+            system_prompt.contains("## Available Skills"),
+            "System prompt should contain skills section"
+        );
+        assert!(
+            system_prompt.contains("## Workspace Memory"),
+            "System prompt should contain memory section"
+        );
+        assert!(
+            system_prompt.contains("code-review"),
+            "System prompt should contain skill name"
+        );
+        assert!(
+            system_prompt.contains("Telegram coding bot"),
+            "System prompt should contain memory content"
+        );
+        assert!(
+            system_prompt.contains("Some other context."),
+            "System prompt should still contain original sections"
+        );
     }
 
     /// Verify that when no skills or MEMORY.md exist, the extras section
     /// is empty and the system prompt is not cluttered.
     #[test]
     fn system_prompt_empty_when_no_skills_or_memory() {
-        use duga_runtime::skills::{format_skills_for_prompt, load_skills};
         use duga_runtime::memory_context::{format_memory_for_prompt, load_persistent_memory};
+        use duga_runtime::skills::{format_skills_for_prompt, load_skills};
 
         let ws = tempfile::tempdir().unwrap();
 
@@ -546,8 +602,10 @@ mod tests {
         } else {
             format!("{}\n\n", sections.join("\n\n"))
         };
-        assert!(extras.is_empty(),
-            "extras should be empty when no skills or memory exist");
+        assert!(
+            extras.is_empty(),
+            "extras should be empty when no skills or memory exist"
+        );
 
         let system_prompt = format!(
             "You are duga, a safe coding agent.\n\
@@ -588,8 +646,11 @@ mod tests {
 
         let skills = load_skills(ws.path(), Some(ch.path())).unwrap();
         assert_eq!(skills.len(), 1, "channel should override workspace");
-        assert!(skills[0].body.contains("Channel version"),
-            "channel skill body should be used, got: {}", skills[0].body);
+        assert!(
+            skills[0].body.contains("Channel version"),
+            "channel skill body should be used, got: {}",
+            skills[0].body
+        );
         assert_eq!(skills[0].source, duga_runtime::skills::SkillSource::Channel);
     }
 
@@ -609,17 +670,23 @@ mod tests {
         assert!(memory.channel_memory.is_some());
 
         let prompt = format_memory_for_prompt(&memory);
-        assert!(prompt.contains("## Session Memory"),
-            "channel memory should be labelled 'Session Memory'");
-        assert!(prompt.contains("## Workspace Memory"),
-            "workspace memory should be labelled 'Workspace Memory'");
+        assert!(
+            prompt.contains("## Session Memory"),
+            "channel memory should be labelled 'Session Memory'"
+        );
+        assert!(
+            prompt.contains("## Workspace Memory"),
+            "workspace memory should be labelled 'Workspace Memory'"
+        );
         assert!(prompt.contains("Channel memory."));
         assert!(prompt.contains("Workspace memory."));
         // Channel memory must appear before workspace memory in the prompt.
         let ch_pos = prompt.find("Channel").unwrap();
         let ws_pos = prompt.find("Workspace").unwrap();
-        assert!(ch_pos < ws_pos,
-            "channel memory should come before workspace memory");
+        assert!(
+            ch_pos < ws_pos,
+            "channel memory should come before workspace memory"
+        );
     }
 
     // ── Renderer deadlock regression test ──────────────────────────
@@ -632,8 +699,8 @@ mod tests {
     /// `runtime`.
     #[tokio::test]
     async fn frontend_bridge_closes_when_sender_dropped() {
-        use duga_runtime::events::{FrontendEvent, FrontendEventBridge, FrontendEventSink};
         use duga_events::{Event, EventSink};
+        use duga_runtime::events::{FrontendEvent, FrontendEventBridge, FrontendEventSink};
         use std::sync::Arc;
         use std::time::Duration;
 

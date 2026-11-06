@@ -1,8 +1,8 @@
 //! EditTool — targeted text replacement for existing workspace files.
 
+use duga_tools::Tool;
 use duga_tools::context::ToolContext;
 use duga_tools::result::ToolCallResult;
-use duga_tools::Tool;
 use duga_types::error::ToolError;
 use duga_types::tool_call::CallId;
 use duga_types::tool_result::ToolResult;
@@ -67,19 +67,31 @@ impl EditTool {
     }
 
     /// Resolve a path for editing: workspace first, then aux_roots.
-    fn resolve_edit_path(&self, ctx: &ToolContext<'_>, path_str: &str) -> Result<(PathBuf, bool), ToolError> {
+    fn resolve_edit_path(
+        &self,
+        ctx: &ToolContext<'_>,
+        path_str: &str,
+    ) -> Result<(PathBuf, bool), ToolError> {
         let raw = PathBuf::from(path_str);
         // First, try workspace (supports absolute within-workspace paths via resolve_path)
         if let Ok(resolved) = resolve_workspace_path(ctx, path_str) {
-            if ctx.workspace.root_dir().metadata(&resolved).map_or(false, |m| m.is_file()) {
+            if ctx
+                .workspace
+                .root_dir()
+                .metadata(&resolved)
+                .map_or(false, |m| m.is_file())
+            {
                 return Ok((resolved, false));
             }
         }
         // Then try aux_roots — only for relative paths without parent traversal
         for aux in &self.aux_roots {
-            if !raw.is_absolute() {
+            if !raw.has_root() {
                 // Reject path traversal
-                if raw.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                if raw
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
                     continue;
                 }
                 let aux_full = aux.join(&raw);
@@ -88,7 +100,10 @@ impl EditTool {
                 }
             }
         }
-        Err(ToolError::Denied(format!("path not found in workspace or auxiliary roots: {}", path_str)))
+        Err(ToolError::Denied(format!(
+            "path not found in workspace or auxiliary roots: {}",
+            path_str
+        )))
     }
 
     /// Find which aux_root has the file and check for symlinks.
@@ -142,7 +157,7 @@ impl EditTool {
 /// Resolve an absolute or relative path within the workspace.
 fn resolve_workspace_path(ctx: &ToolContext<'_>, path: &str) -> Result<PathBuf, ToolError> {
     let raw = PathBuf::from(path);
-    if raw.is_absolute() {
+    if raw.has_root() {
         if raw
             .symlink_metadata()
             .map(|metadata| metadata.file_type().is_symlink())
@@ -201,22 +216,19 @@ impl Tool for EditTool {
                     return Err(ToolError::InvalidArgs(format!(
                         "oldText not found in {}",
                         args.path
-                    )))
+                    )));
                 }
                 1 => {}
                 count => {
                     return Err(ToolError::InvalidArgs(format!(
                         "oldText appears {} times in {}; include more context for a unique replacement",
                         count, args.path
-                    )))
+                    )));
                 }
             }
 
             let updated = content.replacen(&args.old_text, &args.new_text, 1);
-            let temp_aux = aux_full.with_extension(format!(
-                "duga-edit-{}.tmp",
-                CallId::new()
-            ));
+            let temp_aux = aux_full.with_extension(format!("duga-edit-{}.tmp", CallId::new()));
             std::fs::write(&temp_aux, &updated).map_err(|e| {
                 ToolError::Io(format!("write edit temp {}: {}", temp_aux.display(), e))
             })?;
@@ -278,14 +290,14 @@ impl Tool for EditTool {
                     return Err(ToolError::InvalidArgs(format!(
                         "oldText not found in {}",
                         args.path
-                    )))
+                    )));
                 }
                 1 => {}
                 count => {
                     return Err(ToolError::InvalidArgs(format!(
                         "oldText appears {} times in {}; include more context for a unique replacement",
                         count, args.path
-                    )))
+                    )));
                 }
             }
 
@@ -338,8 +350,8 @@ impl Tool for EditTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duga_sandbox::exec::CancellationToken;
     use duga_sandbox::Workspace;
+    use duga_sandbox::exec::CancellationToken;
     use duga_tools::event_sink::NullSink;
     use tempfile::tempdir;
 

@@ -1,8 +1,8 @@
 //! ReadTool — read a file from the workspace with offset, limit, and binary detection.
 
+use duga_tools::Tool;
 use duga_tools::context::ToolContext;
 use duga_tools::result::ToolCallResult;
-use duga_tools::Tool;
 use duga_types::error::ToolError;
 use duga_types::tool_call::CallId;
 use duga_types::tool_result::ToolResult;
@@ -33,7 +33,9 @@ pub struct ReadTool {
 
 impl ReadTool {
     pub fn new() -> Self {
-        Self { aux_roots: Vec::new() }
+        Self {
+            aux_roots: Vec::new(),
+        }
     }
 
     /// Set secondary allowed roots for file reads (e.g., the Telegram data dir).
@@ -42,145 +44,18 @@ impl ReadTool {
         self
     }
 
-    /// Try to resolve a path against workspace first, then aux_roots.
-    ///
-    /// LLMs inside Docker sandbox often pass absolute paths like
-    /// `/workspace/skills/...` — we strip known mount prefixes before resolving.
-    fn resolve_path(&self, ctx: &ToolContext<'_>, path_str: &str) -> Result<(PathBuf, bool), ToolError> {
-        let raw = PathBuf::from(path_str);
-
-        // Helper: try workspace resolution, verify the entry exists.
-        let try_workspace = |p: &PathBuf| -> Option<PathBuf> {
-            ctx.workspace.resolve(p).ok().and_then(|resolved| {
-                if ctx.workspace.root_dir().metadata(&resolved).is_ok() {
-                    Some(resolved)
-                } else {
-                    None
-                }
+    #[cfg(test)]
+    fn resolve_path(
+        &self,
+        ctx: &ToolContext<'_>,
+        path: &str,
+    ) -> Result<(PathBuf, bool), ToolError> {
+        ctx.workspace
+            .open_allowed_file(Path::new(path), &self.aux_roots)
+            .map(|(relative, is_aux, _, _)| (relative, is_aux))
+            .map_err(|e| {
+                ToolError::Denied(format!("path not in workspace or auxiliary roots: {e}"))
             })
-        };
-
-        // Helper: try aux_roots for a relative path (no parent traversal).
-        let try_aux = |rel: &Path| -> Option<PathBuf> {
-            if rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-                return None;
-            }
-            for aux in &self.aux_roots {
-                let aux_path = aux.join(rel);
-                if aux_path.is_file() || aux_path.is_dir() {
-                    return Some(rel.to_path_buf());
-                }
-            }
-            None
-        };
-
-        // Relative path: workspace first, then aux_roots.
-        if !raw.is_absolute() {
-            if let Some(resolved) = try_workspace(&raw) {
-                return Ok((resolved, false));
-            }
-            if let Some(rel) = try_aux(&raw) {
-                return Ok((rel, true));
-            }
-            return Err(ToolError::Denied(format!("path not in workspace or auxiliary roots: {}", path_str)));
-        }
-
-        // Absolute path: try multiple strategies.
-        // 1. Strip workspace root prefix.
-        if let Ok(relative) = raw.strip_prefix(ctx.workspace.root_path()) {
-            let rel = PathBuf::from(relative);
-            if let Some(resolved) = try_workspace(&rel) {
-                return Ok((resolved, false));
-            }
-            if let Some(found) = try_aux(Path::new(relative)) {
-                return Ok((found, true));
-            }
-        }
-
-        // 2. Canonicalize then strip workspace root.
-        if let Ok(canonical) = raw.canonicalize() {
-            if let Ok(relative) = canonical.strip_prefix(ctx.workspace.root_path()) {
-                let rel = PathBuf::from(relative);
-                if let Some(resolved) = try_workspace(&rel) {
-                    return Ok((resolved, false));
-                }
-                if let Some(found) = try_aux(Path::new(relative)) {
-                    return Ok((found, true));
-                }
-            }
-            // Check aux_roots with canonical path.
-            for aux in &self.aux_roots {
-                let aux_canonical = aux.canonicalize().unwrap_or_else(|_| aux.clone());
-                if let Ok(relative) = canonical.strip_prefix(&aux_canonical) {
-                    let aux_full = aux.join(Path::new(relative));
-                    if aux_full.is_file() || aux_full.is_dir() {
-                        return Ok((PathBuf::from(relative), true));
-                    }
-                }
-            }
-        }
-
-        // 3. Strip known sandbox mount prefixes (e.g. /workspace/).
-        const KNOWN_MOUNT_PREFIXES: &[&str] = &["/workspace/", "/workspace"];
-        for prefix in KNOWN_MOUNT_PREFIXES {
-            if let Ok(relative) = raw.strip_prefix(prefix) {
-                let rel = PathBuf::from(relative);
-                if let Some(resolved) = try_workspace(&rel) {
-                    return Ok((resolved, false));
-                }
-                if let Some(found) = try_aux(Path::new(relative)) {
-                    return Ok((found, true));
-                }
-            }
-        }
-
-        // 4. Try each aux_root with the original absolute path stripped.
-        for aux in &self.aux_roots {
-            let aux_canonical = aux.canonicalize().unwrap_or_else(|_| aux.clone());
-            if let Ok(relative) = raw.strip_prefix(&aux_canonical) {
-                let aux_full = aux.join(Path::new(relative));
-                if aux_full.is_file() || aux_full.is_dir() {
-                    return Ok((PathBuf::from(relative), true));
-                }
-            }
-        }
-
-        Err(ToolError::Denied(format!("path not in workspace or auxiliary roots: {}", path_str)))
-    }
-
-    /// Build a ToolResult from raw bytes (used for aux_root reads).
-    fn build_read_result(&self, content: &[u8], start: std::time::Instant) -> ToolCallResult {
-        if content.contains(&0x00) {
-            let hex = content
-                .iter()
-                .take(64)
-                .map(|b| format!("{:02x}", b))
-                .collect::<Vec<_>>()
-                .join(" ");
-            return Ok(ToolResult {
-                tool_call_id: CallId::new(),
-                success: true,
-                output: format!("<binary file: {} bytes, first 64 bytes hex: {}>", content.len(), hex),
-                steering_hint: None,
-                metadata: serde_json::json!({"is_binary": true, "byte_count": content.len()}),
-                duration_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                stdout_bytes: 0,
-                stderr_bytes: 0,
-                truncated: false,
-            });
-        }
-        let output = String::from_utf8_lossy(content).to_string();
-        Ok(ToolResult {
-            tool_call_id: CallId::new(),
-            success: true,
-            output,
-            steering_hint: None,
-            metadata: serde_json::json!({"is_binary": false, "bytes_read": content.len()}),
-            duration_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
-            stdout_bytes: content.len() as u64,
-            stderr_bytes: 0,
-            truncated: false,
-        })
     }
 }
 
@@ -195,34 +70,11 @@ impl Tool for ReadTool {
 
     async fn execute(&self, ctx: ToolContext<'_>, args: Self::Args) -> ToolCallResult {
         let start = std::time::Instant::now();
-        let (resolved, is_aux) = self.resolve_path(&ctx, &args.path)?;
-
-        if is_aux {
-            // Read from aux_roots using std::fs — find which root has the file
-            let aux_full = self.aux_roots.iter()
-                .map(|r| r.join(&resolved))
-                .find(|p| p.exists())
-                .ok_or_else(|| ToolError::Denied(format!(
-                    "path not found in auxiliary roots: {}", args.path
-                )))?;
-            let full_content = std::fs::read(&aux_full).map_err(|e| {
-                ToolError::Io(format!("cannot read {}: {}", aux_full.display(), e))
-            })?;
-            let offset = args.offset.unwrap_or(0) as usize;
-            let limit = args.limit.unwrap_or(256 * 1024).min(4 * 1024 * 1024) as usize;
-            let slice = if offset >= full_content.len() {
-                &[] as &[u8]
-            } else {
-                let end = (offset + limit).min(full_content.len());
-                &full_content[offset..end]
-            };
-            self.build_read_result(slice, start)
-        } else {
-            let mut file = ctx
+        {
+            let (_, _, _, mut file) = ctx
                 .workspace
-                .root_dir()
-                .open(&resolved)
-                .map_err(ToolError::from)?;
+                .open_allowed_file(Path::new(&args.path), &self.aux_roots)
+                .map_err(|e| ToolError::Denied(e.to_string()))?;
             let offset = args.offset.unwrap_or(0);
             let limit = args.limit.unwrap_or(256 * 1024).min(4 * 1024 * 1024);
 
@@ -285,8 +137,8 @@ impl Tool for ReadTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use duga_sandbox::exec::CancellationToken;
     use duga_sandbox::Workspace;
+    use duga_sandbox::exec::CancellationToken;
     use duga_tools::event_sink::NullSink;
     use tempfile::tempdir;
 
@@ -465,7 +317,12 @@ mod tests {
         let ws = Workspace::open(dir.path()).unwrap();
         let ctx = make_ctx_with_aux(&ws);
         let tool = ReadTool::new();
-        let abs = dir.path().join("sub").join("img.png").canonicalize().unwrap();
+        let abs = dir
+            .path()
+            .join("sub")
+            .join("img.png")
+            .canonicalize()
+            .unwrap();
         let (resolved, is_aux) = tool.resolve_path(&ctx, &abs.display().to_string()).unwrap();
         assert!(!is_aux);
         assert_eq!(resolved, PathBuf::from("sub/img.png"));
@@ -476,7 +333,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let aux = tempdir().unwrap();
         std::fs::create_dir_all(aux.path().join("skills").join("test")).unwrap();
-        std::fs::write(aux.path().join("skills").join("test").join("SKILL.md"), b"# Skill").unwrap();
+        std::fs::write(
+            aux.path().join("skills").join("test").join("SKILL.md"),
+            b"# Skill",
+        )
+        .unwrap();
         let ws = Workspace::open(dir.path()).unwrap();
         let ctx = make_ctx_with_aux(&ws);
         let tool = ReadTool::new().with_aux_roots(vec![aux.path().to_path_buf()]);
