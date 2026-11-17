@@ -256,18 +256,14 @@ impl TelegramEventRenderer {
                 // separate message (no inline expandable in Rich Markdown).
                 let text_chunks = chunk_message(&text);
                 for (i, chunk) in text_chunks.iter().enumerate() {
-                    let rich_md = format_rich_markdown(chunk);
-                    let collapsed = format!(
-                        "<blockquote expandable>{}</blockquote>",
-                        escape_html(&rich_md)
-                    );
+                    let html = format_collapsed_answer(chunk);
 
                     // Try sendRichMessage first (Bot API 10.1+).
                     // Fall back to send_message with Html parse mode.
                     let result = send_rich_message(
                         &self.bot,
                         teloxide::types::Recipient::Id(self.chat_id),
-                        InputRichMessage::html(&collapsed),
+                        InputRichMessage::html(&html),
                     )
                     .await;
 
@@ -278,7 +274,7 @@ impl TelegramEventRenderer {
                         // Fallback: send as regular HTML message.
                         let _ = self
                             .bot
-                            .send_message(self.chat_id, &collapsed)
+                            .send_message(self.chat_id, &html)
                             .parse_mode(ParseMode::Html)
                             .await;
                     } else {
@@ -334,6 +330,17 @@ impl TelegramEventRenderer {
     }
 }
 
+/// Format a long answer for both rich HTML and the legacy HTML fallback.
+fn format_collapsed_answer(markdown: &str) -> String {
+    let html = format_final_message(markdown);
+    // Telegram does not allow nested blockquotes.
+    if html.contains("<blockquote>") {
+        html
+    } else {
+        format!("<blockquote expandable>{html}</blockquote>")
+    }
+}
+
 /// Build the final answer text, prepending thinking when available.
 fn build_final_text(
     final_text: Option<String>,
@@ -383,6 +390,21 @@ fn format_finish_label(tool_name: &str, description: &str, success: bool) -> Str
 mod tests {
     use super::*;
     use crate::formatting::build_process_draft_html;
+
+    #[test]
+    fn collapsed_answer_renders_markdown_and_escapes_text() {
+        assert_eq!(
+            format_collapsed_answer("Цена: **€681** & сборы"),
+            "<blockquote expandable>Цена: <b>€681</b> &amp; сборы</blockquote>"
+        );
+    }
+
+    #[test]
+    fn collapsed_answer_does_not_nest_blockquotes() {
+        let html = format_collapsed_answer("> **Цитата**");
+        assert!(html.starts_with("<blockquote><b>Цитата</b>"));
+        assert!(!html.contains("<blockquote expandable>"));
+    }
 
     #[test]
     fn test_label_format_with_description() {

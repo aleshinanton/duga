@@ -66,26 +66,33 @@ pub async fn send_rich_message_draft(
     call_api(bot, "sendRichMessageDraft", &params).await
 }
 
+fn method_url(mut base: reqwest::Url, token: &str, method: &str) -> Result<reqwest::Url, String> {
+    base.path_segments_mut()
+        .map_err(|_| "invalid Telegram API base URL".to_owned())?
+        .pop_if_empty()
+        .push(&format!("bot{token}"))
+        .push(method);
+    Ok(base)
+}
+
 /// Low-level JSON POST to `bot<token>/METHOD`.
 async fn call_api<T: serde::de::DeserializeOwned>(
     bot: &Bot,
     method: &str,
     params: &serde_json::Value,
 ) -> Result<T, String> {
-    let url = bot
-        .api_url()
-        .join(&format!("bot{}/{}", bot.token(), method))
-        .map_err(|e| e.to_string())?;
+    let url = method_url(bot.api_url(), bot.token(), method)?;
 
-    let client = reqwest::Client::new();
-    let resp = client
+    // The request URL contains the bot token. Never include it in errors.
+    let resp = bot
+        .client()
         .post(url)
         .json(params)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.without_url().to_string())?;
 
-    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.without_url().to_string())?;
 
     if body["ok"].as_bool() == Some(true) {
         serde_json::from_value(body["result"].clone())
@@ -99,6 +106,21 @@ async fn call_api<T: serde::de::DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn method_url_preserves_scheme_and_base_path() {
+        for (base, prefix) in [
+            ("https://api.telegram.org/", "https://api.telegram.org"),
+            ("http://localhost:8080/telegram/", "http://localhost:8080/telegram"),
+        ] {
+            let url = method_url(base.parse().unwrap(), "123:fake-token", "sendRichMessage")
+                .unwrap();
+            assert_eq!(
+                url.as_str(),
+                format!("{prefix}/bot123:fake-token/sendRichMessage")
+            );
+        }
+    }
 
     #[test]
     fn input_rich_message_markdown() {
